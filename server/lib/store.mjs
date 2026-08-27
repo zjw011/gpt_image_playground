@@ -1,7 +1,7 @@
 // 配置持久化：单个 JSON 文件 + 原子写入 + 内存缓存。
 // 选 JSON 而非 SQLite 是为了零原生依赖，渠道数量级在几十条，读写全量完全够用。
 
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
@@ -15,6 +15,22 @@ export const ACCESS_MODES = new Set(['open', 'passcode', 'accounts'])
 
 /** 用户名限制得比较严，因为它同时被用作前端本地仓库的命名空间。 */
 const USERNAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,31}$/
+
+/** 用户登录口令的最小长度。比管理员口令宽松：它有 IP 限流兜底，而且是要口头转达给别人的。 */
+export const MIN_USER_PASSWORD_LENGTH = 6
+
+// 剔除 0/O/1/l/I 这些容易念错抄错的字符——这串东西是要发微信或者口头念给别人的。
+const PASSCODE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789'
+
+/**
+ * 生成随机登录口令，形如 `k7mq-3xf9`。
+ * 8 位 31 进制约 40 bit 熵，配合"10 分钟失败 10 次锁 10 分钟"的限流，暴力破解不现实。
+ * 用 randomInt 而不是 randomBytes % 31，后者会引入取模偏差。
+ */
+export function generatePasscode() {
+  const chars = Array.from({ length: 8 }, () => PASSCODE_ALPHABET[randomInt(PASSCODE_ALPHABET.length)])
+  return `${chars.slice(0, 4).join('')}-${chars.slice(4).join('')}`
+}
 
 export function isValidUsername(value) {
   return USERNAME_PATTERN.test(String(value ?? ''))

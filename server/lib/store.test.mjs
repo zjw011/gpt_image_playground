@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { getConfig, initStore, isValidUsername, toAdminUser, updateConfig } from './store.mjs'
+import { generatePasscode, getConfig, initStore, isValidUsername, toAdminUser, updateConfig } from './store.mjs'
 
 /** 用给定配置内容初始化一个临时数据目录。传 null 表示不写配置文件（首次启动）。 */
 function initWith(config) {
@@ -14,6 +14,23 @@ function initWith(config) {
   if (config) writeFileSync(join(dir, 'config.json'), JSON.stringify(config), 'utf-8')
   return initStore(dir)
 }
+
+describe('generatePasscode', () => {
+  it('生成 xxxx-xxxx 形式的口令，且不含容易看错的字符', () => {
+    for (let i = 0; i < 200; i += 1) {
+      const passcode = generatePasscode()
+      expect(passcode).toMatch(/^[a-z2-9]{4}-[a-z2-9]{4}$/)
+      // 0/O/1/l/I 这几个是要口头转达时的重灾区，字母表里就不该有它们。
+      expect(passcode).not.toMatch(/[01loi]/)
+    }
+  })
+
+  it('长度满足最小口令要求，且不会重复', () => {
+    const samples = new Set(Array.from({ length: 500 }, () => generatePasscode()))
+    expect(samples.size).toBe(500)
+    expect([...samples][0].length).toBeGreaterThanOrEqual(6)
+  })
+})
 
 describe('isValidUsername', () => {
   it('接受 2-32 位字母数字与 _ . -，要求首字符是字母或数字', () => {

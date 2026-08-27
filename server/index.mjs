@@ -25,7 +25,7 @@ import {
   GUEST_COOKIE,
 } from './lib/sessions.mjs'
 import { serveStatic } from './lib/staticFiles.mjs'
-import { findUserById, findUserByUsername, getConfig, hashPassword, initStore, updateConfig, verifyPassword } from './lib/store.mjs'
+import { findUserById, findUserByUsername, getConfig, hashPassword, initStore, MIN_USER_PASSWORD_LENGTH, updateConfig, verifyPassword } from './lib/store.mjs'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(serverDir, '..')
@@ -54,8 +54,8 @@ if (!config.adminPasswordHash && process.env.GIP_ADMIN_PASSWORD) {
 
 if (!getConfig().guestPasswordHash && process.env.GIP_GUEST_PASSWORD) {
   const initial = process.env.GIP_GUEST_PASSWORD
-  if (initial.length < 8) {
-    console.error('GIP_GUEST_PASSWORD 至少需要 8 个字符，已忽略。')
+  if (initial.length < MIN_USER_PASSWORD_LENGTH) {
+    console.error(`GIP_GUEST_PASSWORD 至少需要 ${MIN_USER_PASSWORD_LENGTH} 个字符，已忽略。`)
   } else {
     updateConfig((next) => {
       next.guestPasswordHash = hashPassword(initial)

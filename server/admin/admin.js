@@ -40,6 +40,8 @@ let view = 'channels'
 let expandedChannelId = null
 let expandedUserId = null
 let creatingUser = false
+// 刚生成的明文口令：服务端只在创建/重置那一次回传，此后只剩哈希，所以必须留在页面上等管理员抄走。
+let freshCredential = null
 let toastTimer = 0
 
 function esc(value) {
@@ -234,8 +236,33 @@ function renderChannelsView() {
 
 // ===== 用户 =====
 
+function minPasswordLength() {
+  return state.minUserPasswordLength ?? 6
+}
+
+/** 刚生成的凭据块：明文只有这一次机会抄走。 */
+function credentialPanel() {
+  if (!freshCredential) return ''
+  return `
+    <div class="credential">
+      <strong>${esc(freshCredential.title)}</strong>
+      <p>口令只显示这一次，离开这个页面就再也看不到了。忘了就回来重新生成一个。</p>
+      <dl class="credential-grid">
+        ${freshCredential.username ? `<dt>用户名</dt><dd>${esc(freshCredential.username)}</dd>` : ''}
+        <dt>口令</dt><dd>${esc(freshCredential.password)}</dd>
+        <dt>网址</dt><dd style="font-size:13px;font-weight:400">${esc(window.location.origin)}</dd>
+      </dl>
+      <div class="btn-row" style="margin-top:14px">
+        <button class="primary" type="button" data-act="copy-credential">复制登录信息</button>
+        <button class="ghost" type="button" data-act="dismiss-credential">我记下了</button>
+      </div>
+    </div>
+  `
+}
+
 function userForm(user) {
   const creating = !user
+  const min = minPasswordLength()
   return `
     <form class="user-form" data-id="${esc(user?.id ?? '')}">
       <div class="row">
@@ -246,12 +273,15 @@ function userForm(user) {
           <input name="displayName" value="${esc(user?.displayName ?? '')}" placeholder="张三" />
         </label>
       </div>
-      <p class="hint">用户名支持 2-32 位字母、数字、下划线、点和连字符，首字符必须是字母或数字。</p>
-      <label style="margin-top:12px"><span>登录口令</span>
-        <input name="password" type="password" autocomplete="new-password" minlength="8"
-          placeholder="${creating ? '至少 8 个字符' : '留空表示不修改'}"${creating ? ' required' : ''} />
+      <label><span>登录口令</span>
+        <div class="with-action">
+          <input name="password" type="text" autocomplete="off" minlength="${min}"
+            placeholder="${creating ? `留空自动生成，或自己填（至少 ${min} 位）` : `留空表示不修改（至少 ${min} 位）`}" />
+          <button type="button" data-act="regenerate">随机生成</button>
+        </div>
       </label>
-      <label><span>备注（只有你能看到）</span><input name="note" value="${esc(user?.note ?? '')}" /></label>
+      <p class="hint">用户名支持 2-32 位字母、数字、下划线、点和连字符，首字符必须是字母或数字。改用户名不影响对方已有的作品。</p>
+      <label style="margin-top:12px"><span>备注（只有你能看到）</span><input name="note" value="${esc(user?.note ?? '')}" placeholder="给谁用的" /></label>
       <label class="check"><input type="checkbox" name="enabled"${user?.enabled !== false ? ' checked' : ''} /><span>允许登录 <em>取消后该用户所有设备立即被踢下线，数据保留</em></span></label>
       <div class="btn-row">
         <button class="primary" type="submit">${creating ? '创建用户' : '保存'}</button>
@@ -262,22 +292,29 @@ function userForm(user) {
   `
 }
 
-function userCard(user) {
+function personRow(user) {
   const open = expandedUserId === user.id
   const label = user.displayName || user.username
+  const seen = user.lastSeenAt
+    ? `最近登录 ${new Date(user.lastSeenAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+    : '还没登录过'
   return `
-    <div class="card" data-id="${esc(user.id)}">
-      <div class="person-head">
+    <div class="person" data-id="${esc(user.id)}" data-open="${open}" data-enabled="${user.enabled}">
+      <div class="person-main">
         <span class="avatar">${esc(label.slice(0, 1))}</span>
-        <span class="title">${esc(label)}</span>
-        <span class="tag mono">${esc(user.username)}</span>
-        ${user.enabled ? '<span class="tag live"><span class="dot"></span>可登录</span>' : '<span class="tag idle">已停用</span>'}
-        ${user.hasPassword ? '' : '<span class="tag alert">未设口令</span>'}
-        <span class="spacer"></span>
-        <button class="ghost" data-act="toggle-user" data-id="${esc(user.id)}">${open ? '收起' : '编辑'}</button>
+        <span class="person-id">
+          <strong>${esc(label)}</strong>
+          <span>${esc(user.username)} · ${esc(seen)}${user.note ? ` · ${esc(user.note)}` : ''}</span>
+        </span>
+        <span class="person-side">
+          ${user.enabled
+            ? '<span class="tag live"><span class="dot"></span>可登录</span>'
+            : '<span class="tag idle">已停用</span>'}
+          ${user.hasPassword ? '' : '<span class="tag alert">未设口令</span>'}
+          <button class="ghost" data-act="toggle-user" data-id="${esc(user.id)}">${open ? '收起' : '编辑'}</button>
+        </span>
       </div>
-      <p class="card-meta">${user.lastSeenAt ? `最近登录 ${new Date(user.lastSeenAt).toLocaleString('zh-CN')}` : '还没登录过'}${user.note ? ` · ${esc(user.note)}` : ''}</p>
-      ${open ? `<div class="card-body">${userForm(user)}</div>` : ''}
+      ${open ? `<div class="person-body">${userForm(user)}</div>` : ''}
     </div>
   `
 }
@@ -285,17 +322,27 @@ function userCard(user) {
 function renderUsersView() {
   const users = state.users ?? []
   const accounts = state.site.accessMode === 'accounts'
+  const usable = users.filter((user) => user.enabled && user.hasPassword).length
   return `
     <div class="page-head">
       <h1>用户</h1>
       <p>每个用户拥有独立的生图记录、收藏和界面设置，互相看不到对方的作品。隔离发生在各自的浏览器本地存储里——同一个人换设备登录不会带走历史记录。</p>
     </div>
-    ${accounts ? '' : `<div class="panel"><p class="hint warn">当前访问方式是「${esc(ACCESS_MODES.find((item) => item.id === state.site.accessMode)?.title ?? state.site.accessMode)}」，这些账号还不会生效。先在「访问与安全」里切换到多用户账号模式。</p></div>`}
+    ${accounts
+      ? ''
+      : `<div class="alert">
+          <div class="alert-body">
+            <strong>这些账号现在还不生效</strong>
+            <p>当前访问方式是「${esc(ACCESS_MODES.find((item) => item.id === state.site.accessMode)?.title ?? state.site.accessMode)}」。${usable ? '切到多用户模式后，别人打开前端就必须先登录。' : '先创建一个账号，再切到多用户模式。'}</p>
+          </div>
+          ${usable ? '<button class="primary" type="button" id="switch-accounts">切到多用户模式</button>' : ''}
+        </div>`}
+    ${credentialPanel()}
     ${users.length
-      ? `<div class="people">${users.map(userCard).join('')}</div>`
+      ? `<div class="people">${users.map(personRow).join('')}</div>`
       : '<div class="empty">还没有用户。创建第一个账号后就能切换到多用户模式。</div>'}
     ${creatingUser
-      ? `<div class="panel"><h2>新建用户</h2><div style="margin-top:14px">${userForm(null)}</div></div>`
+      ? `<div class="panel"><h2>新建用户</h2><p class="hint">口令留空会自动生成一个好念好抄的短口令。</p><div style="margin-top:14px">${userForm(null)}</div></div>`
       : '<div class="btn-row"><button class="primary" id="add-user" type="button">新建用户</button></div>'}
   `
 }
@@ -319,11 +366,22 @@ function accessModeCard(mode) {
 }
 
 function renderAccessView() {
+  const min = minPasswordLength()
   return `
     <div class="page-head">
       <h1>访问与安全</h1>
       <p>决定谁能打开前端，以及大家的数据是共享还是隔离。</p>
     </div>
+
+    ${state.site.accessMode === 'open'
+      ? `<div class="alert">
+          <div class="alert-body">
+            <strong>当前是开放访问：前端不要求登录</strong>
+            <p>任何拿到网址的人都能用你的渠道出图。在下面挑一种带口令的方式并保存即可关上这道门。</p>
+          </div>
+        </div>`
+      : ''}
+    ${credentialPanel()}
 
     <div class="panel">
       <h2>访问方式</h2>
@@ -340,18 +398,27 @@ function renderAccessView() {
 
     <div class="panel">
       <h2>共享访客口令</h2>
-      <p class="hint">只在「共享口令」模式下用到。多用户模式各自用自己的账号口令，与这里无关。</p>
+      <p class="hint">只在「共享口令」模式下用到：所有人用同一个口令进来，共享同一份历史。多用户模式各自用自己的账号口令，与这里无关。</p>
       <form id="guest-password-form" style="margin-top:14px">
         <label><span>访客口令</span>
-          <input name="password" type="password" autocomplete="new-password" placeholder="${state.guestPasswordSet ? '已设置，输入新值可覆盖' : '未设置，至少 8 个字符'}" />
+          <div class="with-action">
+            <input name="password" type="text" autocomplete="off" minlength="${min}"
+              placeholder="${state.guestPasswordSet ? `已设置，输入新值可覆盖（至少 ${min} 位）` : `未设置，至少 ${min} 位`}" />
+            <button type="button" data-act="regenerate-guest">随机生成</button>
+          </div>
         </label>
-        <div class="btn-row"><button type="submit">保存访客口令</button></div>
+        <div class="btn-row">
+          <button class="primary" type="submit">保存访客口令</button>
+          ${state.guestPasswordSet && state.site.accessMode !== 'passcode'
+            ? '<span class="spacer"></span><button class="danger" type="button" id="clear-guest-password">清除口令</button>'
+            : ''}
+        </div>
       </form>
     </div>
 
     <div class="panel">
       <h2>管理员口令</h2>
-      <p class="hint">修改后其他设备上的后台登录立即失效，当前这台保持登录。</p>
+      <p class="hint">只用于登录这个后台，和前端访问口令是两码事。修改后其他设备上的后台登录立即失效，当前这台保持登录。</p>
       <form id="admin-password-form" style="margin-top:14px">
         <div class="row">
           <label><span>当前口令</span><input name="currentPassword" type="password" autocomplete="current-password" required /></label>
@@ -410,7 +477,18 @@ function render() {
           <button class="ghost" id="logout" type="button">退出登录</button>
         </div>
       </nav>
-      <main class="content">${body}</main>
+      <main class="content">
+        ${state.site.accessMode === 'open' && (view === 'channels' || view === 'providers') ? `
+          <div class="alert">
+            <div class="alert-body">
+              <strong>前端目前不需要登录，任何人都能用你的渠道出图</strong>
+              <p>拿到网址就能生图，账单记在你头上。改成「共享口令」让所有人用同一个口令，或「多用户账号」给每人一个账号、数据互相隔离。</p>
+            </div>
+            <button class="primary" type="button" data-view="access">去设置</button>
+          </div>
+        ` : ''}
+        ${body}
+      </main>
     </div>
   `
 
@@ -424,6 +502,7 @@ function bindEvents() {
       expandedChannelId = null
       expandedUserId = null
       creatingUser = false
+      freshCredential = null
       render()
     })
   }
@@ -432,7 +511,30 @@ function bindEvents() {
     await api('/api/admin/logout', { method: 'POST' })
     expandedChannelId = null
     expandedUserId = null
+    freshCredential = null
     await refresh()
+  })
+
+  // 凭据块在「用户」和「访问与安全」两个页面都会出现，所以放在共享的绑定里。
+  app.querySelector('[data-act=copy-credential]')?.addEventListener('click', async (event) => {
+    const lines = [
+      `网址：${window.location.origin}`,
+      ...(freshCredential.username ? [`用户名：${freshCredential.username}`] : []),
+      `口令：${freshCredential.password}`,
+    ]
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'))
+      showToast('登录信息已复制', 'good')
+    } catch {
+      // 非 HTTPS 下 clipboard API 不可用，退回让用户手动选中。
+      event.target.closest('.credential').querySelector('.credential-grid').setAttribute('style', 'user-select:all')
+      showToast('浏览器不允许自动复制，请手动选中上面的信息', 'bad')
+    }
+  })
+
+  app.querySelector('[data-act=dismiss-credential]')?.addEventListener('click', () => {
+    freshCredential = null
+    render()
   })
 
   bindChannelEvents()
@@ -558,6 +660,16 @@ function bindUserEvents() {
     render()
   })
 
+  app.querySelector('#switch-accounts')?.addEventListener('click', async () => {
+    try {
+      await api('/api/admin/site', { method: 'PUT', body: { accessMode: 'accounts' } })
+      await refresh()
+      showToast('已切到多用户模式，前端现在要求登录', 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
+  })
+
   for (const button of app.querySelectorAll('[data-act=toggle-user]')) {
     button.addEventListener('click', () => {
       expandedUserId = expandedUserId === button.dataset.id ? null : button.dataset.id
@@ -569,19 +681,44 @@ function bindUserEvents() {
   for (const form of app.querySelectorAll('.user-form')) {
     const id = form.dataset.id
 
+    form.querySelector('[data-act=regenerate]').addEventListener('click', async (event) => {
+      event.target.disabled = true
+      try {
+        const result = await api('/api/admin/passcode', { method: 'POST' })
+        const input = form.querySelector('[name=password]')
+        input.value = result.password
+        input.focus()
+        input.select()
+      } catch (err) {
+        showToast(err.message, 'bad')
+      } finally {
+        event.target.disabled = false
+      }
+    })
+
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
       const body = readForm(form)
-      if (!body.password) delete body.password
+      const password = body.password
+      if (!password) delete body.password
       try {
         if (id) {
-          await api(`/api/admin/users/${encodeURIComponent(id)}`, { method: 'PUT', body })
+          const result = await api(`/api/admin/users/${encodeURIComponent(id)}`, { method: 'PUT', body })
+          // 改了口令就把新凭据显示出来，方便直接转给对方。
+          freshCredential = password
+            ? { title: `「${result.user.username}」的口令已重置`, username: result.user.username, password }
+            : null
           showToast('已保存', 'good')
         } else {
           const result = await api('/api/admin/users', { method: 'POST', body })
           creatingUser = false
-          expandedUserId = result.user.id
-          showToast(`已创建用户「${result.user.username}」`, 'good')
+          expandedUserId = null
+          freshCredential = {
+            title: `账号「${result.user.username}」已创建`,
+            username: result.user.username,
+            password: result.password,
+          }
+          showToast('已创建，把下面的登录信息发给对方', 'good')
         }
         await refresh()
       } catch (err) {
@@ -600,6 +737,7 @@ function bindUserEvents() {
       try {
         await api(`/api/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' })
         expandedUserId = null
+        freshCredential = null
         await refresh()
         showToast('已删除', 'good')
       } catch (err) {
@@ -630,15 +768,43 @@ function bindAccessEvents() {
     }
   })
 
+  app.querySelector('[data-act=regenerate-guest]')?.addEventListener('click', async (event) => {
+    event.target.disabled = true
+    try {
+      const result = await api('/api/admin/passcode', { method: 'POST' })
+      const input = app.querySelector('#guest-password-form [name=password]')
+      input.value = result.password
+      input.focus()
+      input.select()
+    } catch (err) {
+      showToast(err.message, 'bad')
+    } finally {
+      event.target.disabled = false
+    }
+  })
+
+  app.querySelector('#clear-guest-password')?.addEventListener('click', async () => {
+    if (!confirm('确认清除访客口令？之后共享口令模式将不可用。')) return
+    try {
+      await api('/api/admin/password', { method: 'PUT', body: { target: 'guest', password: '' } })
+      freshCredential = null
+      await refresh()
+      showToast('访客口令已清除', 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
+  })
+
   app.querySelector('#guest-password-form')?.addEventListener('submit', async (event) => {
     event.preventDefault()
-    const password = new FormData(event.target).get('password')
-    if (password && String(password).length < 8) return showToast('访客口令至少 8 个字符', 'bad')
-    if (!password && !confirm('留空保存会清除访客口令。继续？')) return
+    const password = String(new FormData(event.target).get('password') ?? '')
+    if (!password) return showToast('请输入或随机生成一个口令', 'bad')
+    if (password.length < minPasswordLength()) return showToast(`访客口令至少 ${minPasswordLength()} 个字符`, 'bad')
     try {
       await api('/api/admin/password', { method: 'PUT', body: { target: 'guest', password } })
+      freshCredential = { title: '共享访客口令已更新', username: '', password }
       await refresh()
-      showToast(password ? '访客口令已更新' : '访客口令已清除', 'good')
+      showToast('访客口令已更新', 'good')
     } catch (err) {
       showToast(err.message, 'bad')
     }

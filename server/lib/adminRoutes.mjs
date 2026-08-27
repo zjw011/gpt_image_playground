@@ -9,9 +9,11 @@ import {
   findChannel,
   findUserById,
   findUserByUsername,
+  generatePasscode,
   getConfig,
   hashPassword,
   isValidUsername,
+  MIN_USER_PASSWORD_LENGTH,
   normalizeChannel,
   normalizeUser,
   toAdminChannel,
@@ -58,6 +60,7 @@ export async function handleAdminRoute(req, res, ctx) {
             guestPasswordSet: Boolean(config.guestPasswordHash),
             channels: config.channels.map(toAdminChannel),
             users: config.users.map(toAdminUser),
+            minUserPasswordLength: MIN_USER_PASSWORD_LENGTH,
             customProviders: config.customProviders,
             updatedAt: config.updatedAt,
           }
@@ -167,12 +170,17 @@ export async function handleAdminRoute(req, res, ctx) {
   if (path === '/api/admin/users' && method === 'POST') {
     const body = await readJsonBody(req)
     const username = String(body.username ?? '').trim()
-    const password = String(body.password ?? '')
     if (!isValidUsername(username)) {
       throw new HttpError(400, '用户名需为 2-32 位字母、数字、下划线、点或连字符，且以字母或数字开头')
     }
     if (findUserByUsername(username)) throw new HttpError(409, `用户名「${username}」已存在`)
-    if (password.length < 8) throw new HttpError(400, '登录口令至少 8 个字符')
+
+    // 没填口令就随机生成一个，明文只在这次响应里回传，之后只剩哈希。
+    const provided = String(body.password ?? '')
+    if (provided && provided.length < MIN_USER_PASSWORD_LENGTH) {
+      throw new HttpError(400, `登录口令至少 ${MIN_USER_PASSWORD_LENGTH} 个字符`)
+    }
+    const password = provided || generatePasscode()
 
     const now = Date.now()
     const id = genUserId()
@@ -191,7 +199,7 @@ export async function handleAdminRoute(req, res, ctx) {
       config.users.push(user)
       return config
     })
-    return sendJson(res, 200, { user: toAdminUser(findUserById(id)) })
+    return sendJson(res, 200, { user: toAdminUser(findUserById(id)), password, generated: !provided })
   }
 
   const userMatch = path.match(/^\/api\/admin\/users\/([^/]+)$/)
@@ -209,9 +217,11 @@ export async function handleAdminRoute(req, res, ctx) {
       const conflict = findUserByUsername(username)
       if (conflict && conflict.id !== id) throw new HttpError(409, `用户名「${username}」已存在`)
 
-      // 口令留空表示不修改；填了就至少 8 位，并踢掉该用户所有旧会话。
+      // 口令留空表示不修改；填了就至少 MIN_USER_PASSWORD_LENGTH 位，并踢掉该用户所有旧会话。
       const password = typeof body.password === 'string' ? body.password : ''
-      if (password && password.length < 8) throw new HttpError(400, '登录口令至少 8 个字符')
+      if (password && password.length < MIN_USER_PASSWORD_LENGTH) {
+        throw new HttpError(400, `登录口令至少 ${MIN_USER_PASSWORD_LENGTH} 个字符`)
+      }
 
       const enabled = body.enabled === undefined ? existing.enabled : body.enabled !== false
       updateConfig((config) => {
@@ -281,7 +291,9 @@ export async function handleAdminRoute(req, res, ctx) {
       return sendJson(res, 200, { ok: true, guestPasswordSet: false })
     }
 
-    if (next.length < 8) throw new HttpError(400, '口令至少 8 个字符')
+    // 访客口令按用户口令的宽松下限来；管理员口令仍要求 8 位。
+    const minLength = target === 'guest' ? MIN_USER_PASSWORD_LENGTH : 8
+    if (next.length < minLength) throw new HttpError(400, `口令至少 ${minLength} 个字符`)
     if (target === 'admin' && !verifyPassword(String(body.currentPassword ?? ''), getConfig().adminPasswordHash)) {
       throw new HttpError(403, '当前管理员口令不正确')
     }
@@ -294,6 +306,11 @@ export async function handleAdminRoute(req, res, ctx) {
     })
     ctx.onPasswordChanged(target)
     return sendJson(res, 200, { ok: true })
+  }
+
+  // 只吐一个随机口令，不落库。后台的「随机生成」按钮用它填输入框，保存仍走上面的常规路径。
+  if (path === '/api/admin/passcode' && method === 'POST') {
+    return sendJson(res, 200, { password: generatePasscode() })
   }
 
   throw new HttpError(404, '未知的管理接口')

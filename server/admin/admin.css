@@ -317,7 +317,7 @@ button.icon { padding: 6px 9px; font-variant-numeric: tabular-nums; }
 .node.idle > .card { background: var(--surface-2); }
 
 .card-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-.card-head .spacer, .person-head .spacer { flex: 1; }
+.card-head .spacer { flex: 1; }
 .title { font-weight: 600; }
 .card-meta {
   margin-top: 5px;
@@ -373,22 +373,51 @@ button.icon { padding: 6px 9px; font-variant-numeric: tabular-nums; }
 .mode small { display: block; margin-top: 3px; color: var(--ink-dim); font-size: 12px; line-height: 1.55; }
 .mode .warn { color: var(--warn); }
 
-/* ===== 用户表格 ===== */
+/* ===== 用户名册 ===== */
 
-.people { display: grid; gap: 10px; margin-bottom: 16px; }
-.person-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.people {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.person { border-top: 1px solid var(--line-soft); background: var(--surface); }
+.person:first-child { border-top: 0; }
+.person[data-open=true] { background: var(--surface-2); }
+.person[data-enabled=false] .person-main { opacity: 0.62; }
+
+.person-main {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 15px;
+}
+.person-id { min-width: 0; }
+.person-id strong { display: block; font-size: 13px; font-weight: 600; }
+.person-id span {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+.person-side { display: flex; align-items: center; gap: 8px; }
+.person-body { padding: 2px 15px 16px; }
+
 .avatar {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 9px;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
   background: rgb(162 148 247 / 0.16);
   color: var(--violet);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   text-transform: uppercase;
 }
+.person[data-enabled=false] .avatar { background: var(--surface-3); color: var(--ink-faint); }
 
 .empty {
   padding: 26px 20px;
@@ -398,6 +427,64 @@ button.icon { padding: 6px 9px; font-variant-numeric: tabular-nums; }
   color: var(--ink-faint);
   font-size: 13px;
 }
+
+/* ===== 顶部警示条：站点当前对所有人开放时必须一眼看到 ===== */
+
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 13px 16px;
+  margin-bottom: 20px;
+  border: 1px solid var(--accent-line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+}
+.alert-body { flex: 1; min-width: 0; }
+.alert strong { display: block; font-size: 13px; font-weight: 650; }
+.alert p { margin-top: 4px; color: var(--ink-dim); font-size: 12px; line-height: 1.65; }
+.alert button { flex-shrink: 0; }
+
+/* ===== 凭据展示：明文口令只在这一刻出现，之后服务端只留哈希 ===== */
+
+.credential {
+  padding: 15px 17px;
+  margin-bottom: 16px;
+  border: 1px solid rgb(87 203 139 / 0.34);
+  border-radius: var(--r-md);
+  background: rgb(87 203 139 / 0.07);
+}
+.credential > strong { display: block; font-size: 13px; }
+.credential > p { margin-top: 4px; color: var(--ink-dim); font-size: 12px; }
+.credential-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px 13px;
+  align-items: center;
+  margin-top: 13px;
+}
+.credential-grid dt {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.credential-grid dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+}
+
+/* ===== 带附加按钮的输入框 ===== */
+
+.with-action { display: flex; gap: 8px; align-items: stretch; }
+.with-action input { flex: 1; min-width: 0; }
+.with-action button { white-space: nowrap; }
 
 .divider { height: 1px; background: var(--line-soft); margin: 18px 0; border: 0; }
 
