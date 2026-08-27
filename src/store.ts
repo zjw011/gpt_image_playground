@@ -20,8 +20,9 @@ import type {
 } from './types'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS } from './types'
 import { DEFAULT_SETTINGS, getActiveApiProfile, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, mergePresetImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
-import { enforcePresetConfigPolicy, getPresetConfig, getPresetProfileIds, getPresetProviderIds, isPresetConfigDeletionPrevented, isPresetConfigOnlyEnabled, isPresetConfigParamsLocked, isPresetProfile, isPresetProviderDeletionPrevented } from './lib/presetConfig'
+import { enforcePresetConfigPolicy, getPresetConfig, getPresetProfileIds, getPresetProviderIds, isBackendManagedMode, isPresetConfigDeletionPrevented, isPresetConfigOnlyEnabled, isPresetConfigParamsLocked, isPresetProfile, isPresetProviderDeletionPrevented } from './lib/presetConfig'
 import { scopeStorageName } from './lib/workspace'
+import { isAgentAvailable } from './lib/backend'
 import { dismissAllTooltips } from './lib/tooltipDismiss'
 import { remapImageMentionsForOrder, replaceImageMentionsForApi } from './lib/promptImageMentions'
 import {
@@ -517,6 +518,13 @@ export const useStore = create<AppState>()(
         const activeProfile = getActiveApiProfile(settings)
         const agentValidationError = getAgentProfileValidationError(settings)
 
+        // 后端托管模式下 Agent 归管理员开关。这里独立判断，不依赖配置校验——
+        // 管理员关掉 Agent 但当前渠道恰好是 Responses 时，校验是会通过的。
+        if (!isAgentAvailable()) {
+          state.showToast('管理员尚未开启 Agent 模式，请联系管理员在后台配置。', 'error')
+          return
+        }
+
         if (!agentValidationError) {
           const galleryInputDraft = saveGalleryInputDraft(state)
           set((state) => ({
@@ -529,6 +537,12 @@ export const useStore = create<AppState>()(
             selectedFavoriteCollectionIds: [],
             ...restoreAgentInputDraftState(state.agentInputDrafts, state.activeAgentConversationId),
           }))
+          return
+        }
+
+        // 后端托管模式下用户无处可配，让他去"设置"只会白跑一趟——直接说明该找谁。
+        if (isBackendManagedMode()) {
+          state.showToast('管理员配置的 Agent 渠道当前不可用，请联系管理员。', 'error')
           return
         }
 
@@ -2296,6 +2310,10 @@ export async function submitAgentMessage() {
 
   const agentValidationError = getAgentProfileValidationError(normalizedSettings)
   if (agentValidationError) {
+    if (isBackendManagedMode()) {
+      showToast('管理员配置的 Agent 渠道当前不可用，请联系管理员。', 'error')
+      return
+    }
     showToast(`请先完善 Agent API 配置：${agentValidationError.message}`, 'error')
     state.setShowSettings(true, normalizedSettings.agentApiConfigMode === 'off' ? 'api' : 'agent')
     return
@@ -2446,6 +2464,10 @@ export async function regenerateAgentAssistantMessage(conversationId: string, ro
 
   const agentValidationError = getAgentProfileValidationError(normalizedSettings)
   if (agentValidationError) {
+    if (isBackendManagedMode()) {
+      showToast('管理员配置的 Agent 渠道当前不可用，请联系管理员。', 'error')
+      return
+    }
     showToast(`请先完善 Agent API 配置：${agentValidationError.message}`, 'error')
     state.setShowSettings(true, normalizedSettings.agentApiConfigMode === 'off' ? 'api' : 'agent')
     return

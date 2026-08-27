@@ -4,7 +4,7 @@ import { buildSettingsFromUrlParams, clearUrlSettingParams, getExplicitUrlSettin
 import { createDefaultOpenAIProfile, hasDefaultPresetConfig, isAgentTextApiProfile, normalizeSettings } from './lib/apiProfiles'
 import { getCustomProviderConfigUrl, hasEmbeddedDefaultConfig, loadCustomProviderSettingsFromUrl, loadEmbeddedDefaultConfig } from './lib/customProviderConfigUrl'
 import { getDefaultPresetProfileId, getPresetProfileIds, isPresetConfigOnlyEnabled, setBackendManagedMode, setPresetConfig } from './lib/presetConfig'
-import { backendBootstrapToPresetConfig, loadBackendBootstrap, type BackendBootstrap } from './lib/backend'
+import { backendAgentSettings, backendBootstrapToPresetConfig, loadBackendBootstrap, type BackendBootstrap } from './lib/backend'
 import { syncWorkspaceId } from './lib/workspace'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import type { AppSettings } from './types'
@@ -90,6 +90,8 @@ export default function App() {
               ...state.settings,
               channelFailover: data.site.failoverEnabled,
               channelFailoverMaxAttempts: data.site.failoverMaxAttempts,
+              // Agent 也由后台总控：用户不需要（也无法）自己挑文本/图像渠道。
+              ...backendAgentSettings(data),
             }))
             clearAppliedUrlSettings()
             return

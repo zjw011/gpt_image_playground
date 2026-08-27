@@ -88,6 +88,68 @@ describe('users 清洗', () => {
   })
 })
 
+describe('agent 设置清洗', () => {
+  const responsesChannel = { id: 'ch-t', name: '对话', provider: 'openai', apiMode: 'responses', baseUrl: 'https://x/v1', apiKey: 'k', enabled: true }
+  const imagesChannel = { id: 'ch-i', name: '出图', provider: 'openai', apiMode: 'images', baseUrl: 'https://x/v1', apiKey: 'k', enabled: true }
+
+  it('首次启动默认关闭', () => {
+    expect(initWith(null).site.agentMode).toBe('off')
+  })
+
+  it('没指定文本渠道时自动挑一条可用的 Responses 渠道，但不会顺手打开', () => {
+    const config = initWith({ version: 2, site: {}, channels: [imagesChannel, responsesChannel] })
+    expect(config.site.agentTextChannelId).toBe('ch-t')
+    expect(config.site.agentMode).toBe('off')
+  })
+
+  it('指定的文本渠道被停用后回落到 off，避免前端露出点进去就报错的入口', () => {
+    const config = initWith({
+      version: 2,
+      site: { agentMode: 'native', agentTextChannelId: 'ch-t' },
+      channels: [{ ...responsesChannel, enabled: false }],
+    })
+    expect(config.site.agentMode).toBe('off')
+    expect(config.site.agentTextChannelId).toBe('')
+  })
+
+  it('文本渠道改成 Images API 后同样回落', () => {
+    const config = initWith({
+      version: 2,
+      site: { agentMode: 'native', agentTextChannelId: 'ch-t' },
+      channels: [{ ...responsesChannel, apiMode: 'images' }],
+    })
+    expect(config.site.agentMode).toBe('off')
+  })
+
+  it('混合模式缺了图像渠道就回落，文本渠道齐全也不例外', () => {
+    const config = initWith({
+      version: 2,
+      site: { agentMode: 'hybrid', agentTextChannelId: 'ch-t', agentImageChannelId: 'ch-gone' },
+      channels: [responsesChannel],
+    })
+    expect(config.site.agentMode).toBe('off')
+  })
+
+  it('渠道齐全时保留 hybrid 与工具轮数、联网开关', () => {
+    const config = initWith({
+      version: 2,
+      site: { agentMode: 'hybrid', agentTextChannelId: 'ch-t', agentImageChannelId: 'ch-i', agentMaxToolRounds: 30, agentWebSearch: true },
+      channels: [responsesChannel, imagesChannel],
+    })
+    expect(config.site).toMatchObject({ agentMode: 'hybrid', agentTextChannelId: 'ch-t', agentImageChannelId: 'ch-i', agentMaxToolRounds: 30, agentWebSearch: true })
+  })
+
+  it('未知的 agentMode 与越界的工具轮数被收敛', () => {
+    const config = initWith({
+      version: 2,
+      site: { agentMode: 'magic', agentTextChannelId: 'ch-t', agentMaxToolRounds: 9999 },
+      channels: [responsesChannel],
+    })
+    expect(config.site.agentMode).toBe('off')
+    expect(config.site.agentMaxToolRounds).toBe(100)
+  })
+})
+
 describe('toAdminUser', () => {
   it('只回传是否设置了口令，绝不回传哈希', () => {
     initWith({ version: 2, users: [{ id: 'u-1', username: 'alice', passwordHash: 'scrypt$aa$bb' }], channels: [] })

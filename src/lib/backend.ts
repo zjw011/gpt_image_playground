@@ -28,6 +28,12 @@ export interface BackendSite {
   failoverEnabled: boolean
   failoverMaxAttempts: number
   allowGuestParamOverride: boolean
+  /** Agent 接入方式，由后台统一决定；off 时前端不显示 Agent 入口。 */
+  agentMode: 'off' | 'native' | 'hybrid'
+  agentTextChannelId: string
+  agentImageChannelId: string
+  agentMaxToolRounds: number
+  agentWebSearch: boolean
 }
 
 /** 访问方式：open 任何人可用、passcode 共享口令、accounts 逐用户账号（数据互相隔离）。 */
@@ -76,6 +82,14 @@ export function isGuestParamOverrideAllowed() {
 /** 多用户模式下 Header 要显示当前账号并提供退出入口。 */
 export function getBackendUser() {
   return bootstrap?.user ?? null
+}
+
+/**
+ * Agent 入口是否可用。后端托管模式下完全由管理员的 agentMode 决定——
+ * 关着就不该在前端露出按钮，否则用户点进去只会撞一个"请去配置"的弹窗，而他本来就无处可配。
+ */
+export function isAgentAvailable() {
+  return bootstrap === null || bootstrap.site.agentMode !== 'off'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -133,6 +147,13 @@ function normalizeBootstrap(input: unknown): BackendBootstrap | null {
         ? Math.max(0, Math.trunc(site.failoverMaxAttempts))
         : 0,
       allowGuestParamOverride: site.allowGuestParamOverride !== false,
+      agentMode: site.agentMode === 'native' || site.agentMode === 'hybrid' ? site.agentMode : 'off',
+      agentTextChannelId: typeof site.agentTextChannelId === 'string' ? site.agentTextChannelId : '',
+      agentImageChannelId: typeof site.agentImageChannelId === 'string' ? site.agentImageChannelId : '',
+      agentMaxToolRounds: typeof site.agentMaxToolRounds === 'number' && Number.isFinite(site.agentMaxToolRounds)
+        ? Math.min(100, Math.max(1, Math.trunc(site.agentMaxToolRounds)))
+        : 15,
+      agentWebSearch: site.agentWebSearch === true,
     },
     channels: rawChannels.map(normalizeChannel).filter((channel): channel is BackendChannel => channel !== null),
     customProviders: normalizeCustomProviderDefinitions(input.customProviders),
@@ -184,6 +205,20 @@ export function backendBootstrapToPresetConfig(data: BackendBootstrap) {
   return {
     customProviders: data.customProviders,
     profiles: profiles.map((profile, idx) => (idx === 0 ? { ...profile, isDefault: true } : profile)),
+  }
+}
+
+/**
+ * 后台的 Agent 设置翻译成前端的 settings 字段。
+ * 渠道 id 要加上 `backend-` 前缀才对得上 backendChannelToApiProfile 生成的 profile id。
+ */
+export function backendAgentSettings(data: BackendBootstrap) {
+  return {
+    agentApiConfigMode: data.site.agentMode,
+    agentTextProfileId: data.site.agentTextChannelId ? `backend-${data.site.agentTextChannelId}` : null,
+    agentImageProfileId: data.site.agentImageChannelId ? `backend-${data.site.agentImageChannelId}` : null,
+    agentMaxToolRounds: data.site.agentMaxToolRounds,
+    agentWebSearch: data.site.agentWebSearch,
   }
 }
 

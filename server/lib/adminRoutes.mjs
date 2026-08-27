@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto'
 import { HttpError, readJsonBody, sendJson } from './http.mjs'
 import {
   ACCESS_MODES,
+  AGENT_MODES,
   BUILT_IN_PROVIDERS,
   findChannel,
   findUserById,
@@ -12,6 +13,7 @@ import {
   generatePasscode,
   getConfig,
   hashPassword,
+  isAgentTextChannel,
   isValidUsername,
   MIN_USER_PASSWORD_LENGTH,
   normalizeChannel,
@@ -266,8 +268,25 @@ export async function handleAdminRoute(req, res, ctx) {
       throw new HttpError(400, '请先创建至少一个启用的用户，再切换到多用户模式')
     }
 
+    const agentMode = typeof body.agentMode === 'string' ? body.agentMode : config.site.agentMode
+    if (!AGENT_MODES.has(agentMode)) throw new HttpError(400, '未知的 Agent 接入方式')
+    // 开 Agent 前先确认渠道就位，否则前端会露出一个点进去就报错的入口。
+    if (agentMode !== 'off') {
+      const textId = typeof body.agentTextChannelId === 'string' ? body.agentTextChannelId : config.site.agentTextChannelId
+      const textChannel = config.channels.find((item) => item.id === textId)
+      if (!textChannel || !isAgentTextChannel(textChannel)) {
+        throw new HttpError(400, 'Agent 需要一条启用中的 OpenAI 兼容 Responses 渠道，请先添加或选择')
+      }
+      if (agentMode === 'hybrid') {
+        const imageId = typeof body.agentImageChannelId === 'string' ? body.agentImageChannelId : config.site.agentImageChannelId
+        if (!config.channels.some((item) => item.id === imageId && item.enabled)) {
+          throw new HttpError(400, '混合模式还需要选一条启用中的图像渠道')
+        }
+      }
+    }
+
     updateConfig((next) => {
-      next.site = { ...next.site, ...body, accessMode }
+      next.site = { ...next.site, ...body, accessMode, agentMode }
       return next
     })
     return sendJson(res, 200, { site: getConfig().site })

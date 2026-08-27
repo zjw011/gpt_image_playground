@@ -12,9 +12,28 @@ const BUILT_IN_PROVIDERS = [
 
 const NAV = [
   { id: 'channels', label: '渠道链路' },
+  { id: 'agent', label: 'Agent 模式' },
   { id: 'users', label: '用户' },
   { id: 'access', label: '访问与安全' },
   { id: 'providers', label: '自定义服务商' },
+]
+
+const AGENT_MODES = [
+  {
+    id: 'off',
+    title: '不开放',
+    detail: '前端只有画廊，顶栏不显示 Agent 切换按钮。',
+  },
+  {
+    id: 'native',
+    title: '原生',
+    detail: '由模型自己调用 image_generation 工具出图。要求这条渠道的模型真的支持该工具，例如 gpt-5 系列。',
+  },
+  {
+    id: 'hybrid',
+    title: '混合',
+    detail: '文本模型只负责对话和调用自定义工具，图片交给另一条图像渠道生成。模型不支持 image_generation 时用这个。',
+  },
 ]
 
 const ACCESS_MODES = [
@@ -347,6 +366,78 @@ function renderUsersView() {
   `
 }
 
+// ===== Agent 模式 =====
+
+function agentModeCard(mode, textChannels) {
+  const selected = state.site.agentMode === mode.id
+  // 没有 Responses 渠道时 native / hybrid 都点不了，直接在卡片上说清缺什么。
+  const blocked = mode.id !== 'off' && textChannels.length === 0
+  return `
+    <label class="mode" data-selected="${selected}">
+      <input type="radio" name="agentMode" value="${mode.id}"${selected ? ' checked' : ''}${blocked ? ' disabled' : ''} />
+      <span>
+        <strong>${esc(mode.title)}</strong>
+        <small>${esc(mode.detail)}</small>
+        ${blocked ? '<small class="warn">需要先在「渠道链路」加一条启用中的 OpenAI 兼容 + Responses API 渠道。</small>' : ''}
+      </span>
+    </label>
+  `
+}
+
+function channelOptions(channels, selected) {
+  return channels
+    .map((item) => `<option value="${esc(item.id)}"${item.id === selected ? ' selected' : ''}>${esc(item.name)} · ${esc(item.model)}</option>`)
+    .join('')
+}
+
+function renderAgentView() {
+  const enabledChannels = state.channels.filter((item) => item.enabled && item.hasApiKey)
+  const textChannels = enabledChannels.filter((item) => item.provider === 'openai' && item.apiMode === 'responses')
+  const mode = state.site.agentMode
+  return `
+    <div class="page-head">
+      <h1>Agent 模式</h1>
+      <p>Agent 是前端的第二个标签页：用户可以像聊天一样让模型连续改图。在这里配好之后前端直接就能用，用户不需要自己填任何配置；关掉的话前端连 Agent 按钮都不会出现。</p>
+    </div>
+
+    ${textChannels.length === 0
+      ? `<div class="alert">
+          <div class="alert-body">
+            <strong>还没有能跑 Agent 的渠道</strong>
+            <p>Agent 需要一条「OpenAI 兼容」且 API 模式为「Responses API」的启用渠道——只有 Responses 才有对话和工具调用能力，Images API 只能出图。</p>
+          </div>
+          <button class="primary" type="button" data-view="channels">去加渠道</button>
+        </div>`
+      : ''}
+
+    <div class="panel">
+      <h2>接入方式</h2>
+      <form id="agent-form" style="margin-top:14px">
+        <div class="modes">${AGENT_MODES.map((item) => agentModeCard(item, textChannels)).join('')}</div>
+        ${mode === 'off' ? '' : `
+          <hr class="divider" />
+          <label><span>对话用的文本渠道</span>
+            <select name="agentTextChannelId">${channelOptions(textChannels, state.site.agentTextChannelId)}</select>
+          </label>
+          ${mode === 'hybrid' ? `
+            <label><span>出图用的图像渠道</span>
+              <select name="agentImageChannelId">${channelOptions(enabledChannels, state.site.agentImageChannelId)}</select>
+            </label>
+          ` : ''}
+          <p class="hint">这两条渠道不走故障转移：Agent 的对话是有状态的，中途换渠道会让上下文对不上。</p>
+          <div class="row" style="margin-top:12px">
+            <label><span>单轮最多工具调用次数</span>
+              <input name="agentMaxToolRounds" type="number" min="1" max="100" value="${state.site.agentMaxToolRounds}" />
+            </label>
+          </div>
+          <label class="check"><input type="checkbox" name="agentWebSearch"${state.site.agentWebSearch ? ' checked' : ''} /><span>允许联网搜索 <em>用 Responses 的 web_search 工具，每次调用有少量额外计费</em></span></label>
+        `}
+        <div class="btn-row"><button class="primary" type="submit">保存</button></div>
+      </form>
+    </div>
+  `
+}
+
 // ===== 访问与安全 =====
 
 function accessModeCard(mode) {
@@ -457,6 +548,7 @@ function render() {
     users: (state.users ?? []).length,
   }
   const body = view === 'users' ? renderUsersView()
+    : view === 'agent' ? renderAgentView()
     : view === 'access' ? renderAccessView()
     : view === 'providers' ? renderProvidersView()
     : renderChannelsView()
@@ -478,7 +570,7 @@ function render() {
         </div>
       </nav>
       <main class="content">
-        ${state.site.accessMode === 'open' && (view === 'channels' || view === 'providers') ? `
+        ${state.site.accessMode === 'open' && view !== 'users' && view !== 'access' ? `
           <div class="alert">
             <div class="alert-body">
               <strong>前端目前不需要登录，任何人都能用你的渠道出图</strong>
@@ -537,7 +629,18 @@ function bindEvents() {
     render()
   })
 
+  // 单选卡片的选中态：radio 的 :checked 影响不到祖先元素，只能手动同步 data-selected。
+  // 访问方式与 Agent 接入方式共用这套卡片，所以放在共享绑定里。
+  for (const input of app.querySelectorAll('.mode input[type=radio]')) {
+    input.addEventListener('change', () => {
+      for (const card of app.querySelectorAll('.mode')) {
+        card.dataset.selected = String(card.querySelector('input').checked)
+      }
+    })
+  }
+
   bindChannelEvents()
+  bindAgentEvents()
   bindUserEvents()
   bindAccessEvents()
 
@@ -747,16 +850,36 @@ function bindUserEvents() {
   }
 }
 
-function bindAccessEvents() {
-  // 选中态是纯 CSS 读不到的（radio 的 :checked 无法影响祖先），所以手动同步一次。
-  for (const input of app.querySelectorAll('input[name=accessMode]')) {
-    input.addEventListener('change', () => {
-      for (const card of app.querySelectorAll('.mode')) {
-        card.dataset.selected = String(card.querySelector('input').checked)
+function bindAgentEvents() {
+  const form = app.querySelector('#agent-form')
+  if (!form) return
+
+  // 换接入方式会改变下面要显示哪些字段（混合模式多一个图像渠道），先落库再重渲染。
+  for (const input of form.querySelectorAll('input[name=agentMode]')) {
+    input.addEventListener('change', async () => {
+      try {
+        await api('/api/admin/site', { method: 'PUT', body: { agentMode: input.value } })
+        await refresh()
+      } catch (err) {
+        showToast(err.message, 'bad')
+        await refresh()
       }
     })
   }
 
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    try {
+      await api('/api/admin/site', { method: 'PUT', body: readForm(event.target) })
+      await refresh()
+      showToast(state.site.agentMode === 'off' ? '已关闭 Agent 模式' : 'Agent 配置已保存，前端刷新后生效', 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
+  })
+}
+
+function bindAccessEvents() {
   app.querySelector('#site-form')?.addEventListener('submit', async (event) => {
     event.preventDefault()
     try {

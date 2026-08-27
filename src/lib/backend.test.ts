@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { backendChannelToApiProfile, BACKEND_MANAGED_API_KEY, getRelayBaseUrl, type BackendChannel } from './backend'
+import { backendAgentSettings, backendChannelToApiProfile, BACKEND_MANAGED_API_KEY, getRelayBaseUrl, type BackendBootstrap, type BackendChannel } from './backend'
 import { buildApiUrl } from './devProxy'
 
 function createChannel(patch: Partial<BackendChannel> = {}): BackendChannel {
@@ -18,6 +18,33 @@ function createChannel(patch: Partial<BackendChannel> = {}): BackendChannel {
     streamPartialImages: 1,
     transparentBackgroundMethod: 'api',
     ...patch,
+  }
+}
+
+function createBootstrap(site: Partial<BackendBootstrap['site']> = {}): BackendBootstrap {
+  return {
+    backendMode: true,
+    initialized: true,
+    accessMode: 'open',
+    guestPasswordSet: false,
+    userCount: 0,
+    authenticated: true,
+    user: null,
+    workspaceId: 'shared',
+    site: {
+      title: 'T',
+      failoverEnabled: true,
+      failoverMaxAttempts: 0,
+      allowGuestParamOverride: true,
+      agentMode: 'off',
+      agentTextChannelId: '',
+      agentImageChannelId: '',
+      agentMaxToolRounds: 15,
+      agentWebSearch: false,
+      ...site,
+    },
+    channels: [],
+    customProviders: [],
   }
 }
 
@@ -58,5 +85,29 @@ describe('backendChannelToApiProfile', () => {
     expect(profile.streamPartialImages).toBe(3)
     expect(profile.transparentBackgroundMethod).toBe('local')
     expect(profile.description).toBe('备用线路')
+  })
+})
+
+describe('backendAgentSettings', () => {
+  it('渠道 id 补上 backend- 前缀，才对得上生成的 profile id', () => {
+    const settings = backendAgentSettings(createBootstrap({
+      agentMode: 'hybrid',
+      agentTextChannelId: 'ch-text',
+      agentImageChannelId: 'ch-image',
+      agentMaxToolRounds: 20,
+      agentWebSearch: true,
+    }))
+    expect(settings.agentApiConfigMode).toBe('hybrid')
+    expect(settings.agentTextProfileId).toBe('backend-ch-text')
+    expect(settings.agentImageProfileId).toBe('backend-ch-image')
+    expect(settings.agentMaxToolRounds).toBe(20)
+    expect(settings.agentWebSearch).toBe(true)
+  })
+
+  it('后台没指定渠道时给 null，而不是拼出一个 backend- 的空 id', () => {
+    const settings = backendAgentSettings(createBootstrap())
+    expect(settings.agentApiConfigMode).toBe('off')
+    expect(settings.agentTextProfileId).toBeNull()
+    expect(settings.agentImageProfileId).toBeNull()
   })
 })

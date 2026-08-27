@@ -13,6 +13,9 @@ export const BUILT_IN_PROVIDERS = new Set(['openai', 'sb2api-async', 'fal'])
 /** 访问方式：open 任何人可用、passcode 共享口令、accounts 逐用户账号（数据互相隔离）。 */
 export const ACCESS_MODES = new Set(['open', 'passcode', 'accounts'])
 
+/** Agent 模式的接入方式：off 不开放、native 原生 image_generation 工具、hybrid 文本模型 + 独立图像渠道。 */
+export const AGENT_MODES = new Set(['off', 'native', 'hybrid'])
+
 /** 用户名限制得比较严，因为它同时被用作前端本地仓库的命名空间。 */
 const USERNAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,31}$/
 
@@ -58,6 +61,12 @@ function createEmptyConfig() {
       failoverEnabled: true,
       failoverMaxAttempts: 0,
       allowGuestParamOverride: true,
+      // Agent 模式默认关闭：它需要指定一条 Responses 渠道，管理员没指定就不该在前端露出入口。
+      agentMode: 'off',
+      agentTextChannelId: '',
+      agentImageChannelId: '',
+      agentMaxToolRounds: 15,
+      agentWebSearch: false,
     },
     users: [],
     channels: [],
@@ -158,6 +167,34 @@ function normalizeAccessMode(site) {
   return site.guestGateEnabled === true ? 'passcode' : 'open'
 }
 
+/** Agent 的文本渠道必须是 OpenAI 兼容的 Responses 渠道，只有它支持对话与工具调用。 */
+export function isAgentTextChannel(channel) {
+  return channel.enabled && channel.provider === 'openai' && channel.apiMode === 'responses'
+}
+
+/**
+ * Agent 设置清洗。指定的渠道被删掉或改了 API 模式后，这里会把 agentMode 拉回 off——
+ * 宁可前端不显示 Agent 入口，也不能让用户点进去撞一个配置错误弹窗。
+ */
+function normalizeAgentSettings(site, channels) {
+  const mode = AGENT_MODES.has(normalizeString(site.agentMode, '').trim()) ? site.agentMode : 'off'
+  const textId = normalizeString(site.agentTextChannelId, '').trim()
+  const imageId = normalizeString(site.agentImageChannelId, '').trim()
+  // 只认还活着且仍然是 Responses 的渠道；没显式指定时自动挑第一条可用的，省掉管理员一次点击。
+  const textChannel = channels.find((item) => item.id === textId && isAgentTextChannel(item))
+    ?? (textId ? null : channels.find(isAgentTextChannel))
+  const imageChannel = channels.find((item) => item.id === imageId && item.enabled)
+    ?? (imageId ? null : channels.find((item) => item.enabled))
+
+  return {
+    agentMode: textChannel && (mode !== 'hybrid' || imageChannel) ? mode : 'off',
+    agentTextChannelId: textChannel?.id ?? '',
+    agentImageChannelId: imageChannel?.id ?? '',
+    agentMaxToolRounds: normalizeInt(site.agentMaxToolRounds, 15, 1, 100),
+    agentWebSearch: normalizeBool(site.agentWebSearch, false),
+  }
+}
+
 function normalizeConfig(input) {
   const record = isRecord(input) ? input : {}
   const site = isRecord(record.site) ? record.site : {}
@@ -198,6 +235,7 @@ function normalizeConfig(input) {
       failoverEnabled: normalizeBool(site.failoverEnabled, true),
       failoverMaxAttempts: normalizeInt(site.failoverMaxAttempts, 0, 0, 50),
       allowGuestParamOverride: normalizeBool(site.allowGuestParamOverride, true),
+      ...normalizeAgentSettings(site, normalizedChannels),
     },
     users: normalizedUsers,
     channels: normalizedChannels,

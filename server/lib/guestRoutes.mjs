@@ -40,6 +40,12 @@ export async function handleGuestRoute(req, res, ctx) {
         failoverEnabled: config.site.failoverEnabled,
         failoverMaxAttempts: config.site.failoverMaxAttempts,
         allowGuestParamOverride: config.site.allowGuestParamOverride,
+        // Agent 也由后台总控：前端只拿到「用哪条渠道」，拿不到地址和密钥。
+        agentMode: config.site.agentMode,
+        agentTextChannelId: config.site.agentTextChannelId,
+        agentImageChannelId: config.site.agentImageChannelId,
+        agentMaxToolRounds: config.site.agentMaxToolRounds,
+        agentWebSearch: config.site.agentWebSearch,
       },
       ...(gateOpen
         ? {
