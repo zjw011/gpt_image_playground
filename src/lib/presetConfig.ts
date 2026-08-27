@@ -10,6 +10,16 @@ let presetProfiles: ApiProfile[] = []
 let presetProviders: CustomProviderDefinition[] = []
 let presetProfileFields: Record<string, string[]> | undefined
 let defaultPresetProfileId: string | null = null
+// 后端托管模式：渠道由服务端后台下发，等价于强制开启预置锁定的三个开关。
+let backendManaged = false
+
+export function setBackendManagedMode(enabled: boolean) {
+  backendManaged = enabled
+}
+
+export function isBackendManagedMode() {
+  return backendManaged
+}
 
 export function setPresetConfig(settings: Pick<AppSettings, 'customProviders' | 'profiles'> & {
   presetProfileFields?: Record<string, string[]>
@@ -62,15 +72,15 @@ export function isPresetProvider(id: string) {
 }
 
 export function isPresetConfigOnlyEnabled() {
-  return SHOW_PRESET_CONFIG_ONLY && presetProfiles.length > 0
+  return (SHOW_PRESET_CONFIG_ONLY || backendManaged) && presetProfiles.length > 0
 }
 
 export function isPresetConfigParamsLocked() {
-  return LOCK_PRESET_CONFIG_PARAMS && presetProfiles.length > 0
+  return (LOCK_PRESET_CONFIG_PARAMS || backendManaged) && presetProfiles.length > 0
 }
 
 export function isPresetConfigDeletionPrevented() {
-  return (PREVENT_PRESET_CONFIG_DELETION || SHOW_PRESET_CONFIG_ONLY) && presetProfiles.length > 0
+  return (PREVENT_PRESET_CONFIG_DELETION || SHOW_PRESET_CONFIG_ONLY || backendManaged) && presetProfiles.length > 0
 }
 
 export function isPresetProfileLocked(id: string) {
@@ -104,7 +114,8 @@ export function enforcePresetConfigPolicy(
     if (!preset) return profile.isDefault ? { ...profile, isDefault: undefined } : profile
     return {
       ...(paramsLocked ? preset : profile),
-      apiKey: profile.apiKey,
+      // 后端托管模式下密钥不由用户提供，一律用预置的占位值（真实凭据在服务端注入）。
+      apiKey: backendManaged ? preset.apiKey : profile.apiKey,
       provider: paramsLocked || presetConfigOnly ? preset.provider : profile.provider,
       isDefault: profile.id === defaultPresetProfileId ? true : undefined,
     }

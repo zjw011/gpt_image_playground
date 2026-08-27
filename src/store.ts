@@ -67,6 +67,7 @@ import { cleanStaleAgentInputDrafts, clearInputDraftState, isEmptyAgentInputDraf
 import { ALL_FAVORITES_COLLECTION_ID, DEFAULT_FAVORITE_COLLECTION_ID, createDefaultFavoriteCollection, deleteFavoriteCollectionState, ensureDefaultFavoriteCollection, getTaskFavoriteCollectionIds, mergeFavoriteCollections, normalizeFavoriteCollectionIds, normalizeFavoriteCollectionName, normalizeFavoriteCollections, normalizeFavoritePatch, normalizeLoadedFavoriteState, resolveDefaultFavoriteCollectionId, sameFavoriteCollectionIds } from './lib/favoriteState'
 import { createPersistedState, mergePersistedAgentConversations, migratePersistedState, normalizePersistedState } from './lib/persistedState'
 import { addImageSizeParam, createTaskDonePatch, createTaskErrorPatch, deriveAgentImageActualParams, deriveGalleryActualParams, firstActualParams, hasActualParams, hasActualSizeParam, mapActualParamsByImage, mapRevisedPromptsByImage, markInterruptedOpenAIRunningTasks } from './lib/taskState'
+import { createFailoverAttempt, formatFailoverError, getFailoverCandidates, getFailoverTimeoutBudget, isFailoverableError, withFailoverStreamingDisabled } from './lib/failover'
 import { stripInjectedCodexCliSizePrompt } from './lib/size'
 
 const FAL_RECOVERY_POLL_MS = 10_000
@@ -3521,9 +3522,57 @@ async function executeTask(taskId: string) {
     })
     return
   }
-  const activeProfile = taskProfile ?? getActiveApiProfile(settings)
+  const startProfile = taskProfile ?? getActiveApiProfile(settings)
+  const candidates = getFailoverCandidates(normalizeSettings(settings), startProfile)
+  const attempts: NonNullable<TaskRecord['failoverAttempts']> = []
+
+  for (const [attemptIndex, candidate] of candidates.entries()) {
+    const hasNextCandidate = attemptIndex < candidates.length - 1
+    // 换渠道重试时把提示信息写进任务，让用户知道当前在试第几个渠道。
+    if (attemptIndex > 0) {
+      const latest = useStore.getState().tasks.find((t) => t.id === taskId)
+      if (!latest || latest.status !== 'running') return
+      updateTaskInStore(taskId, {
+        apiProvider: candidate.provider,
+        apiProfileId: candidate.id,
+        apiProfileName: candidate.name,
+        apiMode: candidate.apiMode,
+        apiModel: candidate.model,
+        failoverAttempts: attempts,
+      })
+      useStore.getState().showToast(`渠道「${attempts[attempts.length - 1].profileName}」失败，正在尝试「${candidate.name}」`, 'info')
+    }
+
+    const outcome = await runTaskWithProfile(taskId, withFailoverStreamingDisabled(candidate, hasNextCandidate), {
+      // 看门狗按整条候选链的总预算计时，否则换渠道后剩余时间会被算成负数而立刻超时。
+      totalTimeoutBudget: getFailoverTimeoutBudget(candidates),
+      attempts,
+      isFinalCandidate: !hasNextCandidate,
+    })
+
+    if (outcome.kind !== 'failover') return
+    attempts.push(createFailoverAttempt(candidate, outcome.error))
+  }
+}
+
+type TaskAttemptOutcome =
+  | { kind: 'settled' }
+  | { kind: 'failover'; error: unknown }
+
+async function runTaskWithProfile(
+  taskId: string,
+  activeProfile: ApiProfile,
+  context: {
+    totalTimeoutBudget: number
+    attempts: NonNullable<TaskRecord['failoverAttempts']>
+    isFinalCandidate: boolean
+  },
+): Promise<TaskAttemptOutcome> {
+  const { settings } = useStore.getState()
+  const task = useStore.getState().tasks.find((t) => t.id === taskId)
+  if (!task) return { kind: 'settled' }
   const requestSettings = createSettingsForApiProfile(settings, activeProfile)
-  const taskProvider = taskProfile?.provider ?? task.apiProvider ?? activeProfile.provider
+  const taskProvider = activeProfile.provider
   let falRequestInfo: { requestId: string; endpoint: string } | null = task.falRequestId && task.falEndpoint
         ? { requestId: task.falRequestId, endpoint: task.falEndpoint }
     : null
@@ -3536,7 +3585,7 @@ async function executeTask(taskId: string) {
     !isAsyncCustomProviderTask(requestSettings, taskProvider, task.inputImageIds.length > 0) &&
     !usesConcurrentImageRequests(requestSettings, activeProfile, task.params, task.inputImageIds.length > 0)
   ) {
-    scheduleOpenAIWatchdog(taskId, activeProfile.timeout, activeProfile)
+    scheduleOpenAIWatchdog(taskId, context.totalTimeoutBudget, activeProfile)
   }
 
   try {
@@ -3589,7 +3638,7 @@ async function executeTask(taskId: string) {
     const latestBeforeSuccess = useStore.getState().tasks.find((t) => t.id === taskId)
     if (!latestBeforeSuccess || latestBeforeSuccess.status !== 'running') {
       useStore.getState().setTaskStreamPreview(taskId)
-      return
+      return { kind: 'settled' }
     }
 
     // 存储输出图片
@@ -3624,7 +3673,7 @@ async function executeTask(taskId: string) {
     if (!latestBeforeUpdate || latestBeforeUpdate.status !== 'running') {
       useStore.getState().setTaskStreamPreview(taskId)
       await deleteUnreferencedImageIds([...outputIds, ...(transparentOriginalImageIds ?? [])])
-      return
+      return { kind: 'settled' }
     }
     const partialImageIdsToClean = latestBeforeUpdate.streamPartialImageIds || []
     clearOpenAIWatchdogTimer(taskId)
@@ -3638,6 +3687,7 @@ async function executeTask(taskId: string) {
       actualParams,
       actualParamsByImage,
       revisedPromptByImage,
+      failoverAttempts: context.attempts.length ? context.attempts : undefined,
       ...createTaskDonePatch(task, Date.now()),
       falRecoverable: false,
       customRecoverable: false,
@@ -3659,10 +3709,11 @@ async function executeTask(taskId: string) {
     ) {
       useStore.getState().clearMaskDraft()
     }
+    return { kind: 'settled' }
   } catch (err) {
     clearOpenAIWatchdogTimer(taskId)
     const latestTask = useStore.getState().tasks.find((t) => t.id === taskId)
-    if (!latestTask || latestTask.status !== 'running') return
+    if (!latestTask || latestTask.status !== 'running') return { kind: 'settled' }
     useStore.getState().setTaskStreamPreview(taskId)
     const latestFalRequestInfo = falRequestInfo ?? (latestTask.falRequestId && latestTask.falEndpoint
       ? { requestId: latestTask.falRequestId, endpoint: latestTask.falEndpoint }
@@ -3676,37 +3727,36 @@ async function executeTask(taskId: string) {
         falRecoverable: true,
       })
       scheduleFalRecovery(taskId)
-    } else if (latestCustomTaskInfo && isNetworkRecoverableError(err)) {
+      return { kind: 'settled' }
+    }
+    if (latestCustomTaskInfo && isNetworkRecoverableError(err)) {
       updateTaskInStore(taskId, {
         ...createTaskErrorPatch(task, '与自定义异步任务的连接已断开，之后会继续查询任务结果。', Date.now()),
         customTaskId: latestCustomTaskInfo.taskId,
         customRecoverable: true,
       })
       scheduleCustomRecovery(taskId)
-    } else {
-      let errorMessage = err instanceof Error ? err.message : String(err)
-      const settings = useStore.getState().settings
-      const profile = getTaskApiProfile(settings, latestTask)
-      const usesApiProxy = profile?.apiProxy ?? settings.apiProxy
-      const activeProfile = getActiveApiProfile(settings)
-      const hintProfile = profile ?? {
-        provider: latestTask.apiProvider ?? activeProfile.provider,
-        apiMode: settings.apiMode,
-        streamImages: activeProfile.streamImages,
-        streamPartialImages: activeProfile.streamPartialImages,
-      }
-      const networkErrorHint = getApiRequestNetworkErrorHint(err, latestTask.createdAt, usesApiProxy, hintProfile)
-      if (networkErrorHint && !errorMessage.includes(IMAGE_FETCH_CORS_HINT)) {
-        errorMessage += `\n${networkErrorHint}`
-      }
-      updateTaskInStore(taskId, {
-        ...createTaskErrorPatch(task, errorMessage, Date.now()),
-        ...getRawErrorPayload(err),
-        falRecoverable: false,
-        customRecoverable: false,
-      })
-      useStore.getState().setDetailTaskId(taskId)
+      return { kind: 'settled' }
     }
+
+    // 还有候选渠道且错误不是本地校验类，交由上层换渠道重试，不落错误状态。
+    if (!context.isFinalCandidate && isFailoverableError(err)) return { kind: 'failover', error: err }
+
+    let errorMessage = err instanceof Error ? err.message : String(err)
+    const networkErrorHint = getApiRequestNetworkErrorHint(err, latestTask.createdAt, activeProfile.apiProxy, activeProfile)
+    if (networkErrorHint && !errorMessage.includes(IMAGE_FETCH_CORS_HINT)) {
+      errorMessage += `\n${networkErrorHint}`
+    }
+    const allAttempts = [...context.attempts, createFailoverAttempt(activeProfile, err)]
+    updateTaskInStore(taskId, {
+      ...createTaskErrorPatch(task, formatFailoverError(allAttempts, errorMessage), Date.now()),
+      ...getRawErrorPayload(err),
+      failoverAttempts: allAttempts.length > 1 ? allAttempts : undefined,
+      falRecoverable: false,
+      customRecoverable: false,
+    })
+    useStore.getState().setDetailTaskId(taskId)
+    return { kind: 'settled' }
   } finally {
     // 释放输入图片的内存缓存（已持久化到 IndexedDB，后续按需从 DB 加载）
     for (const imgId of task.inputImageIds) {

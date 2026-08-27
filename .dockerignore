@@ -2,6 +2,15 @@ node_modules
 dist
 .git
 .gitignore
+.github
+docs
 *.md
 Dockerfile
 .dockerignore
+server-data
+.tmp-server-data
+dev-proxy.config.json
+.env
+.env.local
+.env.*.local
+compose.yaml

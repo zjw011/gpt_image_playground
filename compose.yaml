@@ -1,0 +1,30 @@
+# 后台托管模式：在项目根目录直接 `docker compose up -d --build` 即可启动。
+# 口令等配置写在同目录的 .env 里（复制 .env.example 为 .env）。
+#
+# 注意：本文件部署的是「Node 服务 + 后台管理」模式。
+# 如果你只想要原来的纯静态 nginx 部署，用 deploy/Dockerfile 手动 docker build，
+# 或参考 README 的 Docker 部署章节，不要用这个 compose。
+
+services:
+  gpt-image-playground:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.server
+    image: gpt-image-playground-server
+    container_name: gpt-image-playground
+    restart: unless-stopped
+    ports:
+      # 配好 HTTPS 反代后建议改成 '127.0.0.1:8080:8080'，只让反代能访问。
+      - '${GIP_PORT:-8080}:8080'
+    environment:
+      PORT: '8080'
+      GIP_DATA_DIR: /data
+      # 仅在尚未设置管理员口令时生效，用于免交互初始化（至少 8 个字符）。
+      GIP_ADMIN_PASSWORD: '${GIP_ADMIN_PASSWORD:-}'
+      # 访客口令，留空则不启用门禁（任何人都能打开前端使用你配置的渠道）。
+      GIP_GUEST_PASSWORD: '${GIP_GUEST_PASSWORD:-}'
+    volumes:
+      - gip-server-data:/data
+
+volumes:
+  gip-server-data:

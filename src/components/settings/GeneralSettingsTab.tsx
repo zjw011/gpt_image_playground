@@ -1,4 +1,5 @@
 import type { AppSettings } from '../../types'
+import { isBackendManagedMode } from '../../lib/presetConfig'
 import Select from '../Select'
 
 interface GeneralSettingsTabProps {
@@ -123,6 +124,27 @@ export default function GeneralSettingsTab({
         </div>
         <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
           开启后，复用历史任务时会临时使用该任务的 API 配置，找不到该配置时提交会提示；关闭后，会继续使用当前的 API 配置。
+        </div>
+      </div>
+      <div className="block">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="block text-sm text-gray-600 dark:text-gray-300">渠道失败时自动切换下一个渠道</span>
+          <button
+            type="button"
+            onClick={() => { if (!isBackendManagedMode()) commitSettings({ ...draft, channelFailover: !draft.channelFailover }) }}
+            disabled={isBackendManagedMode()}
+            className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.channelFailover ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'} ${isBackendManagedMode() ? 'cursor-not-allowed opacity-70' : ''}`}
+            role="switch"
+            aria-checked={draft.channelFailover}
+            aria-label="渠道失败时自动切换下一个渠道"
+          >
+            <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${draft.channelFailover ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+          </button>
+        </div>
+        <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+          {isBackendManagedMode()
+            ? '此开关由管理员在后台控制。开启后一个渠道生图失败会自动换下一个渠道重试，直到成功或全部失败。'
+            : '开启后，一个渠道生图失败会按 API 配置列表顺序自动换下一个渠道重试，直到成功或全部失败；重试期间会关闭流式输出。'}
         </div>
       </div>
       <div className="block">

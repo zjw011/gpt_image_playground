@@ -2,5 +2,8 @@ node_modules/
 dist/
 dev-proxy.config.json
 .wrangler/
+.env
 .env.local
 .env.*.local
+server-data/
+.tmp-server-data/

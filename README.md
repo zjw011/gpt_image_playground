@@ -170,6 +170,13 @@
 - **智能诊断提示**：当检测到接口异常改写行为或缺少常规参数时，自动提示开启相应的兼容模式。
 - **习惯配置**：支持设置提交后清空输入、重启后保留历史输入、临时复用历史任务 API 配置、关闭提示词防改写等。
 
+### 🔐 后台托管模式（可选自建服务端）
+- **后台集中管理渠道**：在 `/admin` 里添加 API 渠道（地址 + 密钥 + 模型），访客只能看到渠道名称和模型，密钥不进浏览器。
+- **凭据注入中继**：前端请求打到同源 `/api/relay/<渠道id>/`，由服务端补上真实地址与 `Authorization` 后转发，支持大体积 multipart 上传与 SSE 流式透传。
+- **多渠道故障转移**：一个渠道生图失败时自动换下一个渠道重试，直到出图成功或全部失败；任务详情页展示完整尝试记录。
+- **访客口令门禁**：可选的共享访问口令，登录按 IP 限流（10 分钟 10 次失败锁定 10 分钟）。
+- **零运行时依赖**：服务端只用 Node 内置模块，配置以 JSON 文件持久化，单个 Docker 镜像即可部署。详见 [后台托管模式文档](docs/self-hosted-backend.md)。
+
 ---
 
 ## 🚀 部署与使用
@@ -210,6 +217,48 @@
 > 兼容提示：旧变量 `VITE_SHOW_DEFAULT_CONFIG_ONLY`／`SHOW_DEFAULT_CONFIG_ONLY` 仍可使用，等同于对应的 `SHOW_PRESET_CONFIG_ONLY`。
 
 ### 部署方式
+
+<details>
+<summary><strong>🔐 方式零：后台托管模式（把站点分享给别人用）</strong></summary>
+
+上面的预置配置解决的是"帮用户少填几个字段"，API Key 仍然由每个用户自己在浏览器里填。如果你想**只在后台配置渠道和密钥，然后把前端分享给别人使用**，用这套自建服务端。
+
+上传时**不要传 `node_modules` 和 `dist`**（前者有 2 万多个文件、近 400MB，镜像里会重新 `npm ci`）。本机先打包：
+
+```bash
+tar --exclude=node_modules --exclude=dist --exclude=.git --exclude=docs -czf gip.tar.gz .
+```
+
+约 2MB。服务器上解包后：
+
+```bash
+cp .env.example .env
+vi .env                      # 至少填 GIP_ADMIN_PASSWORD（≥ 8 字符）
+docker compose up -d --build
+```
+
+首次构建会在服务器上跑 `npm ci` + `npm run build`，约 2-5 分钟，内存建议 ≥ 1GB。
+
+或者本地跑：
+
+```bash
+npm install
+npm start        # 等价于 npm run build && node server/index.mjs
+```
+
+- 后台：`http://服务器IP:8080/admin`，在这里添加 API 渠道（地址 + 密钥 + 模型）。
+- 前端：`http://服务器IP:8080`，访客只能看到渠道名称和模型，看不到地址与密钥。
+- 请求经同源 `/api/relay/<渠道id>/` 由服务端注入凭据后转发，密钥不进浏览器。
+- 支持**多渠道故障转移**：一个渠道生图失败时自动换下一个渠道重试，直到出图成功。
+- 可选访客口令门禁，登录按 IP 限流。
+
+服务端零运行时依赖（只用 Node 内置模块），配置以 JSON 文件持久化在 Docker 卷里。
+
+> ⚠️ 服务本身只讲 HTTP。上公网前请挂一层 HTTPS 反代（Caddy / nginx / Cloudflare），并决定是否启用访客口令——不启用意味着任何知道地址的人都能用你的密钥生图。详见 [后台托管模式文档](docs/self-hosted-backend.md)。
+>
+> 根目录的 `compose.yaml` 走的是这套后台托管模式。下面几种纯静态部署方式不受影响，但不要和它混用。
+
+</details>
 
 <details>
 <summary><strong>▲ 方式一：Vercel 一键部署 (推荐)</strong></summary>

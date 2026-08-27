@@ -1,0 +1,40 @@
+# 后台托管模式镜像：Node 服务 + 构建好的前端静态资源 + 文件存储。
+# 与 deploy/Dockerfile（纯静态 nginx）互不影响，二者选一部署即可。
+
+# ---- Build stage ----
+FROM --platform=$BUILDPLATFORM node:24-alpine AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+# ---- Production stage ----
+FROM node:24-alpine
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+ENV PORT=8080
+ENV GIP_DATA_DIR=/data
+ENV GIP_DIST_DIR=/app/dist
+
+# 服务端零运行时依赖，只需要源码 + 构建产物。
+COPY --from=build /app/dist ./dist
+COPY server ./server
+COPY package.json ./
+
+RUN mkdir -p /data && chown -R node:node /data /app
+USER node
+
+VOLUME ["/data"]
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/api/bootstrap').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "server/index.mjs"]

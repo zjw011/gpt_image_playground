@@ -9,6 +9,8 @@
     "build": "tsc -b && vite build",
     "deploy:cf": "npm run build && wrangler deploy",
     "preview": "vite preview",
+    "server": "node server/index.mjs",
+    "start": "npm run build && node server/index.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

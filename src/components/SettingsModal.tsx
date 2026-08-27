@@ -32,6 +32,7 @@ import {
   getDefaultPresetProfileId,
   getPresetProfileDescription,
   getPresetProfileIds,
+  isBackendManagedMode,
   isPresetConfigDeletionPrevented,
   isPresetConfigOnlyEnabled,
   isPresetProvider,
@@ -222,6 +223,8 @@ export default function SettingsModal() {
   const apiProxyLocked = isApiProxyLocked(apiProxyConfig)
   const presetConfigOnly = isPresetConfigOnlyEnabled()
   const presetDeletionPrevented = isPresetConfigDeletionPrevented()
+  // 后端托管模式：地址与密钥都在服务端，前端不展示这两个字段。
+  const backendManaged = isBackendManagedMode()
   const presetProfileIds = getPresetProfileIds()
   const visibleProfiles = presetConfigOnly
     ? draft.profiles.filter((profile) => presetProfileIds.has(profile.id))
@@ -1449,7 +1452,7 @@ export default function SettingsModal() {
               </div>
 
               {/* 3. API URL */}
-              {activeProviderUsesApiUrl && (
+              {activeProviderUsesApiUrl && !backendManaged && (
                 <label className="block">
                   <div className="mb-1.5 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">API URL</span>
@@ -1476,7 +1479,7 @@ export default function SettingsModal() {
               )}
 
               {/* 4. API 代理（紧跟 URL） */}
-              {apiProxyAvailable && activeProviderIsOpenAICompatible && !activeCustomProviderAsync && (
+              {apiProxyAvailable && !backendManaged && activeProviderIsOpenAICompatible && !activeCustomProviderAsync && (
                 <div className="block">
                   <div className="mb-1.5 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">API 代理</span>
@@ -1501,6 +1504,16 @@ export default function SettingsModal() {
               )}
 
               {/* 5. API Key */}
+              {backendManaged ? (
+                <div data-selectable-text className="flex items-start gap-3 rounded-xl border border-gray-200/70 bg-gray-50/70 px-3.5 py-3 text-sm leading-6 text-gray-600 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-300">
+                  <svg className="mt-0.5 h-5 w-5 shrink-0 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                  <div className="min-w-0 flex-1">
+                    此站点的 API 地址与密钥由管理员在后台配置，请求经本站服务器转发，浏览器不会接触到密钥。你可以直接选择上方的渠道使用。
+                  </div>
+                </div>
+              ) : (
               <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">API Key</span>
                 <div className="relative">
@@ -1537,6 +1550,7 @@ export default function SettingsModal() {
                   支持通过查询参数覆盖：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiKey=</code>
                 </div>
               </div>
+              )}
 
               {/* 6. API 接口（Images/Responses） */}
               {activeProfile.provider === 'openai' && (

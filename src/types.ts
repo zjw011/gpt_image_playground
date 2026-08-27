@@ -119,6 +119,10 @@ export interface AppSettings {
   agentApiConfigMode: AgentApiConfigMode
   agentTextProfileId?: string | null
   agentImageProfileId?: string | null
+  /** 渠道失败时自动切换到下一个可用渠道 */
+  channelFailover: boolean
+  /** 故障转移最多尝试的渠道数，0 表示全部尝试 */
+  channelFailoverMaxAttempts: number
   profiles: ApiProfile[]
   activeProfileId: string
 }
@@ -248,6 +252,14 @@ export interface TaskRecord {
   agentBatchItemId?: string
   /** Agent 图像工具实际动作 */
   agentToolAction?: 'generate' | 'edit' | 'auto' | string
+  /** 渠道故障转移的尝试记录，最后一条对应实际生效（或最终失败）的渠道 */
+  failoverAttempts?: Array<{
+    profileId: string
+    profileName: string
+    model: string
+    error: string
+    at: number
+  }>
 }
 
 export interface FavoriteCollection {

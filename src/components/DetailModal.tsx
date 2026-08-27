@@ -262,6 +262,8 @@ export default function DetailModal() {
   const taskProfileName = task.apiProfileName || '未知'
   const taskModel = task.apiModel || '未知'
   const showSourceInfo = Boolean(task.apiProvider || task.apiProfileName || task.apiModel)
+  // 故障转移记录：任务成功时是失败过的渠道，失败时最后一条即最终失败的渠道。
+  const failoverAttempts = task.failoverAttempts ?? []
   const isFalReconnecting = task.status === 'error' && task.falRecoverable
   const isCustomReconnecting = task.status === 'error' && task.customRecoverable
   const rawImageUrls = task.rawImageUrls ?? []
@@ -963,6 +965,22 @@ export default function DetailModal() {
                   <span className="font-medium text-gray-700 dark:text-gray-200">{taskProviderName}</span>
                   <span className="text-gray-400 dark:text-gray-500"> · {taskProfileName} · {taskModel}</span>
                 </div>
+              </div>
+            )}
+            {failoverAttempts.length > 0 && (
+              <div data-selectable-text className="mb-2 min-w-0 overflow-hidden rounded-lg bg-gray-50 px-3 py-2 text-xs dark:bg-white/[0.03]">
+                <span className="text-gray-400 dark:text-gray-500">渠道重试（{failoverAttempts.length} 次失败{task.status === 'done' ? '后成功' : ''}）</span>
+                <ol className="mt-1 space-y-1">
+                  {failoverAttempts.map((attempt, idx) => (
+                    <li key={`${attempt.profileId}-${attempt.at}`} className="leading-5 text-gray-500 dark:text-gray-400">
+                      <span className="text-gray-400 dark:text-gray-500">{idx + 1}.</span>{' '}
+                      <span className="font-medium text-gray-700 dark:text-gray-200">{attempt.profileName}</span>
+                      <span className="text-gray-400 dark:text-gray-500"> · {attempt.model}</span>
+                      <br />
+                      <span className="text-red-500 dark:text-red-400">{attempt.error.split('\n')[0]}</span>
+                    </li>
+                  ))}
+                </ol>
               </div>
             )}
             <div className="grid grid-cols-2 gap-2 text-xs mb-4 min-w-0">

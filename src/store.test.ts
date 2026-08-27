@@ -5306,3 +5306,94 @@ describe('reused task API profile', () => {
     expect(state.showSettings).toBe(false)
   })
 })
+
+describe('channel failover', () => {
+  const firstProfile = createDefaultOpenAIProfile({ id: 'channel-1', name: '渠道一', apiKey: 'key-1' })
+  const secondProfile = createDefaultOpenAIProfile({ id: 'channel-2', name: '渠道二', apiKey: 'key-2', model: 'gpt-image-2-pro' })
+
+  beforeEach(async () => {
+    await clearTasks()
+    vi.mocked(callImageApi).mockReset().mockResolvedValue({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    useStore.setState({
+      settings: normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        profiles: [firstProfile, secondProfile],
+        activeProfileId: firstProfile.id,
+      }),
+      appMode: 'gallery',
+      prompt: 'prompt',
+      inputImages: [],
+      maskDraft: null,
+      params: { ...DEFAULT_PARAMS },
+      tasks: [],
+      detailTaskId: null,
+      showToast: vi.fn(),
+      setConfirmDialog: vi.fn(),
+    })
+  })
+
+  it('switches to the next channel and succeeds without leaving an error state', async () => {
+    vi.mocked(callImageApi)
+      .mockRejectedValueOnce(new Error('上游 500：渠道一挂了'))
+      .mockResolvedValueOnce({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+
+    const state = useStore.getState()
+    expect(callImageApi).toHaveBeenCalledTimes(2)
+    expect(state.tasks[0]).toMatchObject({
+      apiProfileId: secondProfile.id,
+      apiProfileName: secondProfile.name,
+      apiModel: secondProfile.model,
+      error: null,
+    })
+    expect(state.tasks[0].failoverAttempts).toEqual([
+      expect.objectContaining({ profileId: firstProfile.id, error: '上游 500：渠道一挂了' }),
+    ])
+    expect(state.showToast).toHaveBeenCalledWith('渠道「渠道一」失败，正在尝试「渠道二」', 'info')
+  })
+
+  it('summarizes every attempt when all channels fail', async () => {
+    vi.mocked(callImageApi)
+      .mockRejectedValueOnce(new Error('渠道一：额度不足'))
+      .mockRejectedValueOnce(new Error('渠道二：模型不存在'))
+
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
+
+    const state = useStore.getState()
+    expect(callImageApi).toHaveBeenCalledTimes(2)
+    expect(state.tasks[0].error).toContain('已尝试 2 个渠道，全部失败')
+    expect(state.tasks[0].error).toContain('1. 渠道一：渠道一：额度不足')
+    expect(state.tasks[0].error).toContain('2. 渠道二：渠道二：模型不存在')
+    expect(state.tasks[0].failoverAttempts).toHaveLength(2)
+  })
+
+  it('does not retry another channel for local validation failures', async () => {
+    vi.mocked(callImageApi).mockRejectedValueOnce(new Error('遮罩与主图尺寸不一致，请重新绘制遮罩。'))
+
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
+
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+    expect(useStore.getState().tasks[0].failoverAttempts).toBeUndefined()
+  })
+
+  it('keeps a single attempt when failover is disabled', async () => {
+    useStore.setState({
+      settings: normalizeSettings({
+        ...useStore.getState().settings,
+        channelFailover: false,
+      }),
+    })
+    vi.mocked(callImageApi).mockRejectedValueOnce(new Error('上游 500'))
+
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
+
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+    expect(useStore.getState().tasks[0].error).toContain('上游 500')
+    expect(useStore.getState().tasks[0].failoverAttempts).toBeUndefined()
+  })
+})

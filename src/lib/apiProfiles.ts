@@ -718,6 +718,10 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     agentApiConfigMode,
     agentTextProfileId,
     agentImageProfileId,
+    channelFailover: typeof record.channelFailover === 'boolean' ? record.channelFailover : true,
+    channelFailoverMaxAttempts: typeof record.channelFailoverMaxAttempts === 'number' && Number.isFinite(record.channelFailoverMaxAttempts)
+      ? Math.min(50, Math.max(0, Math.trunc(record.channelFailoverMaxAttempts)))
+      : 0,
     profiles,
     activeProfileId,
   }

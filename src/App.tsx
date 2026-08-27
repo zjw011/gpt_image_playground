@@ -1,9 +1,10 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { initStore, restoreExplicitPresetConfig, useStore } from './store'
 import { buildSettingsFromUrlParams, clearUrlSettingParams, getExplicitUrlSettingsIds, hasUrlSettingParams } from './lib/urlSettings'
 import { createDefaultOpenAIProfile, hasDefaultPresetConfig, isAgentTextApiProfile, normalizeSettings } from './lib/apiProfiles'
 import { getCustomProviderConfigUrl, hasEmbeddedDefaultConfig, loadCustomProviderSettingsFromUrl, loadEmbeddedDefaultConfig } from './lib/customProviderConfigUrl'
-import { getDefaultPresetProfileId, getPresetProfileIds, isPresetConfigOnlyEnabled, setPresetConfig } from './lib/presetConfig'
+import { getDefaultPresetProfileId, getPresetProfileIds, isPresetConfigOnlyEnabled, setBackendManagedMode, setPresetConfig } from './lib/presetConfig'
+import { backendBootstrapToPresetConfig, loadBackendBootstrap, type BackendBootstrap } from './lib/backend'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import type { AppSettings } from './types'
 import Header from './components/Header'
@@ -19,6 +20,7 @@ import Toast from './components/Toast'
 import MaskEditorModal from './components/MaskEditorModal'
 import ImageContextMenu from './components/ImageContextMenu'
 import SupportPromptModal from './components/SupportPromptModal'
+import BackendGate from './components/BackendGate'
 import { FavoriteCollectionPickerModal, FavoriteCollectionsView, ManageCollectionsModal } from './components/FavoriteCollections'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
 
@@ -28,6 +30,8 @@ export default function App() {
   const appMode = useStore((s) => s.appMode)
   const filterFavorite = useStore((s) => s.filterFavorite)
   const activeFavoriteCollectionId = useStore((s) => s.activeFavoriteCollectionId)
+  // null 表示尚未确定是否为后端托管模式，此期间不渲染主界面，避免闪现未锁定的设置。
+  const [backend, setBackend] = useState<BackendBootstrap | null | undefined>(undefined)
   useDockerApiUrlMigrationNotice()
   useGlobalClickSuppression()
 
@@ -63,57 +67,77 @@ export default function App() {
       window.history.replaceState(null, '', nextUrl)
     }
 
-    void initStore()
-      .then(async () => {
-        const importedSettings = embeddedDefaultConfig || customProviderConfigUrl
-          ? await loadDefaultConfig()
-          : hasDefaultPresetConfig()
-            ? {
-                customProviders: [],
-                profiles: [{ ...createDefaultOpenAIProfile(), isDefault: true }],
-              }
-            : null
-        setPresetConfig(importedSettings)
-
-        const state = useStore.getState()
-        if (importedSettings) {
-          await state.setPresetImportedSettings(importedSettings)
-        } else if (state.previousPresetConfig) {
-          await state.setPresetImportedSettings({ customProviders: [], profiles: [] })
-        }
-
-        const syncedState = useStore.getState()
-        if (!importedSettings) {
-          useStore.setState({ dismissedPresetProfileIds: [], dismissedPresetProviderIds: [] })
-          if (syncedState.settings.profiles.some((profile) => profile.isDefault)) {
-            syncedState.setSettings({
-              profiles: syncedState.settings.profiles.map((profile) => profile.isDefault ? { ...profile, isDefault: undefined } : profile),
-            })
+    void loadBackendBootstrap()
+      .then((data) => {
+        setBackend(data)
+        setBackendManagedMode(Boolean(data))
+        return initStore().then(async () => {
+          // 后端托管模式：渠道全部来自服务端，跳过 URL / 内嵌配置那套导入逻辑。
+          if (data) {
+            const backendConfig = backendBootstrapToPresetConfig(data)
+            setPresetConfig(backendConfig)
+            await useStore.getState().setPresetImportedSettings(backendConfig)
+            const state = useStore.getState()
+            state.setSettings(normalizeSettings({
+              ...state.settings,
+              channelFailover: data.site.failoverEnabled,
+              channelFailoverMaxAttempts: data.site.failoverMaxAttempts,
+            }))
+            clearAppliedUrlSettings()
+            return
           }
-        }
 
-        const current = useStore.getState()
-        const presetIds = getPresetProfileIds()
-        const defaultPresetId = getDefaultPresetProfileId()
-        const settings = isPresetConfigOnlyEnabled()
-          ? normalizeSettings({
-              ...current.settings,
-              activeProfileId: presetIds.has(current.settings.activeProfileId)
-                ? current.settings.activeProfileId
-                : defaultPresetId ?? [...presetIds][0],
-              agentTextProfileId: current.settings.agentTextProfileId && presetIds.has(current.settings.agentTextProfileId)
-                ? current.settings.agentTextProfileId
-                : current.settings.profiles.find((profile) => presetIds.has(profile.id) && isAgentTextApiProfile(profile))?.id ?? null,
-              agentImageProfileId: current.settings.agentImageProfileId && presetIds.has(current.settings.agentImageProfileId)
-                ? current.settings.agentImageProfileId
-                : defaultPresetId ?? [...presetIds][0],
-            })
-          : current.settings
-        current.setSettings(await applyUrlSettings(settings))
-        clearAppliedUrlSettings()
+          const importedSettings = embeddedDefaultConfig || customProviderConfigUrl
+            ? await loadDefaultConfig()
+            : hasDefaultPresetConfig()
+              ? {
+                  customProviders: [],
+                  profiles: [{ ...createDefaultOpenAIProfile(), isDefault: true }],
+                }
+              : null
+          setPresetConfig(importedSettings)
+
+          const state = useStore.getState()
+          if (importedSettings) {
+            await state.setPresetImportedSettings(importedSettings)
+          } else if (state.previousPresetConfig) {
+            await state.setPresetImportedSettings({ customProviders: [], profiles: [] })
+          }
+
+          const syncedState = useStore.getState()
+          if (!importedSettings) {
+            useStore.setState({ dismissedPresetProfileIds: [], dismissedPresetProviderIds: [] })
+            if (syncedState.settings.profiles.some((profile) => profile.isDefault)) {
+              syncedState.setSettings({
+                profiles: syncedState.settings.profiles.map((profile) => profile.isDefault ? { ...profile, isDefault: undefined } : profile),
+              })
+            }
+          }
+
+          const current = useStore.getState()
+          const presetIds = getPresetProfileIds()
+          const defaultPresetId = getDefaultPresetProfileId()
+          const settings = isPresetConfigOnlyEnabled()
+            ? normalizeSettings({
+                ...current.settings,
+                activeProfileId: presetIds.has(current.settings.activeProfileId)
+                  ? current.settings.activeProfileId
+                  : defaultPresetId ?? [...presetIds][0],
+                agentTextProfileId: current.settings.agentTextProfileId && presetIds.has(current.settings.agentTextProfileId)
+                  ? current.settings.agentTextProfileId
+                  : current.settings.profiles.find((profile) => presetIds.has(profile.id) && isAgentTextApiProfile(profile))?.id ?? null,
+                agentImageProfileId: current.settings.agentImageProfileId && presetIds.has(current.settings.agentImageProfileId)
+                  ? current.settings.agentImageProfileId
+                  : defaultPresetId ?? [...presetIds][0],
+              })
+            : current.settings
+          current.setSettings(await applyUrlSettings(settings))
+          clearAppliedUrlSettings()
+        })
       })
       .catch((error) => {
         console.warn('Failed to import preset config:', error)
+        setBackend((current) => current === undefined ? null : current)
         setPresetConfig(null)
         const state = useStore.getState()
         void applyUrlSettings(state.settings).then((settings) => {
@@ -133,6 +157,16 @@ export default function App() {
     document.addEventListener('dragstart', preventPageImageDrag)
     return () => document.removeEventListener('dragstart', preventPageImageDrag)
   }, [])
+
+  useEffect(() => {
+    if (backend) document.title = backend.site.title
+  }, [backend])
+
+  if (backend === undefined) return null
+
+  if (backend && backend.guestGateEnabled && !backend.authenticated) {
+    return <BackendGate title={backend.site.title} onUnlocked={() => window.location.reload()} />
+  }
 
   return (
     <>
