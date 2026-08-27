@@ -5,6 +5,7 @@ import { createDefaultOpenAIProfile, hasDefaultPresetConfig, isAgentTextApiProfi
 import { getCustomProviderConfigUrl, hasEmbeddedDefaultConfig, loadCustomProviderSettingsFromUrl, loadEmbeddedDefaultConfig } from './lib/customProviderConfigUrl'
 import { getDefaultPresetProfileId, getPresetProfileIds, isPresetConfigOnlyEnabled, setBackendManagedMode, setPresetConfig } from './lib/presetConfig'
 import { backendBootstrapToPresetConfig, loadBackendBootstrap, type BackendBootstrap } from './lib/backend'
+import { syncWorkspaceId } from './lib/workspace'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import type { AppSettings } from './types'
 import Header from './components/Header'
@@ -69,6 +70,13 @@ export default function App() {
 
     void loadBackendBootstrap()
       .then((data) => {
+        // 工作区决定 localStorage 键与 IndexedDB 库名，而 store 已经用缓存的工作区水合过了。
+        // 身份和上次不一致时只能刷新重来，否则会把上一个账号的数据显示给当前账号。
+        if (syncWorkspaceId(data?.workspaceId)) {
+          window.location.reload()
+          return
+        }
+
         setBackend(data)
         setBackendManagedMode(Boolean(data))
         return initStore().then(async () => {
@@ -164,8 +172,8 @@ export default function App() {
 
   if (backend === undefined) return null
 
-  if (backend && backend.guestGateEnabled && !backend.authenticated) {
-    return <BackendGate title={backend.site.title} onUnlocked={() => window.location.reload()} />
+  if (backend && backend.accessMode !== 'open' && !backend.authenticated) {
+    return <BackendGate title={backend.site.title} accessMode={backend.accessMode} onUnlocked={() => window.location.reload()} />
   }
 
   return (

@@ -15,9 +15,17 @@ import { handleAdminRoute } from './lib/adminRoutes.mjs'
 import { handleGuestRoute } from './lib/guestRoutes.mjs'
 import { clearCookie, getClientIp, HttpError, parseCookies, readJsonBody, sendError, sendJson, sendText, setCookie } from './lib/http.mjs'
 import { getLockRemainingSeconds, isLocked, recordFailure, recordSuccess } from './lib/rateLimit.mjs'
-import { ADMIN_COOKIE, createSession, destroySession, destroySessionsByRole, getSessionRole, GUEST_COOKIE } from './lib/sessions.mjs'
+import {
+  ADMIN_COOKIE,
+  createSession,
+  destroySession,
+  destroySessionsByRole,
+  destroySessionsByUser,
+  getSession,
+  GUEST_COOKIE,
+} from './lib/sessions.mjs'
 import { serveStatic } from './lib/staticFiles.mjs'
-import { getConfig, hashPassword, initStore, updateConfig, verifyPassword } from './lib/store.mjs'
+import { findUserById, findUserByUsername, getConfig, hashPassword, initStore, updateConfig, verifyPassword } from './lib/store.mjs'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(serverDir, '..')
@@ -51,10 +59,10 @@ if (!getConfig().guestPasswordHash && process.env.GIP_GUEST_PASSWORD) {
   } else {
     updateConfig((next) => {
       next.guestPasswordHash = hashPassword(initial)
-      next.site.guestGateEnabled = true
+      next.site.accessMode = 'passcode'
       return next
     })
-    console.log('已使用 GIP_GUEST_PASSWORD 初始化访客口令并开启门禁。')
+    console.log('已使用 GIP_GUEST_PASSWORD 初始化访客口令并切换到共享口令模式。')
   }
 }
 
@@ -105,16 +113,46 @@ async function handleAdminLogin(req, res) {
   return sendJson(res, 200, { ok: true })
 }
 
-async function handleGuestLogin(req, res, password) {
+/**
+ * 前台登录：passcode 模式只校验共享口令，accounts 模式校验用户名 + 该用户口令。
+ * 两种模式共用同一个 cookie，会话里的 userId 决定前端落到哪个工作区。
+ */
+async function handleFrontLogin(req, res, credentials) {
   const ip = getClientIp(req)
   const key = `guest:${ip}`
   if (isLocked(key)) throw new HttpError(429, `尝试次数过多，请 ${getLockRemainingSeconds(key)} 秒后重试`)
 
   const current = getConfig()
-  if (!current.site.guestGateEnabled) return sendJson(res, 200, { ok: true, gateDisabled: true })
-  if (!current.guestPasswordHash) throw new HttpError(503, '管理员尚未设置访问口令')
+  const mode = current.site.accessMode
+  if (mode === 'open') return sendJson(res, 200, { ok: true, gateDisabled: true })
 
-  if (!verifyPassword(password, current.guestPasswordHash)) {
+  if (mode === 'accounts') {
+    const user = findUserByUsername(credentials.username)
+    // 用户不存在与口令错误返回同一句话，避免后台用户名被逐个探测出来。
+    if (!user || !user.passwordHash || !verifyPassword(credentials.password, user.passwordHash)) {
+      recordFailure(key)
+      throw new HttpError(401, '用户名或口令不正确')
+    }
+    if (!user.enabled) throw new HttpError(403, '该账号已被停用')
+
+    updateConfig((config) => {
+      const idx = config.users.findIndex((item) => item.id === user.id)
+      if (idx >= 0) config.users[idx] = { ...config.users[idx], lastSeenAt: Date.now() }
+      return config
+    })
+
+    const session = createSession('guest', user.id)
+    setCookie(req, res, GUEST_COOKIE, session.token, session.maxAgeSeconds)
+    recordSuccess(key)
+    return sendJson(res, 200, {
+      ok: true,
+      user: { id: user.id, username: user.username, displayName: user.displayName },
+      workspaceId: user.id,
+    })
+  }
+
+  if (!current.guestPasswordHash) throw new HttpError(503, '管理员尚未设置访问口令')
+  if (!verifyPassword(credentials.password, current.guestPasswordHash)) {
     recordFailure(key)
     throw new HttpError(401, '访问口令不正确')
   }
@@ -122,15 +160,19 @@ async function handleGuestLogin(req, res, password) {
   const session = createSession('guest')
   setCookie(req, res, GUEST_COOKIE, session.token, session.maxAgeSeconds)
   recordSuccess(key)
-  return sendJson(res, 200, { ok: true })
+  return sendJson(res, 200, { ok: true, workspaceId: 'shared' })
 }
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
   const path = url.pathname
   const cookies = parseCookies(req.headers.cookie)
-  const adminRole = getSessionRole(cookies[ADMIN_COOKIE])
-  const guestRole = getSessionRole(cookies[GUEST_COOKIE])
+  const adminSession = getSession(cookies[ADMIN_COOKIE])
+  const guestSession = getSession(cookies[GUEST_COOKIE])
+  const adminRole = adminSession?.role ?? null
+  // 会话里只存 userId，用户可能已被删除或停用，所以每次请求都重新解析。
+  const sessionUser = guestSession?.userId ? findUserById(guestSession.userId) : null
+  const activeUser = sessionUser?.enabled ? sessionUser : null
 
   try {
     if (path === '/api/admin/login') {
@@ -165,6 +207,7 @@ const server = createServer(async (req, res) => {
           }
           destroySessionsByRole('guest')
         },
+        onUserInvalidated: (userId) => destroySessionsByUser(userId),
       })
     }
 
@@ -173,9 +216,10 @@ const server = createServer(async (req, res) => {
       return await handleGuestRoute(req, res, {
         path,
         search: url.search,
-        role: adminRole === 'admin' ? 'admin' : guestRole,
-        loginGuest: (password) => handleGuestLogin(req, res, password),
-        logoutGuest: () => {
+        role: adminRole === 'admin' ? 'admin' : guestSession?.role ?? null,
+        user: activeUser,
+        login: (credentials) => handleFrontLogin(req, res, credentials),
+        logout: () => {
           destroySession(cookies[GUEST_COOKIE])
           clearCookie(req, res, GUEST_COOKIE)
           return sendJson(res, 200, { ok: true })

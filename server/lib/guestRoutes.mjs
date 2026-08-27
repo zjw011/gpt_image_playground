@@ -9,17 +9,32 @@ import { buildUpstreamUrl, pipeToUpstream } from './upstream.mjs'
 const FAL_TARGET_URL_HEADER = 'x-fal-target-url'
 const FAL_ALLOWED_HOSTS = /(^|\.)(fal\.run|fal\.ai)$/
 
+/** 共享工作区标识：open / passcode 模式下所有人同一个本地仓库。 */
+const SHARED_WORKSPACE_ID = 'shared'
+
+export function getWorkspaceId(accessMode, user) {
+  // 用户 id 本身就以 u- 开头，直接用它当工作区名，不再叠前缀。
+  return accessMode === 'accounts' && user ? user.id : SHARED_WORKSPACE_ID
+}
+
 export async function handleGuestRoute(req, res, ctx) {
   const config = getConfig()
-  const gateOpen = !config.site.guestGateEnabled || ctx.role === 'guest' || ctx.role === 'admin'
+  const accessMode = config.site.accessMode
+  const gateOpen = accessMode === 'open'
+    || ctx.role === 'admin'
+    || (accessMode === 'passcode' && ctx.role === 'guest')
+    || (accessMode === 'accounts' && ctx.role === 'guest' && Boolean(ctx.user))
 
   if (ctx.path === '/api/bootstrap' && req.method === 'GET') {
     return sendJson(res, 200, {
       backendMode: true,
       initialized: Boolean(config.adminPasswordHash),
-      guestGateEnabled: config.site.guestGateEnabled,
+      accessMode,
       guestPasswordSet: Boolean(config.guestPasswordHash),
+      userCount: config.users.filter((user) => user.enabled).length,
       authenticated: gateOpen,
+      user: ctx.user ? { id: ctx.user.id, username: ctx.user.username, displayName: ctx.user.displayName } : null,
+      workspaceId: getWorkspaceId(accessMode, ctx.user),
       site: {
         title: config.site.title,
         failoverEnabled: config.site.failoverEnabled,
@@ -37,15 +52,15 @@ export async function handleGuestRoute(req, res, ctx) {
 
   if (ctx.path === '/api/session' && req.method === 'POST') {
     const body = await readJsonBody(req)
-    return ctx.loginGuest(String(body.password ?? ''))
+    return ctx.login({ username: String(body.username ?? ''), password: String(body.password ?? '') })
   }
 
   if (ctx.path === '/api/session' && req.method === 'DELETE') {
-    return ctx.logoutGuest()
+    return ctx.logout()
   }
 
   if (ctx.path.startsWith('/api/relay/')) {
-    if (!gateOpen) throw new HttpError(401, '需要访问口令')
+    if (!gateOpen) throw new HttpError(401, accessMode === 'accounts' ? '需要登录' : '需要访问口令')
     return relayToChannel(req, res, ctx)
   }
 

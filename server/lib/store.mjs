@@ -5,10 +5,20 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-const CONFIG_VERSION = 1
+const CONFIG_VERSION = 2
 const SCRYPT_KEYLEN = 64
 
 export const BUILT_IN_PROVIDERS = new Set(['openai', 'sb2api-async', 'fal'])
+
+/** 访问方式：open 任何人可用、passcode 共享口令、accounts 逐用户账号（数据互相隔离）。 */
+export const ACCESS_MODES = new Set(['open', 'passcode', 'accounts'])
+
+/** 用户名限制得比较严，因为它同时被用作前端本地仓库的命名空间。 */
+const USERNAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,31}$/
+
+export function isValidUsername(value) {
+  return USERNAME_PATTERN.test(String(value ?? ''))
+}
 
 let dataFile = ''
 let cache = null
@@ -27,12 +37,13 @@ function createEmptyConfig() {
     guestPasswordHash: '',
     site: {
       title: 'GPT Image Playground',
-      // 默认不开门禁：首次部署时前端就能直接用；设置访客口令后由管理员或 GIP_GUEST_PASSWORD 开启。
-      guestGateEnabled: false,
+      // 默认开放：首次部署时前端就能直接用；改成 passcode / accounts 由管理员决定。
+      accessMode: 'open',
       failoverEnabled: true,
       failoverMaxAttempts: 0,
       allowGuestParamOverride: true,
     },
+    users: [],
     channels: [],
     customProviders: [],
     updatedAt: 0,
@@ -106,6 +117,31 @@ export function normalizeChannel(input, fallbackId) {
   }
 }
 
+/** 用户清洗。id 一旦生成就不再变，改用户名不会让对方丢掉已有的作品。 */
+export function normalizeUser(input, fallbackId) {
+  const record = isRecord(input) ? input : {}
+  const username = normalizeString(record.username, '').trim()
+
+  return {
+    id: normalizeString(record.id, fallbackId).trim() || fallbackId,
+    username,
+    displayName: normalizeString(record.displayName, '').trim(),
+    passwordHash: normalizeString(record.passwordHash, ''),
+    enabled: normalizeBool(record.enabled, true),
+    note: normalizeString(record.note, ''),
+    createdAt: normalizeInt(record.createdAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
+    updatedAt: normalizeInt(record.updatedAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
+    lastSeenAt: normalizeInt(record.lastSeenAt, 0, 0, Number.MAX_SAFE_INTEGER),
+  }
+}
+
+/** 老配置只有 guestGateEnabled 布尔值，映射成新的三档 accessMode。 */
+function normalizeAccessMode(site) {
+  const raw = normalizeString(site.accessMode, '').trim()
+  if (ACCESS_MODES.has(raw)) return raw
+  return site.guestGateEnabled === true ? 'passcode' : 'open'
+}
+
 function normalizeConfig(input) {
   const record = isRecord(input) ? input : {}
   const site = isRecord(record.site) ? record.site : {}
@@ -120,17 +156,34 @@ function normalizeConfig(input) {
     normalizedChannels.push(channel)
   }
 
+  const rawUsers = Array.isArray(record.users) ? record.users : []
+  const seenUserIds = new Set()
+  const seenUsernames = new Set()
+  const normalizedUsers = []
+
+  for (const [idx, item] of rawUsers.entries()) {
+    const user = normalizeUser(item, `user-${idx + 1}`)
+    // 用户名非法或重复的条目直接丢弃：它无法登录，留着只会让后台列表出现幽灵行。
+    if (!isValidUsername(user.username)) continue
+    const lowered = user.username.toLowerCase()
+    if (seenUserIds.has(user.id) || seenUsernames.has(lowered)) continue
+    seenUserIds.add(user.id)
+    seenUsernames.add(lowered)
+    normalizedUsers.push(user)
+  }
+
   return {
     version: CONFIG_VERSION,
     adminPasswordHash: normalizeString(record.adminPasswordHash, ''),
     guestPasswordHash: normalizeString(record.guestPasswordHash, ''),
     site: {
       title: normalizeString(site.title, 'GPT Image Playground'),
-      guestGateEnabled: normalizeBool(site.guestGateEnabled, false),
+      accessMode: normalizeAccessMode(site),
       failoverEnabled: normalizeBool(site.failoverEnabled, true),
       failoverMaxAttempts: normalizeInt(site.failoverMaxAttempts, 0, 0, 50),
       allowGuestParamOverride: normalizeBool(site.allowGuestParamOverride, true),
     },
+    users: normalizedUsers,
     channels: normalizedChannels,
     customProviders: Array.isArray(record.customProviders) ? record.customProviders.filter(isRecord) : [],
     updatedAt: normalizeInt(record.updatedAt, 0, 0, Number.MAX_SAFE_INTEGER),
@@ -217,4 +270,32 @@ export function getEnabledChannels() {
 
 export function findChannel(id) {
   return getConfig().channels.find((channel) => channel.id === id) ?? null
+}
+
+// ===== 用户 =====
+
+export function findUserById(id) {
+  return getConfig().users.find((user) => user.id === id) ?? null
+}
+
+/** 用户名不区分大小写：避免 Alice 和 alice 变成两个账号却共用一个心理预期。 */
+export function findUserByUsername(username) {
+  const target = String(username ?? '').trim().toLowerCase()
+  if (!target) return null
+  return getConfig().users.find((user) => user.username.toLowerCase() === target) ?? null
+}
+
+/** 后台可见的用户投影：口令只回传"是否已设置"，永不回传哈希。 */
+export function toAdminUser(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    displayName: user.displayName,
+    enabled: user.enabled,
+    note: user.note,
+    hasPassword: Boolean(user.passwordHash),
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+    lastSeenAt: user.lastSeenAt,
+  }
 }

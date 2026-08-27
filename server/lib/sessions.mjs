@@ -1,4 +1,5 @@
-// 会话：内存存储的签名令牌。重启即失效，符合"轻量口令门禁"的定位。
+// 会话：内存存储的随机令牌。重启即失效，符合"轻量口令门禁"的定位。
+// 账号模式下会话还要记住 userId，中继与引导接口据此决定这个人属于哪个工作区。
 
 import { randomBytes } from 'node:crypto'
 
@@ -24,15 +25,15 @@ function prune() {
   }
 }
 
-export function createSession(role) {
+export function createSession(role, userId = null) {
   prune()
   const token = randomBytes(32).toString('base64url')
   const ttl = role === 'admin' ? ADMIN_TTL_MS : GUEST_TTL_MS
-  sessions.set(token, { role, expiresAt: Date.now() + ttl })
+  sessions.set(token, { role, userId, expiresAt: Date.now() + ttl })
   return { token, maxAgeSeconds: Math.floor(ttl / 1000) }
 }
 
-export function getSessionRole(token) {
+export function getSession(token) {
   if (!token) return null
   const session = sessions.get(token)
   if (!session) return null
@@ -40,7 +41,7 @@ export function getSessionRole(token) {
     sessions.delete(token)
     return null
   }
-  return session.role
+  return session
 }
 
 export function destroySession(token) {
@@ -51,5 +52,13 @@ export function destroySession(token) {
 export function destroySessionsByRole(role) {
   for (const [token, session] of sessions) {
     if (session.role === role) sessions.delete(token)
+  }
+}
+
+/** 某个用户被停用、改密码或删除时，踢掉他所有设备上的会话。 */
+export function destroySessionsByUser(userId) {
+  if (!userId) return
+  for (const [token, session] of sessions) {
+    if (session.userId === userId) sessions.delete(token)
   }
 }

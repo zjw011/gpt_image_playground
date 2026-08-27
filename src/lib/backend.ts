@@ -30,12 +30,24 @@ export interface BackendSite {
   allowGuestParamOverride: boolean
 }
 
+/** 访问方式：open 任何人可用、passcode 共享口令、accounts 逐用户账号（数据互相隔离）。 */
+export type BackendAccessMode = 'open' | 'passcode' | 'accounts'
+
+export interface BackendUser {
+  id: string
+  username: string
+  displayName: string
+}
+
 export interface BackendBootstrap {
   backendMode: true
   initialized: boolean
-  guestGateEnabled: boolean
+  accessMode: BackendAccessMode
   guestPasswordSet: boolean
+  userCount: number
   authenticated: boolean
+  user: BackendUser | null
+  workspaceId: string
   site: BackendSite
   channels: BackendChannel[]
   customProviders: CustomProviderDefinition[]
@@ -59,6 +71,11 @@ export function isBackendLocked() {
 /** 管理员可以在后台禁止访客改尺寸/质量等参数，此时输入栏隐藏参数面板。 */
 export function isGuestParamOverrideAllowed() {
   return bootstrap === null || bootstrap.site.allowGuestParamOverride
+}
+
+/** 多用户模式下 Header 要显示当前账号并提供退出入口。 */
+export function getBackendUser() {
+  return bootstrap?.user ?? null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -91,13 +108,24 @@ function normalizeBootstrap(input: unknown): BackendBootstrap | null {
   if (!isRecord(input) || input.backendMode !== true) return null
   const site = isRecord(input.site) ? input.site : {}
   const rawChannels = Array.isArray(input.channels) ? input.channels : []
+  const rawUser = isRecord(input.user) ? input.user : null
+  const accessMode = input.accessMode === 'passcode' || input.accessMode === 'accounts' ? input.accessMode : 'open'
 
   return {
     backendMode: true,
     initialized: input.initialized === true,
-    guestGateEnabled: input.guestGateEnabled === true,
+    accessMode,
     guestPasswordSet: input.guestPasswordSet === true,
+    userCount: typeof input.userCount === 'number' && Number.isFinite(input.userCount) ? input.userCount : 0,
     authenticated: input.authenticated === true,
+    user: rawUser && typeof rawUser.id === 'string' && typeof rawUser.username === 'string'
+      ? {
+          id: rawUser.id,
+          username: rawUser.username,
+          displayName: typeof rawUser.displayName === 'string' ? rawUser.displayName : '',
+        }
+      : null,
+    workspaceId: typeof input.workspaceId === 'string' && input.workspaceId ? input.workspaceId : 'shared',
     site: {
       title: typeof site.title === 'string' && site.title.trim() ? site.title : 'GPT Image Playground',
       failoverEnabled: site.failoverEnabled !== false,
@@ -159,13 +187,18 @@ export function backendBootstrapToPresetConfig(data: BackendBootstrap) {
   }
 }
 
-export async function submitGuestPassword(password: string) {
+/** 前台登录：passcode 模式只需口令，accounts 模式还要用户名。 */
+export async function submitFrontLogin(credentials: { username?: string, password: string }) {
   const response = await fetch('/api/session', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify(credentials),
   })
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`)
   return payload
+}
+
+export async function submitFrontLogout() {
+  await fetch('/api/session', { method: 'DELETE' }).catch(() => {})
 }

@@ -1,4 +1,5 @@
 import type { AgentConversation, TaskRecord, StoredImage, StoredImageThumbnail } from '../types'
+import { scopeStorageName } from './workspace'
 
 const DB_NAME = 'gpt-image-playground'
 const DB_VERSION = 3
@@ -14,7 +15,8 @@ export const CURRENT_THUMBNAIL_VERSION = THUMBNAIL_VERSION
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION)
+    // 多用户模式下每个账号一个独立数据库，彼此看不到对方的图片与任务。
+    const req = indexedDB.open(scopeStorageName(DB_NAME), DB_VERSION)
     req.onupgradeneeded = (e) => {
       const db = (e.target as IDBOpenDBRequest).result
       if (!db.objectStoreNames.contains(STORE_TASKS)) {

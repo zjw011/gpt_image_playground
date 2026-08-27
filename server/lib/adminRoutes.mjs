@@ -1,15 +1,21 @@
-// 后台管理接口：渠道 CRUD、排序、连通测试、站点设置、口令管理。
+// 后台管理接口：渠道 CRUD、排序、连通测试、用户管理、站点设置、口令管理。
 // 所有路由都要求管理员会话，除了 /api/admin/state（用于判断是否首次初始化）与 /api/admin/login。
 
 import { randomBytes } from 'node:crypto'
 import { HttpError, readJsonBody, sendJson } from './http.mjs'
 import {
+  ACCESS_MODES,
   BUILT_IN_PROVIDERS,
   findChannel,
+  findUserById,
+  findUserByUsername,
   getConfig,
   hashPassword,
+  isValidUsername,
   normalizeChannel,
+  normalizeUser,
   toAdminChannel,
+  toAdminUser,
   updateConfig,
   verifyPassword,
 } from './store.mjs'
@@ -17,6 +23,10 @@ import { buildUpstreamUrl } from './upstream.mjs'
 
 function genChannelId() {
   return `ch-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
+}
+
+function genUserId() {
+  return `u-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
 }
 
 function assertChannelInput(input, config, currentId) {
@@ -47,6 +57,7 @@ export async function handleAdminRoute(req, res, ctx) {
             site: config.site,
             guestPasswordSet: Boolean(config.guestPasswordHash),
             channels: config.channels.map(toAdminChannel),
+            users: config.users.map(toAdminUser),
             customProviders: config.customProviders,
             updatedAt: config.updatedAt,
           }
@@ -152,12 +163,102 @@ export async function handleAdminRoute(req, res, ctx) {
     return sendJson(res, 200, { customProviders: getConfig().customProviders })
   }
 
+  // ===== 用户管理 =====
+  if (path === '/api/admin/users' && method === 'POST') {
+    const body = await readJsonBody(req)
+    const username = String(body.username ?? '').trim()
+    const password = String(body.password ?? '')
+    if (!isValidUsername(username)) {
+      throw new HttpError(400, '用户名需为 2-32 位字母、数字、下划线、点或连字符，且以字母或数字开头')
+    }
+    if (findUserByUsername(username)) throw new HttpError(409, `用户名「${username}」已存在`)
+    if (password.length < 8) throw new HttpError(400, '登录口令至少 8 个字符')
+
+    const now = Date.now()
+    const id = genUserId()
+    const user = normalizeUser({
+      id,
+      username,
+      displayName: String(body.displayName ?? '').trim(),
+      note: String(body.note ?? '').trim(),
+      enabled: body.enabled !== false,
+      passwordHash: hashPassword(password),
+      createdAt: now,
+      updatedAt: now,
+    }, id)
+
+    updateConfig((config) => {
+      config.users.push(user)
+      return config
+    })
+    return sendJson(res, 200, { user: toAdminUser(findUserById(id)) })
+  }
+
+  const userMatch = path.match(/^\/api\/admin\/users\/([^/]+)$/)
+  if (userMatch) {
+    const id = decodeURIComponent(userMatch[1])
+    const existing = findUserById(id)
+    if (!existing) throw new HttpError(404, '用户不存在')
+
+    if (method === 'PUT') {
+      const body = await readJsonBody(req)
+      const username = typeof body.username === 'string' ? body.username.trim() : existing.username
+      if (!isValidUsername(username)) {
+        throw new HttpError(400, '用户名需为 2-32 位字母、数字、下划线、点或连字符，且以字母或数字开头')
+      }
+      const conflict = findUserByUsername(username)
+      if (conflict && conflict.id !== id) throw new HttpError(409, `用户名「${username}」已存在`)
+
+      // 口令留空表示不修改；填了就至少 8 位，并踢掉该用户所有旧会话。
+      const password = typeof body.password === 'string' ? body.password : ''
+      if (password && password.length < 8) throw new HttpError(400, '登录口令至少 8 个字符')
+
+      const enabled = body.enabled === undefined ? existing.enabled : body.enabled !== false
+      updateConfig((config) => {
+        const idx = config.users.findIndex((item) => item.id === id)
+        config.users[idx] = normalizeUser({
+          ...config.users[idx],
+          username,
+          displayName: typeof body.displayName === 'string' ? body.displayName.trim() : existing.displayName,
+          note: typeof body.note === 'string' ? body.note.trim() : existing.note,
+          enabled,
+          passwordHash: password ? hashPassword(password) : existing.passwordHash,
+          createdAt: existing.createdAt,
+          updatedAt: Date.now(),
+        }, id)
+        return config
+      })
+      if (password || !enabled) ctx.onUserInvalidated(id)
+      return sendJson(res, 200, { user: toAdminUser(findUserById(id)) })
+    }
+
+    if (method === 'DELETE') {
+      updateConfig((config) => {
+        config.users = config.users.filter((item) => item.id !== id)
+        return config
+      })
+      ctx.onUserInvalidated(id)
+      return sendJson(res, 200, { ok: true })
+    }
+  }
+
   // ===== 站点设置 =====
   if (path === '/api/admin/site' && method === 'PUT') {
     const body = await readJsonBody(req)
-    updateConfig((config) => {
-      config.site = { ...config.site, ...body }
-      return config
+    const config = getConfig()
+    const accessMode = typeof body.accessMode === 'string' ? body.accessMode : config.site.accessMode
+    if (!ACCESS_MODES.has(accessMode)) throw new HttpError(400, '未知的访问方式')
+    // 拦住会把自己锁在门外的组合：切到需要凭据的模式时，凭据得先存在。
+    if (accessMode === 'passcode' && !config.guestPasswordHash) {
+      throw new HttpError(400, '请先设置访客口令，再切换到共享口令模式')
+    }
+    if (accessMode === 'accounts' && !config.users.some((user) => user.enabled && user.passwordHash)) {
+      throw new HttpError(400, '请先创建至少一个启用的用户，再切换到多用户模式')
+    }
+
+    updateConfig((next) => {
+      next.site = { ...next.site, ...body, accessMode }
+      return next
     })
     return sendJson(res, 200, { site: getConfig().site })
   }
@@ -169,6 +270,9 @@ export async function handleAdminRoute(req, res, ctx) {
     const next = String(body.password ?? '')
 
     if (target === 'guest' && !next) {
+      if (getConfig().site.accessMode === 'passcode') {
+        throw new HttpError(400, '当前处于共享口令模式，清除口令会让所有人无法进入。请先切换访问方式')
+      }
       updateConfig((config) => {
         config.guestPasswordHash = ''
         return config

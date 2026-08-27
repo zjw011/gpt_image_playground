@@ -7,6 +7,7 @@ import ViewportTooltip from './ViewportTooltip'
 import HelpModal from './HelpModal'
 import HistoryModal from './HistoryModal'
 import { useFavoriteCollectionTitle } from './FavoriteCollections'
+import BackendUserBadge from './BackendUserBadge'
 import { EditIcon, HelpCircleIcon, HistoryIcon, InstallIcon, SettingsIcon } from './icons'
 
 type BeforeInstallPromptEvent = Event & {
@@ -252,6 +253,7 @@ export default function Header() {
             </button>
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            <BackendUserBadge />
             {!isPwaInstalled && (
               <div
                 className="relative"
