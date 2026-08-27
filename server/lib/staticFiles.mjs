@@ -71,6 +71,10 @@ export function serveStatic(res, root, urlPath, options = {}) {
 
   if (!options.spaFallback) return false
 
+  // 带扩展名的路径是资源请求，缺失时不能回退成 index.html：
+  // 否则 <script src> 会拿到一份 200 的 HTML，浏览器只报 MIME 错误，排查起来极其误导。
+  if (extname(filePath)) return false
+
   const indexPath = join(root, 'index.html')
   if (!existsSync(indexPath)) return false
   sendFile(res, indexPath, { cacheControl: 'no-store' })
