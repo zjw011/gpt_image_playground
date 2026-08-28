@@ -2,6 +2,7 @@
 // 状态全部来自 /api/admin/state，写操作后重新拉取，避免本地与服务端不一致。
 
 const app = document.getElementById('app')
+const modalEl = document.getElementById('modal')
 const toastEl = document.getElementById('toast')
 
 const BUILT_IN_PROVIDERS = [
@@ -77,6 +78,48 @@ function showToast(message, tone = '') {
   toastTimer = setTimeout(() => { toastEl.hidden = true }, 3200)
 }
 
+/**
+ * 自绘确认弹窗，替代原生 confirm()。
+ * 原生框在深色后台里是一块刺眼的系统白框，而且删渠道/删用户这种不可逆操作
+ * 需要把后果写清楚，一行系统提示塞不下。resolve(true) 表示用户确认。
+ */
+function confirmDialog({ title, message, confirmText = '确认', tone = 'danger' }) {
+  return new Promise((resolve) => {
+    modalEl.innerHTML = `
+      <div class="modal">
+        <div class="modal-box" data-tone="${esc(tone)}" role="alertdialog" aria-modal="true" aria-label="${esc(title)}">
+          <h2>${esc(title)}</h2>
+          <p>${esc(message)}</p>
+          <div class="btn-row">
+            <span class="spacer"></span>
+            <button type="button" data-act="cancel">取消</button>
+            <button class="confirm" type="button" data-act="confirm">${esc(confirmText)}</button>
+          </div>
+        </div>
+      </div>
+    `
+
+    const close = (result) => {
+      document.removeEventListener('keydown', onKey)
+      modalEl.innerHTML = ''
+      resolve(result)
+    }
+    const onKey = (event) => {
+      if (event.key === 'Escape') close(false)
+      if (event.key === 'Enter') close(true)
+    }
+
+    document.addEventListener('keydown', onKey)
+    modalEl.querySelector('[data-act=cancel]').addEventListener('click', () => close(false))
+    modalEl.querySelector('[data-act=confirm]').addEventListener('click', () => close(true))
+    // 点遮罩当作取消；点弹窗本体不能穿透。
+    modalEl.querySelector('.modal').addEventListener('click', (event) => {
+      if (event.target === event.currentTarget) close(false)
+    })
+    modalEl.querySelector('[data-act=confirm]').focus()
+  })
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     method: options.method ?? 'GET',
@@ -105,9 +148,9 @@ function readForm(form) {
 function brand(subtitle) {
   return `
     <div class="rail-brand">
-      <span class="rail-mark">GP</span>
+      <span class="rail-mark">绘</span>
       <div>
-        <strong>后台管理</strong>
+        <strong>绘想 · 后台</strong>
         <span>${esc(subtitle)}</span>
       </div>
     </div>
@@ -126,13 +169,13 @@ function renderLogin() {
         <p class="hint">${first
           ? '设置管理员口令（至少 8 个字符），设置后立即以管理员身份登录。'
           : '连续失败 10 次会临时锁定该 IP。'}</p>
-        <form id="login-form" style="margin-top:18px">
+        <form id="login-form" style="margin-top:20px">
           <label>
             <span>管理员口令</span>
             <input type="password" name="password" autocomplete="current-password" required minlength="${first ? 8 : 1}" autofocus />
           </label>
           <div class="btn-row">
-            <button class="primary" type="submit">${first ? '设置并登录' : '登录'}</button>
+            <button class="primary" type="submit" style="width:100%">${first ? '设置并登录' : '登录'}</button>
           </div>
         </form>
       </div>
@@ -165,43 +208,51 @@ function channelForm(channel, idx) {
   const isFal = channel.provider === 'fal'
   return `
     <form class="channel-form" data-id="${esc(channel.id)}">
-      <div class="row">
-        <label><span>渠道名称</span><input name="name" value="${esc(channel.name)}" required /></label>
-        <label><span>服务商类型</span><select name="provider">${providerOptions(channel.provider)}</select></label>
-      </div>
-      <div class="row">
-        <label><span>API 地址</span>
-          <input name="baseUrl" value="${esc(channel.baseUrl)}" placeholder="https://api.openai.com/v1" />
+      <fieldset class="group">
+        <legend>接入</legend>
+        <div class="row">
+          <label><span>渠道名称</span><input name="name" value="${esc(channel.name)}" required /></label>
+          <label><span>服务商类型</span><select name="provider">${providerOptions(channel.provider)}</select></label>
+        </div>
+        <div class="row">
+          <label><span>API 地址</span>
+            <input name="baseUrl" value="${esc(channel.baseUrl)}" placeholder="https://api.openai.com/v1" />
+          </label>
+          <label><span>模型 ID</span><input name="model" value="${esc(channel.model)}" required /></label>
+        </div>
+        <p class="hint" style="margin:-4px 0 14px">${isFal
+          ? '留空即用 https://fal.run；填写则视为 fal 兼容网关。'
+          : '结尾带 / 表示直接拼接端点，否则自动补 /v1。'}</p>
+        <label><span>API Key</span>
+          <input name="apiKey" type="password" autocomplete="off" placeholder="${channel.hasApiKey ? `当前 ${esc(channel.apiKeyMask)}，留空表示不修改` : 'sk-...'}" />
         </label>
-        <label><span>模型 ID</span><input name="model" value="${esc(channel.model)}" required /></label>
-      </div>
-      <p class="hint">${isFal
-        ? '留空即用 https://fal.run；填写则视为 fal 兼容网关。'
-        : '结尾带 / 表示直接拼接端点，否则自动补 /v1。'}</p>
-      <label style="margin-top:12px"><span>API Key</span>
-        <input name="apiKey" type="password" autocomplete="off" placeholder="${channel.hasApiKey ? `当前 ${esc(channel.apiKeyMask)}，留空表示不修改` : 'sk-...'}" />
-      </label>
-      <div class="row">
-        <label><span>API 模式</span>
-          <select name="apiMode">
-            <option value="images"${channel.apiMode === 'images' ? ' selected' : ''}>Images API</option>
-            <option value="responses"${channel.apiMode === 'responses' ? ' selected' : ''}>Responses API</option>
-          </select></label>
-        <label><span>超时（秒）</span><input name="timeout" type="number" min="10" max="3600" value="${channel.timeout}" /></label>
-      </div>
-      <label><span>备注（会显示给前端用户）</span><input name="description" value="${esc(channel.description)}" /></label>
-      <label class="check"><input type="checkbox" name="enabled"${channel.enabled ? ' checked' : ''} /><span>启用此渠道</span></label>
-      <label class="check"><input type="checkbox" name="codexCli"${channel.codexCli ? ' checked' : ''} /><span>Codex CLI 兼容模式 <em>禁用质量参数，多图改并发</em></span></label>
-      <label class="check"><input type="checkbox" name="responseFormatB64Json"${channel.responseFormatB64Json ? ' checked' : ''} /><span>强制请求 b64_json 返回格式</span></label>
-      <label class="check"><input type="checkbox" name="streamImages"${channel.streamImages ? ' checked' : ''} /><span>启用流式生成 <em>仅 OpenAI + Responses 有效；故障转移期间自动关闭</em></span></label>
-      <div class="row">
-        <label><span>流式中间图数量</span><input name="streamPartialImages" type="number" min="0" max="3" value="${channel.streamPartialImages}" /></label>
-        <label><span>透明背景实现</span>
-          <select name="transparentBackgroundMethod">
-            <option value="api"${channel.transparentBackgroundMethod === 'api' ? ' selected' : ''}>接口原生 background=transparent</option>
-            <option value="local"${channel.transparentBackgroundMethod === 'local' ? ' selected' : ''}>本地色键抠除</option>
-          </select></label>
-      </div>
+        <div class="row">
+          <label><span>API 模式</span>
+            <select name="apiMode">
+              <option value="images"${channel.apiMode === 'images' ? ' selected' : ''}>Images API</option>
+              <option value="responses"${channel.apiMode === 'responses' ? ' selected' : ''}>Responses API</option>
+            </select></label>
+          <label><span>超时（秒）</span><input name="timeout" type="number" min="10" max="3600" value="${channel.timeout}" /></label>
+        </div>
+        <label style="margin-bottom:0"><span>备注（会显示给前端用户）</span><input name="description" value="${esc(channel.description)}" /></label>
+      </fieldset>
+
+      <fieldset class="group">
+        <legend>行为</legend>
+        <label class="check"><input type="checkbox" name="enabled"${channel.enabled ? ' checked' : ''} /><span>启用此渠道</span></label>
+        <label class="check"><input type="checkbox" name="codexCli"${channel.codexCli ? ' checked' : ''} /><span>Codex CLI 兼容模式 <em>禁用质量参数，多图改并发</em></span></label>
+        <label class="check"><input type="checkbox" name="responseFormatB64Json"${channel.responseFormatB64Json ? ' checked' : ''} /><span>强制请求 b64_json 返回格式</span></label>
+        <label class="check" style="margin-bottom:16px"><input type="checkbox" name="streamImages"${channel.streamImages ? ' checked' : ''} /><span>启用流式生成 <em>仅 OpenAI + Responses 有效；故障转移期间自动关闭</em></span></label>
+        <div class="row">
+          <label style="margin-bottom:0"><span>流式中间图数量</span><input name="streamPartialImages" type="number" min="0" max="3" value="${channel.streamPartialImages}" /></label>
+          <label style="margin-bottom:0"><span>透明背景实现</span>
+            <select name="transparentBackgroundMethod">
+              <option value="api"${channel.transparentBackgroundMethod === 'api' ? ' selected' : ''}>接口原生 background=transparent</option>
+              <option value="local"${channel.transparentBackgroundMethod === 'local' ? ' selected' : ''}>本地色键抠除</option>
+            </select></label>
+        </div>
+      </fieldset>
+
       <div class="btn-row">
         <button class="primary" type="submit">保存</button>
         <button type="button" data-act="test">连通测试</button>
@@ -292,6 +343,7 @@ function userForm(user) {
           <input name="displayName" value="${esc(user?.displayName ?? '')}" placeholder="张三" />
         </label>
       </div>
+      <p class="hint" style="margin:-4px 0 14px">用户名支持 2-32 位字母、数字、下划线、点和连字符，首字符必须是字母或数字。改用户名不影响对方已有的作品。</p>
       <label><span>登录口令</span>
         <div class="with-action">
           <input name="password" type="text" autocomplete="off" minlength="${min}"
@@ -299,8 +351,7 @@ function userForm(user) {
           <button type="button" data-act="regenerate">随机生成</button>
         </div>
       </label>
-      <p class="hint">用户名支持 2-32 位字母、数字、下划线、点和连字符，首字符必须是字母或数字。改用户名不影响对方已有的作品。</p>
-      <label style="margin-top:12px"><span>备注（只有你能看到）</span><input name="note" value="${esc(user?.note ?? '')}" placeholder="给谁用的" /></label>
+      <label><span>备注（只有你能看到）</span><input name="note" value="${esc(user?.note ?? '')}" placeholder="给谁用的" /></label>
       <label class="check"><input type="checkbox" name="enabled"${user?.enabled !== false ? ' checked' : ''} /><span>允许登录 <em>取消后该用户所有设备立即被踢下线，数据保留</em></span></label>
       <div class="btn-row">
         <button class="primary" type="submit">${creating ? '创建用户' : '保存'}</button>
@@ -416,16 +467,18 @@ function renderAgentView() {
         <div class="modes">${AGENT_MODES.map((item) => agentModeCard(item, textChannels)).join('')}</div>
         ${mode === 'off' ? '' : `
           <hr class="divider" />
-          <label><span>对话用的文本渠道</span>
-            <select name="agentTextChannelId">${channelOptions(textChannels, state.site.agentTextChannelId)}</select>
-          </label>
-          ${mode === 'hybrid' ? `
-            <label><span>出图用的图像渠道</span>
-              <select name="agentImageChannelId">${channelOptions(enabledChannels, state.site.agentImageChannelId)}</select>
+          <div class="row">
+            <label><span>对话用的文本渠道</span>
+              <select name="agentTextChannelId">${channelOptions(textChannels, state.site.agentTextChannelId)}</select>
             </label>
-          ` : ''}
-          <p class="hint">这两条渠道不走故障转移：Agent 的对话是有状态的，中途换渠道会让上下文对不上。</p>
-          <div class="row" style="margin-top:12px">
+            ${mode === 'hybrid' ? `
+              <label><span>出图用的图像渠道</span>
+                <select name="agentImageChannelId">${channelOptions(enabledChannels, state.site.agentImageChannelId)}</select>
+              </label>
+            ` : ''}
+          </div>
+          <p class="hint" style="margin:-4px 0 18px">这两条渠道不走故障转移：Agent 的对话是有状态的，中途换渠道会让上下文对不上。</p>
+          <div class="row">
             <label><span>单轮最多工具调用次数</span>
               <input name="agentMaxToolRounds" type="number" min="1" max="100" value="${state.site.agentMaxToolRounds}" />
             </label>
@@ -479,10 +532,13 @@ function renderAccessView() {
       <form id="site-form" style="margin-top:14px">
         <div class="modes">${ACCESS_MODES.map(accessModeCard).join('')}</div>
         <hr class="divider" />
-        <label><span>站点标题</span><input name="title" value="${esc(state.site.title)}" /></label>
+        <div class="row">
+          <label><span>站点标题</span><input name="title" value="${esc(state.site.title)}" /></label>
+          <label><span>最多尝试渠道数（0 = 全部尝试）</span><input name="failoverMaxAttempts" type="number" min="0" max="50" value="${state.site.failoverMaxAttempts}" /></label>
+        </div>
+        <p class="hint" style="margin:-4px 0 18px">站点标题会同时用在浏览器标签和前端顶部。</p>
         <label class="check"><input type="checkbox" name="failoverEnabled"${state.site.failoverEnabled ? ' checked' : ''} /><span>渠道失败时自动切换到下一条 <em>关掉后一次失败就直接报错</em></span></label>
         <label class="check"><input type="checkbox" name="allowGuestParamOverride"${state.site.allowGuestParamOverride ? ' checked' : ''} /><span>允许前端用户调整尺寸、质量等生成参数</span></label>
-        <label><span>最多尝试渠道数（0 = 全部尝试）</span><input name="failoverMaxAttempts" type="number" min="0" max="50" value="${state.site.failoverMaxAttempts}" /></label>
         <div class="btn-row"><button class="primary" type="submit">保存</button></div>
       </form>
     </div>
@@ -531,7 +587,9 @@ function renderProvidersView() {
     </div>
     <div class="panel">
       <form id="providers-form">
-        <textarea name="customProviders" spellcheck="false">${esc(JSON.stringify(state.customProviders ?? [], null, 2))}</textarea>
+        <label style="margin-bottom:0"><span>http-image 模板 JSON</span>
+          <textarea name="customProviders" spellcheck="false">${esc(JSON.stringify(state.customProviders ?? [], null, 2))}</textarea>
+        </label>
         <div class="btn-row"><button class="primary" type="submit">保存</button></div>
       </form>
     </div>
@@ -727,7 +785,12 @@ function bindChannelEvents() {
     })
 
     form.querySelector('[data-act=delete]').addEventListener('click', async () => {
-      if (!confirm('确认删除这个渠道？前端将立即无法使用它。')) return
+      const channel = state.channels.find((item) => item.id === id)
+      if (!await confirmDialog({
+        title: `删除渠道「${channel?.name ?? id}」？`,
+        message: '前端会立即失去这条渠道，正在排队的请求也会失败。密钥一并删除，无法找回，只能重新填一次。',
+        confirmText: '删除渠道',
+      })) return
       try {
         await api(`/api/admin/channels/${encodeURIComponent(id)}`, { method: 'DELETE' })
         expandedChannelId = null
@@ -836,7 +899,12 @@ function bindUserEvents() {
     })
 
     form.querySelector('[data-act=delete-user]')?.addEventListener('click', async () => {
-      if (!confirm('确认删除这个账号？他将立即无法登录。已经生成的图片留在他自己的浏览器里，你看不到也删不掉。')) return
+      const user = (state.users ?? []).find((item) => item.id === id)
+      if (!await confirmDialog({
+        title: `删除账号「${user?.displayName || user?.username || id}」？`,
+        message: '他所有设备会立即掉线，用户名可以被别人重新占用。他已经生成的图片留在他自己的浏览器里，你看不到也删不掉。',
+        confirmText: '删除账号',
+      })) return
       try {
         await api(`/api/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' })
         expandedUserId = null
@@ -907,7 +975,11 @@ function bindAccessEvents() {
   })
 
   app.querySelector('#clear-guest-password')?.addEventListener('click', async () => {
-    if (!confirm('确认清除访客口令？之后共享口令模式将不可用。')) return
+    if (!await confirmDialog({
+      title: '清除共享访客口令？',
+      message: '清除后「共享口令」模式就不可用了，已经登录的访客也会掉线。你随时可以再设一个新的。',
+      confirmText: '清除口令',
+    })) return
     try {
       await api('/api/admin/password', { method: 'PUT', body: { target: 'guest', password: '' } })
       freshCredential = null

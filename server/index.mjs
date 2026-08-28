@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// GPT Image Playground 后端服务：
+// 绘想后端服务：
 // - /admin        后台管理页（管理员口令）
 // - /api/admin/*  渠道与站点管理接口
 // - /api/bootstrap /api/session  访客引导与口令门禁
@@ -263,7 +263,7 @@ server.headersTimeout = 65_000
 server.timeout = 0
 
 server.listen(PORT, HOST, () => {
-  console.log(`GPT Image Playground 服务已启动：http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`)
+  console.log(`绘想服务已启动：http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`)
   console.log(`后台管理：http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}/admin`)
   console.log(`配置目录：${DATA_DIR}`)
   console.log(`前端产物：${DIST_DIR}${existsSync(DIST_DIR) ? '' : '（不存在，需先 npm run build）'}`)

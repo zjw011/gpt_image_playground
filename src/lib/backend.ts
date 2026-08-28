@@ -84,6 +84,11 @@ export function getBackendUser() {
   return bootstrap?.user ?? null
 }
 
+/** 站点名：托管模式下跟着后台的「站点标题」走，管理员改一处顶栏和标签页一起变。 */
+export function getSiteTitle() {
+  return bootstrap?.site.title ?? '绘想'
+}
+
 /**
  * Agent 入口是否可用。后端托管模式下完全由管理员的 agentMode 决定——
  * 关着就不该在前端露出按钮，否则用户点进去只会撞一个"请去配置"的弹窗，而他本来就无处可配。
@@ -141,7 +146,7 @@ function normalizeBootstrap(input: unknown): BackendBootstrap | null {
       : null,
     workspaceId: typeof input.workspaceId === 'string' && input.workspaceId ? input.workspaceId : 'shared',
     site: {
-      title: typeof site.title === 'string' && site.title.trim() ? site.title : 'GPT Image Playground',
+      title: typeof site.title === 'string' && site.title.trim() ? site.title : '绘想',
       failoverEnabled: site.failoverEnabled !== false,
       failoverMaxAttempts: typeof site.failoverMaxAttempts === 'number' && Number.isFinite(site.failoverMaxAttempts)
         ? Math.max(0, Math.trunc(site.failoverMaxAttempts))

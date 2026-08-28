@@ -55,7 +55,7 @@ function createEmptyConfig() {
     adminPasswordHash: '',
     guestPasswordHash: '',
     site: {
-      title: 'GPT Image Playground',
+      title: '绘想',
       // 默认开放：首次部署时前端就能直接用；改成 passcode / accounts 由管理员决定。
       accessMode: 'open',
       failoverEnabled: true,
@@ -230,7 +230,7 @@ function normalizeConfig(input) {
     adminPasswordHash: normalizeString(record.adminPasswordHash, ''),
     guestPasswordHash: normalizeString(record.guestPasswordHash, ''),
     site: {
-      title: normalizeString(site.title, 'GPT Image Playground'),
+      title: normalizeString(site.title, '绘想'),
       accessMode: normalizeAccessMode(site),
       failoverEnabled: normalizeBool(site.failoverEnabled, true),
       failoverMaxAttempts: normalizeInt(site.failoverMaxAttempts, 0, 0, 50),

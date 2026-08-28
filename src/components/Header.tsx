@@ -8,7 +8,7 @@ import HelpModal from './HelpModal'
 import HistoryModal from './HistoryModal'
 import { useFavoriteCollectionTitle } from './FavoriteCollections'
 import BackendUserBadge from './BackendUserBadge'
-import { isAgentAvailable } from '../lib/backend'
+import { getSiteTitle, isAgentAvailable, isBackendMode } from '../lib/backend'
 import { EditIcon, HelpCircleIcon, HistoryIcon, InstallIcon, SettingsIcon } from './icons'
 
 type BeforeInstallPromptEvent = Event & {
@@ -45,6 +45,20 @@ export default function Header() {
   const createConversation = useStore((s) => s.createAgentConversation)
   // 后端托管模式下 Agent 由管理员开关：关着就整条切换器都不显示，只剩画廊时没有可切的东西。
   const agentAvailable = isAgentAvailable()
+  const siteTitle = getSiteTitle()
+  // 托管模式下站点是管理员自己的，指向上游仓库反而莫名其妙；此时标题就是纯文本。
+  const siteTitleNode = isBackendMode()
+    ? <span className="min-w-0 truncate text-[17px] sm:text-lg font-bold tracking-tight text-gray-800 dark:text-gray-100" title={siteTitle}>{siteTitle}</span>
+    : (
+      <a
+        href="https://github.com/CookSleep/gpt_image_playground"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-[17px] sm:text-lg font-bold tracking-tight text-gray-800 dark:text-gray-100 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+      >
+        {siteTitle}
+      </a>
+    )
 
   useEffect(() => {
     if (appMode === 'agent') {
@@ -157,25 +171,9 @@ export default function Header() {
               {showFavoriteCollectionTitle ? (
                 <>
                   <span className="min-w-0 truncate text-[17px] font-bold tracking-tight text-gray-800 dark:text-gray-100 sm:hidden" title={favoriteCollectionTitle}>{favoriteCollectionTitle}</span>
-                  <a
-                    href="https://github.com/CookSleep/gpt_image_playground"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="hidden text-lg font-bold tracking-tight text-gray-800 transition-colors hover:text-gray-600 dark:text-gray-100 dark:hover:text-gray-300 sm:inline"
-                  >
-                    GPT Image Playground
-                  </a>
+                  <span className="hidden sm:inline">{siteTitleNode}</span>
                 </>
-              ) : (
-                <a
-                  href="https://github.com/CookSleep/gpt_image_playground"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[17px] sm:text-lg font-bold tracking-tight text-gray-800 dark:text-gray-100 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-                >
-                  GPT Image Playground
-                </a>
-              )}
+              ) : siteTitleNode}
               {hasUpdate && latestRelease && (
                 <a
                   href={latestRelease.url}
