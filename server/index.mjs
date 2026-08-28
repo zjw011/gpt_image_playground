@@ -8,6 +8,7 @@
 
 import { createServer } from 'node:http'
 import { existsSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -25,7 +26,21 @@ import {
   GUEST_COOKIE,
 } from './lib/sessions.mjs'
 import { serveStatic } from './lib/staticFiles.mjs'
-import { findUserById, findUserByUsername, getConfig, hashPassword, initStore, MIN_USER_PASSWORD_LENGTH, updateConfig, verifyPassword } from './lib/store.mjs'
+import {
+  findUserById,
+  findUserByUsername,
+  getConfig,
+  hashPassword,
+  initStore,
+  inviteStatus,
+  isValidUsername,
+  MIN_USER_PASSWORD_LENGTH,
+  normalizeInviteCode,
+  normalizeUser,
+  updateConfig,
+  verifyPassword,
+} from './lib/store.mjs'
+import { flushUsage, initUsage } from './lib/usage.mjs'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(serverDir, '..')
@@ -37,6 +52,7 @@ const DIST_DIR = resolve(process.env.GIP_DIST_DIR ?? join(projectRoot, 'dist'))
 const ADMIN_DIR = join(serverDir, 'admin')
 
 const config = initStore(DATA_DIR)
+initUsage(DATA_DIR)
 
 // 首次启动可用环境变量直接落初始口令，省掉手动初始化步骤。
 if (!config.adminPasswordHash && process.env.GIP_ADMIN_PASSWORD) {
@@ -163,6 +179,70 @@ async function handleFrontLogin(req, res, credentials) {
   return sendJson(res, 200, { ok: true, workspaceId: 'shared' })
 }
 
+/**
+ * 自助注册：凭邀请码建账号并直接登录。
+ * 与登录共用同一个限流桶——邀请码同样是可爆破的秘密，而且注册比登录更值得防：
+ * 它会真的写入配置文件。
+ */
+async function handleRegister(req, res, input) {
+  const ip = getClientIp(req)
+  const key = `guest:${ip}`
+  if (isLocked(key)) throw new HttpError(429, `尝试次数过多，请 ${getLockRemainingSeconds(key)} 秒后重试`)
+
+  const current = getConfig()
+  if (current.site.accessMode !== 'accounts') throw new HttpError(403, '本站未开放自助注册')
+
+  const status = inviteStatus(current.site)
+  if (!status.ok) {
+    throw new HttpError(403, status.reason === 'expired'
+      ? '邀请码已过期，请向管理员索取新的邀请码'
+      : status.reason === 'exhausted'
+        ? '邀请名额已用完，请向管理员索取新的邀请码'
+        : '本站未开放自助注册')
+  }
+
+  if (normalizeInviteCode(input.inviteCode) !== normalizeInviteCode(current.site.inviteCode)) {
+    recordFailure(key)
+    throw new HttpError(403, '邀请码不正确')
+  }
+
+  const username = input.username.trim()
+  if (!isValidUsername(username)) {
+    throw new HttpError(400, '用户名需为 2-32 位字母、数字、下划线、点或连字符，且以字母或数字开头')
+  }
+  if (findUserByUsername(username)) throw new HttpError(409, `用户名「${username}」已被占用`)
+  if (input.password.length < MIN_USER_PASSWORD_LENGTH) {
+    throw new HttpError(400, `登录口令至少 ${MIN_USER_PASSWORD_LENGTH} 个字符`)
+  }
+
+  const now = Date.now()
+  const id = `u-${now.toString(36)}-${randomBytes(3).toString('hex')}`
+  updateConfig((config) => {
+    config.users.push(normalizeUser({
+      id,
+      username,
+      passwordHash: hashPassword(input.password),
+      enabled: true,
+      note: '自助注册',
+      createdVia: 'invite',
+      createdAt: now,
+      updatedAt: now,
+      lastSeenAt: now,
+    }, id))
+    config.site.inviteUsedCount += 1
+    return config
+  })
+
+  const session = createSession('guest', id)
+  setCookie(req, res, GUEST_COOKIE, session.token, session.maxAgeSeconds)
+  recordSuccess(key)
+  return sendJson(res, 200, {
+    ok: true,
+    user: { id, username, displayName: '' },
+    workspaceId: id,
+  })
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
   const path = url.pathname
@@ -212,13 +292,14 @@ const server = createServer(async (req, res) => {
     }
 
     if (path.startsWith('/api/')) {
-      if (path === '/api/session') assertSameOrigin(req)
+      if (path === '/api/session' || path === '/api/register') assertSameOrigin(req)
       return await handleGuestRoute(req, res, {
         path,
         search: url.search,
         role: adminRole === 'admin' ? 'admin' : guestSession?.role ?? null,
         user: activeUser,
         login: (credentials) => handleFrontLogin(req, res, credentials),
+        register: (input) => handleRegister(req, res, input),
         logout: () => {
           destroySession(cookies[GUEST_COOKIE])
           clearCookie(req, res, GUEST_COOKIE)
@@ -269,3 +350,13 @@ server.listen(PORT, HOST, () => {
   console.log(`前端产物：${DIST_DIR}${existsSync(DIST_DIR) ? '' : '（不存在，需先 npm run build）'}`)
   if (!getConfig().adminPasswordHash) console.log('尚未设置管理员口令，首次访问 /admin 时设置。')
 })
+
+// 用量统计按 5 秒防抖落盘，退出前补一次，否则最后几条会丢。
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    flushUsage()
+    server.close(() => process.exit(0))
+    // 有长连接（SSE）挂着时 close 不会立刻回调，给 2 秒后强退。
+    setTimeout(() => process.exit(0), 2000).unref()
+  })
+}

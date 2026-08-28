@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { backendAgentSettings, backendChannelToApiProfile, BACKEND_MANAGED_API_KEY, getRelayBaseUrl, type BackendBootstrap, type BackendChannel } from './backend'
+import { backendAgentSettings, backendChannelToApiProfile, BACKEND_MANAGED_API_KEY, getRelayBaseUrl, readInviteFromUrl, type BackendBootstrap, type BackendChannel } from './backend'
 import { buildApiUrl } from './devProxy'
 
 function createChannel(patch: Partial<BackendChannel> = {}): BackendChannel {
@@ -31,6 +31,7 @@ function createBootstrap(site: Partial<BackendBootstrap['site']> = {}): BackendB
     authenticated: true,
     user: null,
     workspaceId: 'shared',
+    registrationOpen: false,
     site: {
       title: 'T',
       failoverEnabled: true,
@@ -109,5 +110,17 @@ describe('backendAgentSettings', () => {
     expect(settings.agentApiConfigMode).toBe('off')
     expect(settings.agentTextProfileId).toBeNull()
     expect(settings.agentImageProfileId).toBeNull()
+  })
+})
+
+describe('readInviteFromUrl', () => {
+  it('从邀请链接里读出邀请码，并去掉两端空白', () => {
+    window.history.replaceState({}, '', '/?invite=%20abcde-fghij%20')
+    expect(readInviteFromUrl()).toBe('abcde-fghij')
+  })
+
+  it('没有 invite 参数时给空串，让门禁页照常显示登录表单', () => {
+    window.history.replaceState({}, '', '/')
+    expect(readInviteFromUrl()).toBe('')
   })
 })

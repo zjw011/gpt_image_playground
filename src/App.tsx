@@ -175,7 +175,14 @@ export default function App() {
   if (backend === undefined) return null
 
   if (backend && backend.accessMode !== 'open' && !backend.authenticated) {
-    return <BackendGate title={backend.site.title} accessMode={backend.accessMode} onUnlocked={() => window.location.reload()} />
+    return (
+      <BackendGate
+        title={backend.site.title}
+        accessMode={backend.accessMode}
+        registrationOpen={backend.registrationOpen}
+        onUnlocked={() => window.location.reload()}
+      />
+    )
   }
 
   return (

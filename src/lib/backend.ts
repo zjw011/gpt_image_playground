@@ -54,6 +54,8 @@ export interface BackendBootstrap {
   authenticated: boolean
   user: BackendUser | null
   workspaceId: string
+  /** 是否开放凭邀请码自助注册。只在 accounts 模式下可能为 true。 */
+  registrationOpen: boolean
   site: BackendSite
   channels: BackendChannel[]
   customProviders: CustomProviderDefinition[]
@@ -145,6 +147,7 @@ function normalizeBootstrap(input: unknown): BackendBootstrap | null {
         }
       : null,
     workspaceId: typeof input.workspaceId === 'string' && input.workspaceId ? input.workspaceId : 'shared',
+    registrationOpen: input.registrationOpen === true,
     site: {
       title: typeof site.title === 'string' && site.title.trim() ? site.title : '绘想',
       failoverEnabled: site.failoverEnabled !== false,
@@ -241,4 +244,25 @@ export async function submitFrontLogin(credentials: { username?: string, passwor
 
 export async function submitFrontLogout() {
   await fetch('/api/session', { method: 'DELETE' }).catch(() => {})
+}
+
+/** 凭邀请码自助注册。成功后服务端直接下发会话，不需要再登录一次。 */
+export async function submitRegister(input: { username: string, password: string, inviteCode: string }) {
+  const response = await fetch('/api/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`)
+  return payload
+}
+
+/** 从 URL 读邀请码。管理员发出的邀请链接形如 `/?invite=xxxx-yyyyy`。 */
+export function readInviteFromUrl() {
+  try {
+    return new URLSearchParams(window.location.search).get('invite')?.trim() ?? ''
+  } catch {
+    return ''
+  }
 }

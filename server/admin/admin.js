@@ -13,11 +13,20 @@ const BUILT_IN_PROVIDERS = [
 
 const NAV = [
   { id: 'channels', label: '渠道链路' },
+  { id: 'usage', label: '用量与健康' },
   { id: 'agent', label: 'Agent 模式' },
   { id: 'users', label: '用户' },
   { id: 'access', label: '访问与安全' },
   { id: 'providers', label: '自定义服务商' },
 ]
+
+/** 渠道健康度的展示映射。文案直接说"该怎么办"，不是只报一个状态词。 */
+const HEALTH_LABELS = {
+  healthy: { tone: 'live', text: '正常' },
+  flaky: { tone: 'warn', text: '不稳' },
+  down: { tone: 'alert', text: '疑似故障' },
+  unknown: { tone: 'idle', text: '未使用' },
+}
 
 const AGENT_MODES = [
   {
@@ -56,13 +65,31 @@ const ACCESS_MODES = [
 ]
 
 let state = null
+let usage = null
 let view = 'channels'
 let expandedChannelId = null
 let expandedUserId = null
 let creatingUser = false
 // 刚生成的明文口令：服务端只在创建/重置那一次回传，此后只剩哈希，所以必须留在页面上等管理员抄走。
 let freshCredential = null
+// 一键测全部的结果，按渠道 id 存；null 表示还没测过。
+let probeAll = null
+let probeAllRunning = false
 let toastTimer = 0
+
+/** 相对时间。后台看的是"多久之前"，绝对时间戳还得自己算差值。 */
+function ago(at) {
+  if (!at) return '从未'
+  const diff = Date.now() - at
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3600_000)} 小时前`
+  return `${Math.floor(diff / 86_400_000)} 天前`
+}
+
+function pct(value) {
+  return `${Math.round(value * 100)}%`
+}
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => (
@@ -134,6 +161,28 @@ async function api(path, options = {}) {
 async function refresh() {
   state = await api('/api/admin/state')
   render()
+}
+
+async function loadUsage() {
+  try {
+    usage = await api('/api/admin/usage')
+  } catch (err) {
+    usage = null
+    showToast(err.message, 'bad')
+  }
+  render()
+}
+
+/** 渠道顺序落库。拖拽和 ↑↓ 都走这里。 */
+async function reorderChannels(order) {
+  try {
+    await api('/api/admin/channels/reorder', { method: 'POST', body: { order } })
+    await refresh()
+  } catch (err) {
+    showToast(err.message, 'bad')
+    // 落库失败时重新拉一次，把乐观移动过的 DOM 摆回真实顺序。
+    await refresh()
+  }
 }
 
 function readForm(form) {
@@ -269,38 +318,71 @@ function channelForm(channel, idx) {
 function channelNode(channel, idx) {
   const open = expandedChannelId === channel.id
   const live = channel.enabled && channel.hasApiKey
+  const health = HEALTH_LABELS[channel.health?.state ?? 'unknown']
+  const probe = probeAll?.[channel.id]
   return `
-    <div class="node ${live ? 'live' : 'idle'}" data-id="${esc(channel.id)}">
-      <span class="node-index">${idx + 1}</span>
+    <div class="node ${live ? 'live' : 'idle'}" data-id="${esc(channel.id)}" draggable="true">
+      <span class="node-index" title="拖动可调整故障转移顺序">${idx + 1}</span>
       <div class="card">
         <div class="card-head">
           <span class="title">${esc(channel.name)}</span>
           ${live
             ? '<span class="tag live"><span class="dot"></span>在链路中</span>'
             : `<span class="tag ${channel.hasApiKey ? 'idle' : 'alert'}">${channel.enabled ? '缺少 API Key' : '已停用'}</span>`}
+          ${live && channel.health?.state !== 'unknown'
+            ? `<span class="tag ${health.tone}" title="${esc(healthTitle(channel.health))}">${health.text}</span>`
+            : ''}
           <span class="tag">${esc(channel.provider)}</span>
           <span class="tag mono">${esc(channel.model)}</span>
           <span class="spacer"></span>
+          ${probe ? `<span class="tag ${probe.ok ? 'live' : 'alert'}" title="${esc(probe.message)}">${probe.ok ? `✓ ${probe.latencyMs ?? 0}ms` : '✗ 探测失败'}</span>` : ''}
           <button class="ghost" data-act="toggle-channel" data-id="${esc(channel.id)}">${open ? '收起' : '编辑'}</button>
         </div>
         <p class="card-meta">${esc(channel.baseUrl || '（未填地址）')}${channel.description ? ` · ${esc(channel.description)}` : ''}</p>
+        ${live && channel.health?.state === 'down'
+          ? `<p class="card-note bad">连续失败 ${channel.health.consecutiveFailures} 次，故障转移正在绕过它。${channel.health.lastError ? `最近错误：${esc(channel.health.lastError)}` : ''}</p>`
+          : live && channel.health?.state === 'flaky'
+            ? `<p class="card-note warn">最近 ${channel.health.recentCalls} 次调用里失败 ${pct(channel.health.recentFailRate)}，能用但会拖慢出图。</p>`
+            : ''}
         ${open ? `<div class="card-body">${channelForm(channel, idx)}</div>` : ''}
       </div>
     </div>
   `
 }
 
+function healthTitle(health) {
+  if (health.state === 'down') return `连续失败 ${health.consecutiveFailures} 次`
+  if (health.state === 'flaky') return `最近 ${health.recentCalls} 次里失败 ${pct(health.recentFailRate)}`
+  return '最近一次调用成功'
+}
+
 function renderChannelsView() {
   const live = state.channels.filter((item) => item.enabled && item.hasApiKey).length
+  const broken = state.channels.filter((item) => item.enabled && item.hasApiKey && item.health?.state === 'down')
   return `
     <div class="page-head">
       <h1>渠道链路</h1>
-      <p>生图请求从第 1 条开始，失败就自动往下一条走，直到成功或链路走完。用 ↑ ↓ 调整顺序，把最快最稳的放在前面。当前 ${live} / ${state.channels.length} 条在链路中。</p>
+      <p>生图请求从第 1 条开始，失败就自动往下一条走，直到成功或链路走完。拖动卡片或用 ↑ ↓ 调整顺序，把最快最稳的放在前面。当前 ${live} / ${state.channels.length} 条在链路中。</p>
     </div>
+    ${broken.length
+      ? `<div class="alert">
+          <div class="alert-body">
+            <strong>${broken.length} 条渠道疑似故障</strong>
+            <p>${broken.map((item) => esc(item.name)).join('、')} 连续失败多次，出图请求正在绕过它们。点「一键测全部」确认，或去「用量与健康」看具体错误。</p>
+          </div>
+          <button type="button" data-view="usage">查看详情</button>
+        </div>`
+      : ''}
     ${state.channels.length
-      ? `<div class="chain">${state.channels.map(channelNode).join('')}</div>`
+      ? `<div class="chain" id="chain">${state.channels.map(channelNode).join('')}</div>`
       : '<div class="empty">还没有渠道。新增一条并填入真实 API Key 后，前端才能出图。</div>'}
-    <div class="btn-row"><button class="primary" id="add-channel" type="button">新增渠道</button></div>
+    <div class="btn-row">
+      <button class="primary" id="add-channel" type="button">新增渠道</button>
+      ${state.channels.length
+        ? `<button id="test-all" type="button"${probeAllRunning ? ' disabled' : ''}>${probeAllRunning ? '正在探测…' : '一键测全部'}</button>`
+        : ''}
+      ${probeAll ? '<button class="ghost" id="clear-probe" type="button">清除探测结果</button>' : ''}
+    </div>
   `
 }
 
@@ -377,6 +459,7 @@ function personRow(user) {
           <span>${esc(user.username)} · ${esc(seen)}${user.note ? ` · ${esc(user.note)}` : ''}</span>
         </span>
         <span class="person-side">
+          ${user.createdVia === 'invite' ? '<span class="tag">自助注册</span>' : ''}
           ${user.enabled
             ? '<span class="tag live"><span class="dot"></span>可登录</span>'
             : '<span class="tag idle">已停用</span>'}
@@ -385,6 +468,59 @@ function personRow(user) {
         </span>
       </div>
       ${open ? `<div class="person-body">${userForm(user)}</div>` : ''}
+    </div>
+  `
+}
+
+/** 自助注册面板。只在多用户模式下有意义，所以非该模式时整块折叠成一句说明。 */
+function invitePanel() {
+  const site = state.site
+  const accounts = site.accessMode === 'accounts'
+  const expired = site.inviteExpiresAt && Date.now() > site.inviteExpiresAt
+  const exhausted = site.inviteMaxUses && site.inviteUsedCount >= site.inviteMaxUses
+  const expiryValue = site.inviteExpiresAt
+    // datetime-local 要本地时间且不带时区后缀，所以减掉偏移再截断到分钟。
+    ? new Date(site.inviteExpiresAt - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
+    : ''
+
+  return `
+    <div class="panel">
+      <h2>自助注册</h2>
+      <p class="hint">${accounts
+        ? '开启后，别人可以凭邀请码自己注册账号，你不用逐个建号发口令。名额和有效期都能限制，随时能作废重发。'
+        : '只在「多用户账号」模式下可用——别的模式下前端没有账号这个概念。'}</p>
+      ${accounts ? `
+        <form id="invite-form" style="margin-top:16px">
+          <label><span>邀请码</span>
+            <div class="with-action">
+              <input name="inviteCode" value="${esc(site.inviteCode)}" readonly placeholder="还没有邀请码" style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:0.06em" />
+              <button type="button" data-act="new-invite">${site.inviteCode ? '换一个' : '生成'}</button>
+              ${site.inviteCode ? '<button type="button" data-act="copy-invite">复制邀请链接</button>' : ''}
+            </div>
+          </label>
+          <p class="hint" style="margin:-4px 0 16px">${site.inviteCode
+            ? '换新码会立即作废旧码，已用次数一起归零。已经注册的账号不受影响。'
+            : '生成后把邀请链接发给对方，他自己设用户名和口令。'}</p>
+          <div class="row">
+            <label><span>名额上限（0 = 不限）</span>
+              <input name="inviteMaxUses" type="number" min="0" max="10000" value="${site.inviteMaxUses}" />
+            </label>
+            <label><span>有效期（留空 = 不过期）</span>
+              <input name="inviteExpiresAtLocal" type="datetime-local" value="${esc(expiryValue)}" />
+            </label>
+          </div>
+          <p class="hint" style="margin:-4px 0 16px">
+            已注册 ${site.inviteUsedCount} 人${site.inviteMaxUses ? ` / 上限 ${site.inviteMaxUses}` : ''}。
+            ${expired ? '<span class="warn">邀请码已过期，现在没人能注册。</span>' : ''}
+            ${!expired && exhausted ? '<span class="warn">名额已用完，现在没人能注册。</span>' : ''}
+          </p>
+          <label class="check"><input type="checkbox" name="registrationEnabled"${site.registrationEnabled ? ' checked' : ''}${site.inviteCode ? '' : ' disabled'} /><span>开放自助注册 <em>${site.inviteCode ? '关掉后邀请链接立即失效，已注册的账号照常能登录' : '需要先生成邀请码'}</em></span></label>
+          <div class="btn-row">
+            <button class="primary" type="submit">保存</button>
+            ${site.inviteCode ? '<span class="spacer"></span><button class="danger" type="button" data-act="revoke-invite">作废邀请码</button>' : ''}
+          </div>
+        </form>
+      ` : ''}
     </div>
   `
 }
@@ -414,6 +550,120 @@ function renderUsersView() {
     ${creatingUser
       ? `<div class="panel"><h2>新建用户</h2><p class="hint">口令留空会自动生成一个好念好抄的短口令。</p><div style="margin-top:14px">${userForm(null)}</div></div>`
       : '<div class="btn-row"><button class="primary" id="add-user" type="button">新建用户</button></div>'}
+    <hr class="divider" />
+    ${invitePanel()}
+  `
+}
+
+// ===== 用量与健康 =====
+
+/** 迷你柱状图：14 天的调用量，失败部分叠在柱子上方。用 div 而不是 canvas，省一个渲染路径。 */
+function usageBars(days) {
+  if (!days.length) return '<div class="empty">还没有出图记录。</div>'
+  const peak = Math.max(...days.map((item) => item.total), 1)
+  return `
+    <div class="bars">
+      ${days.map((item) => `
+        <div class="bar" title="${esc(item.day)}：${item.total} 次，失败 ${item.fail} 次">
+          <div class="bar-stack" style="height:${Math.round((item.total / peak) * 100)}%">
+            ${item.fail ? `<div class="bar-fail" style="height:${Math.round((item.fail / item.total) * 100)}%"></div>` : ''}
+          </div>
+          <span>${esc(item.day.slice(5))}</span>
+        </div>
+      `).join('')}
+    </div>
+  `
+}
+
+function renderUsageView() {
+  if (!usage) return '<div class="page-head"><h1>用量与健康</h1></div><div class="empty">正在加载统计…</div>'
+
+  const okRate = usage.totals.total ? usage.totals.ok / usage.totals.total : 0
+  return `
+    <div class="page-head">
+      <h1>用量与健康</h1>
+      <p>只统计渠道、成败、耗时和时间。提示词和图片一个字都不记——图片始终只存在访问者自己的浏览器里，服务端拿不到，也就无从统计。</p>
+    </div>
+
+    <div class="panel">
+      <h2>近 14 天</h2>
+      <div class="stats">
+        <div class="stat"><strong>${usage.totals.total}</strong><span>出图请求</span></div>
+        <div class="stat"><strong class="${okRate >= 0.9 ? 'ok' : okRate >= 0.7 ? 'warn' : 'bad'}">${usage.totals.total ? pct(okRate) : '—'}</strong><span>成功率</span></div>
+        <div class="stat"><strong>${usage.totals.fail}</strong><span>失败次数</span></div>
+        <div class="stat"><strong>${usage.channels.length}</strong><span>被用过的渠道</span></div>
+      </div>
+      <div style="margin-top:18px">${usageBars(usage.days)}</div>
+    </div>
+
+    <div class="panel">
+      <h2>按渠道</h2>
+      ${usage.channels.length ? `
+        <table class="grid">
+          <thead><tr><th>渠道</th><th>状态</th><th class="num">调用</th><th class="num">成功率</th><th class="num">平均耗时</th><th>最近失败</th></tr></thead>
+          <tbody>
+            ${usage.channels.map((item) => {
+              const health = HEALTH_LABELS[item.state]
+              return `
+                <tr>
+                  <td>${esc(item.name)}${item.exists ? '' : ' <span class="tag idle">已删除</span>'}</td>
+                  <td><span class="tag ${health.tone}">${health.text}</span></td>
+                  <td class="num">${item.total}</td>
+                  <td class="num ${item.total && item.ok / item.total < 0.7 ? 'bad' : ''}">${item.total ? pct(item.ok / item.total) : '—'}</td>
+                  <td class="num">${item.avgLatencyMs ? `${(item.avgLatencyMs / 1000).toFixed(1)}s` : '—'}</td>
+                  <td class="muted">${item.lastFailAt ? `${esc(ago(item.lastFailAt))}${item.lastError ? ` · ${esc(item.lastError.slice(0, 60))}` : ''}` : '无'}</td>
+                </tr>
+              `
+            }).join('')}
+          </tbody>
+        </table>
+      ` : '<div class="empty">还没有渠道被调用过。</div>'}
+    </div>
+
+    ${usage.users.length ? `
+      <div class="panel">
+        <h2>按用户</h2>
+        <p class="hint">只在多用户模式下才有数据。这里能看到谁在用、用了多少，但看不到他生成了什么。</p>
+        <table class="grid" style="margin-top:14px">
+          <thead><tr><th>用户</th><th class="num">调用</th><th class="num">成功率</th><th>最近一次</th></tr></thead>
+          <tbody>
+            ${usage.users.map((item) => `
+              <tr>
+                <td>${esc(item.name)}${item.exists ? '' : ' <span class="tag idle">已删除</span>'}</td>
+                <td class="num">${item.total}</td>
+                <td class="num">${item.total ? pct(item.ok / item.total) : '—'}</td>
+                <td class="muted">${esc(ago(item.lastAt))}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    ` : ''}
+
+    <div class="panel">
+      <h2>最近记录</h2>
+      ${usage.events.length ? `
+        <table class="grid" style="margin-top:14px">
+          <thead><tr><th>时间</th><th>渠道</th><th>结果</th><th class="num">耗时</th><th>说明</th></tr></thead>
+          <tbody>
+            ${usage.events.map((item) => `
+              <tr>
+                <td class="muted">${esc(ago(item.at))}</td>
+                <td>${esc(item.channelName)}${item.userName ? ` <span class="muted">· ${esc(item.userName)}</span>` : ''}</td>
+                <td><span class="tag ${item.ok ? 'live' : 'alert'}">${item.ok ? '成功' : item.status ? `HTTP ${item.status}` : '失败'}</span></td>
+                <td class="num">${item.latencyMs ? `${(item.latencyMs / 1000).toFixed(1)}s` : '—'}</td>
+                <td class="muted">${esc(item.error.slice(0, 80))}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : '<div class="empty">还没有记录。</div>'}
+      <div class="btn-row">
+        <button type="button" id="reload-usage">刷新</button>
+        <span class="spacer"></span>
+        <button class="danger" type="button" id="reset-usage">清空统计</button>
+      </div>
+    </div>
   `
 }
 
@@ -606,6 +856,7 @@ function render() {
     users: (state.users ?? []).length,
   }
   const body = view === 'users' ? renderUsersView()
+    : view === 'usage' ? renderUsageView()
     : view === 'agent' ? renderAgentView()
     : view === 'access' ? renderAccessView()
     : view === 'providers' ? renderProvidersView()
@@ -616,20 +867,22 @@ function render() {
     <div class="shell">
       <nav class="rail">
         ${brand(ACCESS_MODES.find((item) => item.id === state.site.accessMode)?.title ?? state.site.accessMode)}
-        ${NAV.map((item) => `
-          <button class="nav-item" data-view="${item.id}" type="button" aria-current="${view === item.id}">
-            ${esc(item.label)}
-            ${counts[item.id] != null ? `<span class="count">${counts[item.id]}</span>` : ''}
-          </button>
-        `).join('')}
-        <div class="rail-foot">
-          <a href="/" target="_blank" rel="noreferrer"><button class="ghost" type="button" style="width:100%">打开前端 ↗</button></a>
-          <button class="ghost" id="logout" type="button">退出登录</button>
+        <button class="rail-toggle" id="rail-toggle" type="button" aria-expanded="false">菜单</button>
+        <div class="rail-nav" data-open="false">
+          ${NAV.map((item) => `
+            <button class="nav-item" data-view="${item.id}" type="button" aria-current="${view === item.id}">
+              ${esc(item.label)}
+              ${counts[item.id] != null ? `<span class="count">${counts[item.id]}</span>` : ''}
+            </button>
+          `).join('')}
+          <div class="rail-foot">
+            <a href="/" target="_blank" rel="noreferrer"><button class="ghost" type="button" style="width:100%">打开前端 ↗</button></a>
+            <button class="ghost" id="logout" type="button">退出登录</button>
+          </div>
         </div>
       </nav>
       <main class="content">
-        ${state.site.accessMode === 'open' && view !== 'users' && view !== 'access' ? `
-          <div class="alert">
+        ${state.site.accessMode === 'open' && view !== 'users' && view !== 'access' ? `          <div class="alert">
             <div class="alert-body">
               <strong>前端目前不需要登录，任何人都能用你的渠道出图</strong>
               <p>拿到网址就能生图，账单记在你头上。改成「共享口令」让所有人用同一个口令，或「多用户账号」给每人一个账号、数据互相隔离。</p>
@@ -646,6 +899,14 @@ function render() {
 }
 
 function bindEvents() {
+  // 窄屏把导航折起来，点标题栏的「菜单」再展开——横排六项在手机上会挤成两行。
+  const railNav = app.querySelector('.rail-nav')
+  app.querySelector('#rail-toggle')?.addEventListener('click', (event) => {
+    const open = railNav.dataset.open !== 'true'
+    railNav.dataset.open = String(open)
+    event.target.setAttribute('aria-expanded', String(open))
+  })
+
   for (const button of app.querySelectorAll('[data-view]')) {
     button.addEventListener('click', () => {
       view = button.dataset.view
@@ -653,6 +914,7 @@ function bindEvents() {
       expandedUserId = null
       creatingUser = false
       freshCredential = null
+      if (view === 'usage') return void loadUsage()
       render()
     })
   }
@@ -701,6 +963,7 @@ function bindEvents() {
   bindAgentEvents()
   bindUserEvents()
   bindAccessEvents()
+  bindUsageEvents()
 
   app.querySelector('#providers-form')?.addEventListener('submit', async (event) => {
     event.preventDefault()
@@ -801,22 +1064,106 @@ function bindChannelEvents() {
       }
     })
 
-    const move = async (delta) => {
+    const move = (delta) => {
       const order = state.channels.map((item) => item.id)
       const from = order.indexOf(id)
       const to = from + delta
       if (to < 0 || to >= order.length) return
       order.splice(to, 0, order.splice(from, 1)[0])
-      try {
-        await api('/api/admin/channels/reorder', { method: 'POST', body: { order } })
-        await refresh()
-      } catch (err) {
-        showToast(err.message, 'bad')
-      }
+      void reorderChannels(order)
     }
     form.querySelector('[data-act=move-up]').addEventListener('click', () => move(-1))
     form.querySelector('[data-act=move-down]').addEventListener('click', () => move(1))
   }
+
+  bindChannelDrag()
+
+  app.querySelector('#test-all')?.addEventListener('click', async () => {
+    probeAllRunning = true
+    probeAll = null
+    render()
+    try {
+      const result = await api('/api/admin/channels/test-all', { method: 'POST' })
+      probeAll = Object.fromEntries(result.results.map((item) => [item.id, item]))
+      const bad = result.results.filter((item) => !item.ok)
+      showToast(bad.length ? `${bad.length} / ${result.results.length} 条渠道有问题` : `全部 ${result.results.length} 条渠道连通正常`, bad.length ? 'bad' : 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    } finally {
+      probeAllRunning = false
+      render()
+    }
+  })
+
+  app.querySelector('#clear-probe')?.addEventListener('click', () => {
+    probeAll = null
+    render()
+  })
+}
+
+/**
+ * 拖拽排序。用原生 HTML5 drag 而不是引第三方库——这里只需要"整块上下换位"，
+ * 拖动时直接把节点插到目标前后，松手时把当前 DOM 顺序落库。
+ */
+function bindChannelDrag() {
+  const chain = app.querySelector('#chain')
+  if (!chain) return
+
+  let dragging = null
+
+  for (const node of chain.querySelectorAll('.node')) {
+    node.addEventListener('dragstart', (event) => {
+      // 在输入框里选文字时不该触发整卡拖动。
+      if (event.target.closest('input, select, textarea, button')) return event.preventDefault()
+      dragging = node
+      node.dataset.dragging = 'true'
+      event.dataTransfer.effectAllowed = 'move'
+      // Firefox 不设 data 就不触发 drop。
+      event.dataTransfer.setData('text/plain', node.dataset.id)
+    })
+
+    node.addEventListener('dragend', () => {
+      if (!dragging) return
+      delete dragging.dataset.dragging
+      dragging = null
+      const order = [...chain.querySelectorAll('.node')].map((item) => item.dataset.id)
+      const current = state.channels.map((item) => item.id)
+      if (order.join() !== current.join()) return void reorderChannels(order)
+      render()
+    })
+
+    node.addEventListener('dragover', (event) => {
+      if (!dragging || node === dragging) return
+      event.preventDefault()
+      const box = node.getBoundingClientRect()
+      // 越过中线才换位，避免在边界上来回抖动。
+      const after = event.clientY > box.top + box.height / 2
+      chain.insertBefore(dragging, after ? node.nextSibling : node)
+    })
+  }
+
+  chain.addEventListener('dragover', (event) => {
+    if (dragging) event.preventDefault()
+  })
+}
+
+function bindUsageEvents() {
+  app.querySelector('#reload-usage')?.addEventListener('click', () => void loadUsage())
+
+  app.querySelector('#reset-usage')?.addEventListener('click', async () => {
+    if (!await confirmDialog({
+      title: '清空所有用量统计？',
+      message: '所有渠道的调用次数、成功率和最近记录都会归零，渠道健康度也会退回「未使用」。渠道配置和用户账号不受影响。',
+      confirmText: '清空统计',
+    })) return
+    try {
+      await api('/api/admin/usage', { method: 'DELETE' })
+      await loadUsage()
+      showToast('统计已清空', 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
+  })
 }
 
 function bindUserEvents() {
@@ -916,6 +1263,78 @@ function bindUserEvents() {
       }
     })
   }
+
+  bindInviteEvents()
+}
+
+function bindInviteEvents() {
+  const form = app.querySelector('#invite-form')
+  if (!form) return
+
+  form.querySelector('[data-act=new-invite]')?.addEventListener('click', async (event) => {
+    if (state.site.inviteCode && !await confirmDialog({
+      title: '换一个新邀请码？',
+      message: '旧邀请码立即失效，已经发出去但还没用的链接会打不开。已注册的账号不受影响。',
+      confirmText: '换新码',
+      tone: 'danger',
+    })) return
+    event.target.disabled = true
+    try {
+      await api('/api/admin/invite', { method: 'POST' })
+      await refresh()
+      showToast('邀请码已生成，记得开启自助注册', 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+      event.target.disabled = false
+    }
+  })
+
+  form.querySelector('[data-act=copy-invite]')?.addEventListener('click', async (event) => {
+    const link = `${window.location.origin}/?invite=${encodeURIComponent(state.site.inviteCode)}`
+    try {
+      await navigator.clipboard.writeText(link)
+      showToast('邀请链接已复制', 'good')
+    } catch {
+      // 非 HTTPS 下 clipboard API 不可用，退回让用户手动抄邀请码。
+      const input = form.querySelector('[name=inviteCode]')
+      input.focus()
+      input.select()
+      showToast('浏览器不允许自动复制，请手动抄下邀请码', 'bad')
+      event.preventDefault()
+    }
+  })
+
+  form.querySelector('[data-act=revoke-invite]')?.addEventListener('click', async () => {
+    if (!await confirmDialog({
+      title: '作废邀请码？',
+      message: '自助注册会一起关掉，发出去的邀请链接全部失效。已注册的账号照常能登录。',
+      confirmText: '作废',
+    })) return
+    try {
+      await api('/api/admin/invite', { method: 'DELETE' })
+      await refresh()
+      showToast('邀请码已作废，自助注册已关闭', 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
+  })
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const body = readForm(form)
+    // datetime-local 给的是本地时间字符串，转成时间戳再存；留空表示不过期。
+    body.inviteExpiresAt = body.inviteExpiresAtLocal ? new Date(body.inviteExpiresAtLocal).getTime() : 0
+    delete body.inviteExpiresAtLocal
+    // 邀请码本身是只读展示，不参与保存——换码走独立接口。
+    delete body.inviteCode
+    try {
+      await api('/api/admin/site', { method: 'PUT', body })
+      await refresh()
+      showToast(state.site.registrationEnabled ? '自助注册已开启' : '已保存，自助注册当前关闭', 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
+  })
 }
 
 function bindAgentEvents() {

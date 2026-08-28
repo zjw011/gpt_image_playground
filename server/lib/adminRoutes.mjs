@@ -10,6 +10,7 @@ import {
   findChannel,
   findUserById,
   findUserByUsername,
+  generateInviteCode,
   generatePasscode,
   getConfig,
   hashPassword,
@@ -24,6 +25,7 @@ import {
   verifyPassword,
 } from './store.mjs'
 import { buildUpstreamUrl } from './upstream.mjs'
+import { channelHealth, resetUsage, usageSummary } from './usage.mjs'
 
 function genChannelId() {
   return `ch-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
@@ -60,7 +62,8 @@ export async function handleAdminRoute(req, res, ctx) {
         ? {
             site: config.site,
             guestPasswordSet: Boolean(config.guestPasswordHash),
-            channels: config.channels.map(toAdminChannel),
+            // 健康度直接挂在渠道上：后台列表要能一眼看出哪条挂了，不该再多一次请求。
+            channels: config.channels.map((channel) => ({ ...toAdminChannel(channel), health: channelHealth(channel.id) })),
             users: config.users.map(toAdminUser),
             minUserPasswordLength: MIN_USER_PASSWORD_LENGTH,
             customProviders: config.customProviders,
@@ -71,6 +74,20 @@ export async function handleAdminRoute(req, res, ctx) {
   }
 
   if (ctx.role !== 'admin') throw new HttpError(401, '需要管理员登录')
+
+  // ===== 用量统计 =====
+  if (path === '/api/admin/usage' && method === 'GET') {
+    const config = getConfig()
+    return sendJson(res, 200, usageSummary(
+      new Map(config.channels.map((item) => [item.id, item.name])),
+      new Map(config.users.map((item) => [item.id, item.displayName || item.username])),
+    ))
+  }
+
+  if (path === '/api/admin/usage' && method === 'DELETE') {
+    resetUsage()
+    return sendJson(res, 200, { ok: true })
+  }
 
   // ===== 渠道 CRUD =====
   if (path === '/api/admin/channels' && method === 'POST') {
@@ -148,6 +165,19 @@ export async function handleAdminRoute(req, res, ctx) {
     const channel = typeof body.id === 'string' ? findChannel(body.id) : null
     if (!channel) throw new HttpError(404, '渠道不存在')
     return sendJson(res, 200, await testChannel(channel))
+  }
+
+  // 一键测全部：并发探测所有渠道，省掉逐条点。渠道数量级在几十条，全并发不会打爆上游。
+  if (path === '/api/admin/channels/test-all' && method === 'POST') {
+    const channels = getConfig().channels
+    const results = await Promise.all(channels.map(async (channel) => ({
+      id: channel.id,
+      name: channel.name,
+      ...(channel.apiKey
+        ? await testChannel(channel)
+        : { ok: false, status: 0, message: '未配置 API Key' }),
+    })))
+    return sendJson(res, 200, { results })
   }
 
   // ===== 自定义服务商 =====
@@ -285,8 +315,21 @@ export async function handleAdminRoute(req, res, ctx) {
       }
     }
 
+    // 注册只在多用户模式下成立，而且必须先有邀请码。
+    // 明确要求打开却不满足条件时报错；只是切访问方式带出来的旧值，静默关掉就好——
+    // 不该让管理员为一个他没碰过的开关卡在这里。
+    const wantsRegistration = body.registrationEnabled === true
+    const inviteCode = typeof body.inviteCode === 'string' ? body.inviteCode.trim() : config.site.inviteCode
+    if (wantsRegistration) {
+      if (accessMode !== 'accounts') throw new HttpError(400, '自助注册只能在多用户账号模式下开启')
+      if (!inviteCode) throw new HttpError(400, '请先生成邀请码，再开启自助注册')
+    }
+    const registrationEnabled = body.registrationEnabled === undefined
+      ? config.site.registrationEnabled && accessMode === 'accounts' && Boolean(inviteCode)
+      : wantsRegistration
+
     updateConfig((next) => {
-      next.site = { ...next.site, ...body, accessMode, agentMode }
+      next.site = { ...next.site, ...body, accessMode, agentMode, registrationEnabled }
       return next
     })
     return sendJson(res, 200, { site: getConfig().site })
@@ -330,6 +373,28 @@ export async function handleAdminRoute(req, res, ctx) {
   // 只吐一个随机口令，不落库。后台的「随机生成」按钮用它填输入框，保存仍走上面的常规路径。
   if (path === '/api/admin/passcode' && method === 'POST') {
     return sendJson(res, 200, { password: generatePasscode() })
+  }
+
+  // ===== 邀请码 =====
+  // 换一个新码并把已用次数归零：旧码立即失效，等于"作废重发"。
+  if (path === '/api/admin/invite' && method === 'POST') {
+    const code = generateInviteCode()
+    updateConfig((config) => {
+      config.site.inviteCode = code
+      config.site.inviteUsedCount = 0
+      return config
+    })
+    return sendJson(res, 200, { inviteCode: code })
+  }
+
+  if (path === '/api/admin/invite' && method === 'DELETE') {
+    updateConfig((config) => {
+      config.site.inviteCode = ''
+      config.site.registrationEnabled = false
+      config.site.inviteUsedCount = 0
+      return config
+    })
+    return sendJson(res, 200, { ok: true })
   }
 
   throw new HttpError(404, '未知的管理接口')

@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { generatePasscode, getConfig, initStore, isValidUsername, toAdminUser, updateConfig } from './store.mjs'
+import { generateInviteCode, generatePasscode, getConfig, initStore, inviteStatus, isValidUsername, normalizeInviteCode, toAdminUser, updateConfig } from './store.mjs'
 
 /** 用给定配置内容初始化一个临时数据目录。传 null 表示不写配置文件（首次启动）。 */
 function initWith(config) {
@@ -168,5 +168,78 @@ describe('updateConfig', () => {
       return config
     })
     expect(getConfig().users.map((user) => user.username)).toEqual(['dave'])
+  })
+})
+
+describe('邀请码', () => {
+  it('生成 xxxxx-xxxxx 形式，且不含容易看错的字符', () => {
+    for (let i = 0; i < 200; i += 1) {
+      const code = generateInviteCode()
+      expect(code).toMatch(/^[a-z2-9]{5}-[a-z2-9]{5}$/)
+      expect(code).not.toMatch(/[01loi]/)
+    }
+  })
+
+  it('比对时忽略大小写和连字符——用户手抄最容易在这两处出错', () => {
+    expect(normalizeInviteCode('Q7MKX-3F9DP')).toBe('q7mkx3f9dp')
+    expect(normalizeInviteCode('  q7mkx3f9dp  ')).toBe('q7mkx3f9dp')
+    expect(normalizeInviteCode('q7mkx-3f9dp')).toBe(normalizeInviteCode('Q7MKX3F9DP'))
+  })
+
+  it('自助注册默认关闭', () => {
+    expect(initWith(null).site).toMatchObject({ registrationEnabled: false, inviteCode: '', inviteUsedCount: 0 })
+  })
+
+  it('不是多用户模式时开关被强制关掉——别的模式下前端没有账号这个概念', () => {
+    const config = initWith({
+      version: 2,
+      site: { accessMode: 'open', registrationEnabled: true, inviteCode: 'abcde-fghij' },
+      channels: [],
+    })
+    expect(config.site.registrationEnabled).toBe(false)
+  })
+
+  it('没有邀请码时开关也被强制关掉，避免留一个半开的状态', () => {
+    const config = initWith({
+      version: 2,
+      site: { accessMode: 'accounts', registrationEnabled: true, inviteCode: '' },
+      users: [{ id: 'u-1', username: 'alice', passwordHash: 'h' }],
+      channels: [],
+    })
+    expect(config.site.registrationEnabled).toBe(false)
+  })
+
+  it('多用户模式且有邀请码时保留开关与名额限制', () => {
+    const config = initWith({
+      version: 2,
+      site: { accessMode: 'accounts', registrationEnabled: true, inviteCode: 'abcde-fghij', inviteMaxUses: 5, inviteUsedCount: 2 },
+      users: [{ id: 'u-1', username: 'alice', passwordHash: 'h' }],
+      channels: [],
+    })
+    expect(config.site).toMatchObject({ registrationEnabled: true, inviteMaxUses: 5, inviteUsedCount: 2 })
+  })
+
+  it('inviteStatus 区分关闭、过期与名额用完，好让注册页说清具体原因', () => {
+    const base = { registrationEnabled: true, inviteCode: 'abcde-fghij', inviteMaxUses: 0, inviteUsedCount: 0, inviteExpiresAt: 0 }
+    expect(inviteStatus(base)).toEqual({ ok: true, reason: '' })
+    expect(inviteStatus({ ...base, registrationEnabled: false }).reason).toBe('disabled')
+    expect(inviteStatus({ ...base, inviteCode: '' }).reason).toBe('disabled')
+    expect(inviteStatus({ ...base, inviteExpiresAt: 1000 }, 2000).reason).toBe('expired')
+    expect(inviteStatus({ ...base, inviteExpiresAt: 5000 }, 2000).ok).toBe(true)
+    expect(inviteStatus({ ...base, inviteMaxUses: 3, inviteUsedCount: 3 }).reason).toBe('exhausted')
+    expect(inviteStatus({ ...base, inviteMaxUses: 3, inviteUsedCount: 2 }).ok).toBe(true)
+  })
+
+  it('createdVia 只认 invite，其余一律算管理员创建', () => {
+    const config = initWith({
+      version: 2,
+      users: [
+        { id: 'u-1', username: 'alice', passwordHash: 'h', createdVia: 'invite' },
+        { id: 'u-2', username: 'bob', passwordHash: 'h' },
+        { id: 'u-3', username: 'carol', passwordHash: 'h', createdVia: 'hack' },
+      ],
+      channels: [],
+    })
+    expect(config.users.map((user) => user.createdVia)).toEqual(['invite', 'admin', 'admin'])
   })
 })

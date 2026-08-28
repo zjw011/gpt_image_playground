@@ -39,6 +39,17 @@ export function isValidUsername(value) {
   return USERNAME_PATTERN.test(String(value ?? ''))
 }
 
+/** 生成邀请码，形如 `q7mkx-3f9dp`。比登录口令长两位——它是公开投放的，被猜中的机会更多。 */
+export function generateInviteCode() {
+  const chars = Array.from({ length: 10 }, () => PASSCODE_ALPHABET[randomInt(PASSCODE_ALPHABET.length)])
+  return `${chars.slice(0, 5).join('')}-${chars.slice(5).join('')}`
+}
+
+/** 邀请码比对前先规整：忽略大小写和连字符，用户手抄时最容易在这两处出错。 */
+export function normalizeInviteCode(value) {
+  return String(value ?? '').trim().toLowerCase().replace(/-/g, '')
+}
+
 let dataFile = ''
 let cache = null
 
@@ -67,6 +78,12 @@ function createEmptyConfig() {
       agentImageChannelId: '',
       agentMaxToolRounds: 15,
       agentWebSearch: false,
+      // 自助注册默认关闭：开着等于把渠道额度对全网敞开，必须由管理员显式打开。
+      registrationEnabled: false,
+      inviteCode: '',
+      inviteMaxUses: 0,
+      inviteUsedCount: 0,
+      inviteExpiresAt: 0,
     },
     users: [],
     channels: [],
@@ -154,6 +171,8 @@ export function normalizeUser(input, fallbackId) {
     passwordHash: normalizeString(record.passwordHash, ''),
     enabled: normalizeBool(record.enabled, true),
     note: normalizeString(record.note, ''),
+    // 区分账号是管理员建的还是别人自己注册的，后台名册上要能一眼看出来。
+    createdVia: record.createdVia === 'invite' ? 'invite' : 'admin',
     createdAt: normalizeInt(record.createdAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
     updatedAt: normalizeInt(record.updatedAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
     lastSeenAt: normalizeInt(record.lastSeenAt, 0, 0, Number.MAX_SAFE_INTEGER),
@@ -195,6 +214,24 @@ function normalizeAgentSettings(site, channels) {
   }
 }
 
+/**
+ * 自助注册设置清洗。
+ * 注册只在多用户模式下有意义——别的模式下根本没有"账号"这个概念，
+ * 所以这里会在缺少邀请码或不是 accounts 模式时把开关强制关掉，而不是留一个半开的状态。
+ */
+function normalizeRegistration(site, accessMode) {
+  const inviteCode = normalizeString(site.inviteCode, '').trim()
+  const expiresAt = normalizeInt(site.inviteExpiresAt, 0, 0, Number.MAX_SAFE_INTEGER)
+
+  return {
+    registrationEnabled: normalizeBool(site.registrationEnabled, false) && accessMode === 'accounts' && Boolean(inviteCode),
+    inviteCode,
+    inviteMaxUses: normalizeInt(site.inviteMaxUses, 0, 0, 10_000),
+    inviteUsedCount: normalizeInt(site.inviteUsedCount, 0, 0, Number.MAX_SAFE_INTEGER),
+    inviteExpiresAt: expiresAt,
+  }
+}
+
 function normalizeConfig(input) {
   const record = isRecord(input) ? input : {}
   const site = isRecord(record.site) ? record.site : {}
@@ -225,17 +262,20 @@ function normalizeConfig(input) {
     normalizedUsers.push(user)
   }
 
+  const accessMode = normalizeAccessMode(site)
+
   return {
     version: CONFIG_VERSION,
     adminPasswordHash: normalizeString(record.adminPasswordHash, ''),
     guestPasswordHash: normalizeString(record.guestPasswordHash, ''),
     site: {
       title: normalizeString(site.title, '绘想'),
-      accessMode: normalizeAccessMode(site),
+      accessMode,
       failoverEnabled: normalizeBool(site.failoverEnabled, true),
       failoverMaxAttempts: normalizeInt(site.failoverMaxAttempts, 0, 0, 50),
       allowGuestParamOverride: normalizeBool(site.allowGuestParamOverride, true),
       ...normalizeAgentSettings(site, normalizedChannels),
+      ...normalizeRegistration(site, accessMode),
     },
     users: normalizedUsers,
     channels: normalizedChannels,
@@ -347,9 +387,23 @@ export function toAdminUser(user) {
     displayName: user.displayName,
     enabled: user.enabled,
     note: user.note,
+    createdVia: user.createdVia,
     hasPassword: Boolean(user.passwordHash),
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     lastSeenAt: user.lastSeenAt,
   }
+}
+
+/**
+ * 邀请码当前是否还能用。
+ * 返回具体原因而不是布尔值：注册页要把"名额用完了"和"过期了"分开告诉用户，
+ * 否则他只会反复重试同一个码。
+ */
+export function inviteStatus(site, now = Date.now()) {
+  if (!site.registrationEnabled) return { ok: false, reason: 'disabled' }
+  if (!site.inviteCode) return { ok: false, reason: 'disabled' }
+  if (site.inviteExpiresAt && now > site.inviteExpiresAt) return { ok: false, reason: 'expired' }
+  if (site.inviteMaxUses && site.inviteUsedCount >= site.inviteMaxUses) return { ok: false, reason: 'exhausted' }
+  return { ok: true, reason: '' }
 }

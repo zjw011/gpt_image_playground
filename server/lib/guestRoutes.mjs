@@ -3,8 +3,9 @@
 // 由这里补上真实地址和 Authorization 再转发。
 
 import { HttpError, readJsonBody, sendJson } from './http.mjs'
-import { findChannel, getConfig, getEnabledChannels, toPublicChannel } from './store.mjs'
+import { findChannel, getConfig, getEnabledChannels, inviteStatus, toPublicChannel } from './store.mjs'
 import { buildUpstreamUrl, pipeToUpstream } from './upstream.mjs'
+import { recordChannelCall } from './usage.mjs'
 
 const FAL_TARGET_URL_HEADER = 'x-fal-target-url'
 const FAL_ALLOWED_HOSTS = /(^|\.)(fal\.run|fal\.ai)$/
@@ -35,6 +36,8 @@ export async function handleGuestRoute(req, res, ctx) {
       authenticated: gateOpen,
       user: ctx.user ? { id: ctx.user.id, username: ctx.user.username, displayName: ctx.user.displayName } : null,
       workspaceId: getWorkspaceId(accessMode, ctx.user),
+      // 注册入口是否可见。只回传"能不能注册"，邀请码本身不下发——它得由管理员另行转达。
+      registrationOpen: accessMode === 'accounts' && inviteStatus(config.site).ok,
       site: {
         title: config.site.title,
         failoverEnabled: config.site.failoverEnabled,
@@ -65,6 +68,15 @@ export async function handleGuestRoute(req, res, ctx) {
     return ctx.logout()
   }
 
+  if (ctx.path === '/api/register' && req.method === 'POST') {
+    const body = await readJsonBody(req)
+    return ctx.register({
+      username: String(body.username ?? ''),
+      password: String(body.password ?? ''),
+      inviteCode: String(body.inviteCode ?? ''),
+    })
+  }
+
   if (ctx.path.startsWith('/api/relay/')) {
     if (!gateOpen) throw new HttpError(401, accessMode === 'accounts' ? '需要登录' : '需要访问口令')
     return relayToChannel(req, res, ctx)
@@ -85,27 +97,47 @@ async function relayToChannel(req, res, ctx) {
   if (!channel.apiKey) throw new HttpError(503, `渠道「${channel.name}」未配置 API Key`)
 
   const timeoutMs = Math.max(10_000, channel.timeout * 1000)
-
-  if (channel.provider === 'fal') {
-    // fal SDK 的 proxyUrl 机制：真实目标放在 x-fal-target-url 头里。
-    const upstreamUrl = resolveFalTargetUrl(req, channel)
-    return pipeToUpstream(req, res, {
-      upstreamUrl,
-      authHeader: `Key ${channel.apiKey}`,
-      timeoutMs,
-      // 目标头已被消费，不能再往上游传。
-      dropHeaders: [FAL_TARGET_URL_HEADER],
+  // 只统计提交请求。异步渠道的轮询是 GET，一次出图能轮几十次，全记会把成功率算歪。
+  const counted = req.method === 'POST'
+  const started = Date.now()
+  const track = (ok, status, error) => {
+    if (!counted) return
+    recordChannelCall({
+      channelId,
+      userId: ctx.user?.id ?? '',
+      ok,
+      status,
+      latencyMs: Date.now() - started,
+      at: started,
+      error,
     })
   }
 
-  if (!endpointPath) throw new HttpError(400, '缺少上游接口路径')
+  try {
+    const result = channel.provider === 'fal'
+      // fal SDK 的 proxyUrl 机制：真实目标放在 x-fal-target-url 头里。目标头已被消费，不能再往上游传。
+      ? await pipeToUpstream(req, res, {
+          upstreamUrl: resolveFalTargetUrl(req, channel),
+          authHeader: `Key ${channel.apiKey}`,
+          timeoutMs,
+          dropHeaders: [FAL_TARGET_URL_HEADER],
+        })
+      : await (() => {
+          if (!endpointPath) throw new HttpError(400, '缺少上游接口路径')
+          return pipeToUpstream(req, res, {
+            upstreamUrl: buildUpstreamUrl(channel.baseUrl, endpointPath, ctx.search ?? ''),
+            authHeader: `Bearer ${channel.apiKey}`,
+            timeoutMs,
+          })
+        })()
 
-  const search = ctx.search ?? ''
-  return pipeToUpstream(req, res, {
-    upstreamUrl: buildUpstreamUrl(channel.baseUrl, endpointPath, search),
-    authHeader: `Bearer ${channel.apiKey}`,
-    timeoutMs,
-  })
+    const status = result?.status ?? 0
+    track(status >= 200 && status < 300, status, status >= 200 && status < 300 ? '' : `上游返回 HTTP ${status}`)
+    return result
+  } catch (err) {
+    track(false, 0, err instanceof Error ? err.message : '转发失败')
+    throw err
+  }
 }
 
 function resolveFalTargetUrl(req, channel) {
