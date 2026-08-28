@@ -112,6 +112,24 @@ describe('persisted state codec', () => {
     expect(migratePersistedState('invalid', 1)).toBe('invalid')
   })
 
+  it('翻开老配置里显式关闭的回车发送与提交后清空', () => {
+    const migrated = migratePersistedState({
+      settings: { ...DEFAULT_SETTINGS, enterSubmit: false, clearInputAfterSubmit: false, allowPromptRewrite: true },
+    }, 2) as { settings: AppSettings }
+    expect(migrated.settings.enterSubmit).toBe(true)
+    expect(migrated.settings.clearInputAfterSubmit).toBe(true)
+    // 只动这两项，其他开关保持用户原样。
+    expect(migrated.settings.allowPromptRewrite).toBe(true)
+  })
+
+  it('已经是 v3 的配置不再被强行翻开', () => {
+    const migrated = migratePersistedState({
+      settings: { ...DEFAULT_SETTINGS, enterSubmit: false, clearInputAfterSubmit: false },
+    }, 3) as { settings: AppSettings }
+    expect(migrated.settings.enterSubmit).toBe(false)
+    expect(migrated.settings.clearInputAfterSubmit).toBe(false)
+  })
+
   it('normalizes legacy conversations, active ID, and top-level Agent draft fallback', () => {
     const result = normalizePersistedState({
       settings: DEFAULT_SETTINGS,

@@ -1029,7 +1029,7 @@ export const useStore = create<AppState>()(
     }),
     {
       name: scopeStorageName('gpt-image-playground'),
-      version: 2,
+      version: 3,
       migrate: migratePersistedState,
       partialize: getPersistedState,
       merge: mergePersistedState,
@@ -1772,7 +1772,8 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
 
   if (settings.clearInputAfterSubmit) {
     useStore.getState().setPrompt('')
-    useStore.getState().clearInputImages()
+    // 参考图默认留着：图生图常要对同一张图连改几版，清掉就得重新上传。
+    if (settings.clearInputImagesAfterSubmit) useStore.getState().clearInputImages()
   }
   useStore.getState().setReusedTaskApiProfile(null)
 

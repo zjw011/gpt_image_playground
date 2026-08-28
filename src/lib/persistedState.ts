@@ -123,10 +123,16 @@ export function createPersistedState(state: PersistedStateSource, includeLegacyA
   }
 }
 
-export function migratePersistedState(persistedState: unknown, _version?: number): unknown {
+export function migratePersistedState(persistedState: unknown, version?: number): unknown {
   if (!isRecord(persistedState)) return persistedState
+  // v3：回车发送与提交后清空改为默认开启。老配置里存的是显式 false（当时的默认值），
+  // 单纯改默认值对已有用户没用，所以这里一次性把它们翻上来。
+  const settings = version != null && version < 3 && isRecord(persistedState.settings)
+    ? { settings: { ...persistedState.settings, enterSubmit: true, clearInputAfterSubmit: true } }
+    : {}
   return {
     ...persistedState,
+    ...settings,
     agentConversations: stripPersistedAgentConversations(persistedState.agentConversations),
   }
 }

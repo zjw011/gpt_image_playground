@@ -72,9 +72,29 @@ export default function GeneralSettingsTab({
           </button>
         </div>
         <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-          开启后，提交成功创建任务时会清空提示词和参考图。
+          开启后，提交成功创建任务时会清空提示词。
         </div>
       </div>
+      {draft.clearInputAfterSubmit && (
+        <div className="block">
+          <div className="mb-1 flex items-center justify-between">
+            <span className="block text-sm text-gray-600 dark:text-gray-300">同时清空参考图</span>
+            <button
+              type="button"
+              onClick={() => commitSettings({ ...draft, clearInputImagesAfterSubmit: !draft.clearInputImagesAfterSubmit })}
+              className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.clearInputImagesAfterSubmit ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+              role="switch"
+              aria-checked={draft.clearInputImagesAfterSubmit}
+              aria-label="同时清空参考图"
+            >
+              <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${draft.clearInputImagesAfterSubmit ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+            </button>
+          </div>
+          <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+            关闭时参考图会留在输入框，方便对同一张图连续改多版。
+          </div>
+        </div>
+      )}
       <div className="block">
         <div className="mb-1 flex items-center justify-between gap-3">
           <span className="block text-sm text-gray-600 dark:text-gray-300">使用压缩包进行的批量下载途径</span>

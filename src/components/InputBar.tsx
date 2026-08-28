@@ -439,7 +439,10 @@ export default function InputBar() {
     ? maskDraft ? '遮罩编辑' : '生成图像'
     : '请先配置 API'
   const submitTooltipText = activeAgentIsRunning ? '停止生成' : '尚未完成 API 配置，请在右上角设置中进行'
-  const promptPlaceholder = '描述你想生成的图片，可输入 @ 来指定参考图...'
+  // Agent 是对话，画廊是单次出图。占位文案照实说，省得用户以为两边一样。
+  const promptPlaceholder = appMode === 'agent'
+    ? '和 Agent 说说你想要什么，它能追问、改图、连续调整，输入 @ 可指定参考图...'
+    : '描述你想生成的图片，可输入 @ 来指定参考图...'
   const submitCurrentMode = useCallback(() => {
     if (appMode === 'agent') {
       void submitAgentMessage()
@@ -873,21 +876,18 @@ export default function InputBar() {
     if (e.key === 'Enter') {
       e.preventDefault()
 
-      const isModifier = e.ctrlKey || e.metaKey
-
-      if (settings.enterSubmit) {
-        if (e.shiftKey) {
-          insertPromptTextAtSelection('\n')
-        } else if (!isModifier) {
-          if (canSubmit) submitCurrentMode()
-        }
-      } else {
-        if (isModifier) {
-          if (canSubmit) submitCurrentMode()
-        } else {
-          insertPromptTextAtSelection('\n')
-        }
+      // Ctrl/⌘ + Enter 一律提交：两种模式下都是肌肉记忆，没有理由让它什么都不做。
+      if (e.ctrlKey || e.metaKey) {
+        if (canSubmit) submitCurrentMode()
+        return
       }
+
+      if (settings.enterSubmit && !e.shiftKey) {
+        if (canSubmit) submitCurrentMode()
+        return
+      }
+
+      insertPromptTextAtSelection('\n')
       return
     }
   }

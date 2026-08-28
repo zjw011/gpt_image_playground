@@ -345,6 +345,42 @@ describe('mask draft lifecycle in store actions', () => {
     expect(state.showToast).toHaveBeenCalledWith('任务已提交', 'success')
   })
 
+  it('默认提交后清空提示词，但保留参考图供连续改图', async () => {
+    useStore.setState({ inputImages: [imageA] })
+
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).not.toBe('running'))
+
+    expect(useStore.getState().prompt).toBe('')
+    expect(useStore.getState().inputImages).toEqual([imageA])
+  })
+
+  it('开启同时清空参考图后参考图也一起清掉', async () => {
+    useStore.setState({
+      settings: { ...useStore.getState().settings, clearInputImagesAfterSubmit: true },
+      inputImages: [imageA],
+    })
+
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).not.toBe('running'))
+
+    expect(useStore.getState().prompt).toBe('')
+    expect(useStore.getState().inputImages).toEqual([])
+  })
+
+  it('关掉提交后清空时提示词原样留着', async () => {
+    useStore.setState({
+      settings: { ...useStore.getState().settings, clearInputAfterSubmit: false },
+      inputImages: [imageA],
+    })
+
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).not.toBe('running'))
+
+    expect(useStore.getState().prompt).toBe('prompt')
+    expect(useStore.getState().inputImages).toEqual([imageA])
+  })
+
   it('does not apply the outer watchdog to concurrent Codex CLI custom requests', async () => {
     const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
     vi.mocked(callImageApi).mockImplementationOnce(() => request.promise)
