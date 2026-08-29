@@ -340,9 +340,11 @@ function channelNode(channel, idx) {
         </div>
         <p class="card-meta">${esc(channel.baseUrl || '（未填地址）')}${channel.description ? ` · ${esc(channel.description)}` : ''}</p>
         ${live && channel.health?.state === 'down'
-          ? `<p class="card-note bad">连续失败 ${channel.health.consecutiveFailures} 次，故障转移正在绕过它。${channel.health.lastError ? `最近错误：${esc(channel.health.lastError)}` : ''}</p>`
+          ? `<p class="card-note bad">连续 ${channel.health.consecutiveFailures} 次请求被渠道自身拒绝或打不通，故障转移正在绕过它。${channel.health.lastError ? `最近错误：${esc(channel.health.lastError)}` : ''}
+              <button class="link" type="button" data-act="clear-fault" data-id="${esc(channel.id)}">我测过没问题，消除标记</button></p>`
           : live && channel.health?.state === 'flaky'
-            ? `<p class="card-note warn">最近 ${channel.health.recentCalls} 次调用里失败 ${pct(channel.health.recentFailRate)}，能用但会拖慢出图。</p>`
+            ? `<p class="card-note warn">最近 ${channel.health.recentCalls} 次调用里 ${pct(channel.health.recentFailRate)} 因渠道自身出错，能用但会拖慢出图。
+                <button class="link" type="button" data-act="clear-fault" data-id="${esc(channel.id)}">消除标记</button></p>`
             : ''}
         ${open ? `<div class="card-body">${channelForm(channel, idx)}</div>` : ''}
       </div>
@@ -353,6 +355,7 @@ function channelNode(channel, idx) {
 function healthTitle(health) {
   if (health.state === 'down') return `连续失败 ${health.consecutiveFailures} 次`
   if (health.state === 'flaky') return `最近 ${health.recentCalls} 次里失败 ${pct(health.recentFailRate)}`
+  if (health.stale) return '之前失败过，但已经很久没再出错，按恢复处理'
   return '最近一次调用成功'
 }
 
@@ -368,7 +371,7 @@ function renderChannelsView() {
       ? `<div class="alert">
           <div class="alert-body">
             <strong>${broken.length} 条渠道疑似故障</strong>
-            <p>${broken.map((item) => esc(item.name)).join('、')} 连续失败多次，出图请求正在绕过它们。点「一键测全部」确认，或去「用量与健康」看具体错误。</p>
+            <p>${broken.map((item) => esc(item.name)).join('、')} 连续失败多次，出图请求正在绕过它们。点「一键测全部」——探测通过的会自动消除标记；也可以在卡片上单独消除。</p>
           </div>
           <button type="button" data-view="usage">查看详情</button>
         </div>`
@@ -642,6 +645,7 @@ function renderUsageView() {
 
     <div class="panel">
       <h2>最近记录</h2>
+      <p class="hint">标「不计入」的失败不会影响健康度：请求内容被拒、参数不合法、限流这些换渠道也一样失败，不是渠道的问题。</p>
       ${usage.events.length ? `
         <table class="grid" style="margin-top:14px">
           <thead><tr><th>时间</th><th>渠道</th><th>结果</th><th class="num">耗时</th><th>说明</th></tr></thead>
@@ -650,7 +654,10 @@ function renderUsageView() {
               <tr>
                 <td class="muted">${esc(ago(item.at))}</td>
                 <td>${esc(item.channelName)}${item.userName ? ` <span class="muted">· ${esc(item.userName)}</span>` : ''}</td>
-                <td><span class="tag ${item.ok ? 'live' : 'alert'}">${item.ok ? '成功' : item.status ? `HTTP ${item.status}` : '失败'}</span></td>
+                <td>
+                  <span class="tag ${item.ok ? 'live' : item.fault ? 'alert' : 'warn'}">${item.ok ? '成功' : item.status ? `HTTP ${item.status}` : '失败'}</span>
+                  ${!item.ok && !item.fault ? '<span class="tag idle">不计入</span>' : ''}
+                </td>
                 <td class="num">${item.latencyMs ? `${(item.latencyMs / 1000).toFixed(1)}s` : '—'}</td>
                 <td class="muted">${esc(item.error.slice(0, 80))}</td>
               </tr>
@@ -1039,6 +1046,12 @@ function bindChannelEvents() {
         const result = await api('/api/admin/channels/test', { method: 'POST', body: { id } })
         target.textContent = `${result.ok ? '✓' : '✗'} ${result.message}${result.latencyMs != null ? `（${result.latencyMs}ms）` : ''}`
         target.className = `probe ${result.ok ? 'ok' : 'bad'}`
+        // 探测通过时服务端会撤掉故障标记，但这里不能直接 refresh——会重渲染掉刚显示的探测结果。
+        // 先把内存里的健康度改成正常，等下次渲染时自然一致。
+        if (result.ok && result.health) {
+          const channel = state.channels.find((item) => item.id === id)
+          if (channel) channel.health = result.health
+        }
       } catch (err) {
         target.textContent = `✗ ${err.message}`
         target.className = 'probe bad'
@@ -1087,6 +1100,8 @@ function bindChannelEvents() {
       probeAll = Object.fromEntries(result.results.map((item) => [item.id, item]))
       const bad = result.results.filter((item) => !item.ok)
       showToast(bad.length ? `${bad.length} / ${result.results.length} 条渠道有问题` : `全部 ${result.results.length} 条渠道连通正常`, bad.length ? 'bad' : 'good')
+      // 探测通过的渠道服务端已经撤掉故障标记，重新拉一次 state 让徽标同步。
+      await refresh()
     } catch (err) {
       showToast(err.message, 'bad')
     } finally {
@@ -1099,6 +1114,20 @@ function bindChannelEvents() {
     probeAll = null
     render()
   })
+
+  for (const button of app.querySelectorAll('[data-act=clear-fault]')) {
+    button.addEventListener('click', async () => {
+      button.disabled = true
+      try {
+        await api(`/api/admin/channels/${encodeURIComponent(button.dataset.id)}/clear-fault`, { method: 'POST' })
+        await refresh()
+        showToast('已消除故障标记。再出现渠道自身的失败会重新计数', 'good')
+      } catch (err) {
+        button.disabled = false
+        showToast(err.message, 'bad')
+      }
+    })
+  }
 }
 
 /**

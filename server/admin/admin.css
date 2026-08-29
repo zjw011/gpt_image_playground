@@ -450,6 +450,21 @@ form > .btn-row { margin-top: 18px; }
 .card-note.bad { color: var(--danger); }
 .card-note.warn { color: var(--warn); }
 
+/* 提示句尾的行内操作，看起来像链接而不是又一个按钮——它是补救动作，不该跟"编辑"抢注意力。 */
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.link:hover { opacity: 0.75; }
+.link:disabled { cursor: default; opacity: 0.5; }
+
 /* ===== 徽标 ===== */
 
 .tag {

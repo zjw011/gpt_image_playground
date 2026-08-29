@@ -25,7 +25,7 @@ import {
   verifyPassword,
 } from './store.mjs'
 import { buildUpstreamUrl } from './upstream.mjs'
-import { channelHealth, resetUsage, usageSummary } from './usage.mjs'
+import { channelHealth, clearChannelFault, resetUsage, usageSummary } from './usage.mjs'
 
 function genChannelId() {
   return `ch-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
@@ -164,7 +164,11 @@ export async function handleAdminRoute(req, res, ctx) {
     const body = await readJsonBody(req)
     const channel = typeof body.id === 'string' ? findChannel(body.id) : null
     if (!channel) throw new HttpError(404, '渠道不存在')
-    return sendJson(res, 200, await testChannel(channel))
+    const result = await testChannel(channel)
+    // 探测通过就说明渠道现在是好的，顺手把故障标记撤掉——
+    // 否则管理员测出"连通正常"却还盯着一个红色徽标，只能去清空全部统计。
+    if (result.ok) clearChannelFault(channel.id)
+    return sendJson(res, 200, { ...result, health: channelHealth(channel.id) })
   }
 
   // 一键测全部：并发探测所有渠道，省掉逐条点。渠道数量级在几十条，全并发不会打爆上游。
@@ -177,7 +181,20 @@ export async function handleAdminRoute(req, res, ctx) {
         ? await testChannel(channel)
         : { ok: false, status: 0, message: '未配置 API Key' }),
     })))
+    for (const result of results) {
+      if (result.ok) clearChannelFault(result.id)
+    }
     return sendJson(res, 200, { results })
+  }
+
+  // 手动消除故障标记：管理员自己测过没问题时，用它把徽标清掉，
+  // 不必为了一条渠道去清空所有统计。
+  const clearFaultMatch = path.match(/^\/api\/admin\/channels\/([^/]+)\/clear-fault$/)
+  if (clearFaultMatch && method === 'POST') {
+    const id = decodeURIComponent(clearFaultMatch[1])
+    if (!findChannel(id)) throw new HttpError(404, '渠道不存在')
+    clearChannelFault(id)
+    return sendJson(res, 200, { ok: true, health: channelHealth(id) })
   }
 
   // ===== 自定义服务商 =====

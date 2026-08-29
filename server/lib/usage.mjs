@@ -22,7 +22,38 @@ const FLAKY_RATE = 0.2
 /** 判定不稳至少要有这么多次调用，否则 1 失败 1 成功就会被标成 50% 失败率。 */
 const FLAKY_MIN_CALLS = 5
 
+/**
+ * 故障判定的时效。超过这个时间没再出错，就不该再挂着"疑似故障"——
+ * 渠道可能早就恢复了，只是之后一直没人用到它，没有新数据来翻案。
+ */
+const STALE_FAULT_MS = 6 * 3_600_000
+
 const FLUSH_DELAY_MS = 5_000
+
+/**
+ * 这次失败到底能不能算渠道的锅。
+ *
+ * 关键在于故障转移会把一个请求顺序试完所有渠道：如果是提示词被内容策略拒、
+ * 参数不合法这类**请求本身**的问题，每条渠道都会各吃一次失败，
+ * 重复几次就把整条链路全标成故障——而渠道一条都没坏。
+ *
+ * 所以只有指向渠道自身的错误才计入连续失败：
+ * - 0     网络层不通、超时
+ * - 401/402/403  密钥失效、欠费、无权限
+ * - 404   地址填错
+ * - 408   上游自己报超时
+ * - 5xx   上游故障
+ *
+ * 排除在外的（仍然计入总失败数，只是不参与健康度判定）：
+ * - 400/422  请求内容或参数的问题
+ * - 429      限流，是容量问题且会自行恢复
+ */
+export function isChannelFault(status) {
+  const code = toInt(status)
+  if (code === 0) return true
+  if (code >= 500) return true
+  return code === 401 || code === 402 || code === 403 || code === 404 || code === 408
+}
 
 let usageFile = ''
 let cache = null
@@ -88,6 +119,8 @@ function normalizeUsage(input) {
         latencyMs: toInt(raw.latencyMs),
         at: toInt(raw.at),
         error: typeof raw.error === 'string' ? raw.error.slice(0, 200) : '',
+        // 老数据没有 fault 字段，按状态码补判，这样升级后历史记录也能参与健康度。
+        fault: raw.ok === true ? false : typeof raw.fault === 'boolean' ? raw.fault : isChannelFault(raw.status),
       }))
   }
 
@@ -152,13 +185,18 @@ function dayKey(at) {
  * @param entry.latencyMs 从发起到结束的耗时
  * @param entry.userId    多用户模式下的用户 id，其他模式为空串
  * @param entry.error     失败原因，只留前 200 字
+ * @param entry.aborted   访客主动断开（点停止、关页面）——完全不该记，见下
  */
 export function recordChannelCall(entry) {
   if (!cache || !entry?.channelId) return
+  // 用户自己取消的请求不是任何人的错，记进去只会污染成功率。
+  if (entry.aborted === true) return
 
   const at = toInt(entry.at, Date.now()) || Date.now()
   const ok = entry.ok === true
   const latencyMs = toInt(entry.latencyMs)
+  // 失败是否算渠道的锅。请求内容被拒、限流这类失败照样统计，但不参与健康度判定。
+  const fault = !ok && isChannelFault(entry.status)
 
   const channel = cache.channels[entry.channelId] ?? {
     total: 0, ok: 0, fail: 0, latencySum: 0, consecutiveFailures: 0, lastOkAt: 0, lastFailAt: 0, lastError: '',
@@ -171,9 +209,10 @@ export function recordChannelCall(entry) {
     channel.lastOkAt = at
   } else {
     channel.fail += 1
-    channel.consecutiveFailures += 1
     channel.lastFailAt = at
     channel.lastError = String(entry.error ?? '').slice(0, 200)
+    // 只有渠道自身的故障才推进连续失败计数。
+    if (fault) channel.consecutiveFailures += 1
   }
   cache.channels[entry.channelId] = channel
 
@@ -205,6 +244,7 @@ export function recordChannelCall(entry) {
     latencyMs,
     at,
     error: ok ? '' : String(entry.error ?? '').slice(0, 200),
+    fault,
   })
   if (cache.events.length > MAX_EVENTS) cache.events.splice(0, cache.events.length - MAX_EVENTS)
 
@@ -212,29 +252,66 @@ export function recordChannelCall(entry) {
   scheduleFlush()
 }
 
+/** 手动把一条渠道的故障标记清掉：连续失败归零，近期失败明细不再参与判定。 */
+export function clearChannelFault(channelId, at = Date.now()) {
+  if (!cache || !channelId) return false
+
+  const stat = cache.channels[channelId]
+  const hadFault = Boolean(stat?.consecutiveFailures) || cache.events.some((item) => item.channelId === channelId && item.fault)
+  if (stat) {
+    stat.consecutiveFailures = 0
+    stat.lastError = ''
+  }
+  // 明细保留（用量数据不该被悄悄改写），只摘掉"算渠道故障"这个标记。
+  for (const item of cache.events) {
+    if (item.channelId === channelId) item.fault = false
+  }
+  cache.updatedAt = at
+  flushUsage()
+  return hadFault
+}
+
 /**
  * 渠道健康度。
  * - `unknown` 还没被调用过，无从判断
- * - `down`    连续失败达到阈值，故障转移正在绕过它
- * - `flaky`   近期失败率偏高，能用但会拖慢出图
- * - `healthy` 最近一次调用是成功的
+ * - `down`    近期连续出现渠道自身故障，故障转移正在绕过它
+ * - `flaky`   近期故障率偏高，能用但会拖慢出图
+ * - `healthy` 其余情况
+ *
+ * 只看 `fault` 为真的失败：提示词被拒、参数不合法、限流这些换渠道也一样会失败，
+ * 算进去会把整条链路全标成故障。另外故障判定有时效——超过 STALE_FAULT_MS 没再出错，
+ * 就当它已经恢复了，否则一次事故会让标记一直挂着，而之后根本没有新数据来翻案。
  */
-export function channelHealth(channelId, recentWindow = 20) {
-  if (!cache) return { state: 'unknown', consecutiveFailures: 0, recentFailRate: 0, recentCalls: 0 }
+export function channelHealth(channelId, recentWindow = 20, now = Date.now()) {
+  const empty = { state: 'unknown', consecutiveFailures: 0, recentFailRate: 0, recentCalls: 0, stale: false }
+  if (!cache) return empty
 
   const stat = cache.channels[channelId]
-  if (!stat || stat.total === 0) return { state: 'unknown', consecutiveFailures: 0, recentFailRate: 0, recentCalls: 0 }
+  if (!stat || stat.total === 0) return empty
 
   const recent = cache.events.filter((item) => item.channelId === channelId).slice(-recentWindow)
-  const recentFails = recent.filter((item) => !item.ok).length
-  const recentFailRate = recent.length ? recentFails / recent.length : 0
-  const state = stat.consecutiveFailures >= DOWN_THRESHOLD
+  const recentFaults = recent.filter((item) => item.fault).length
+  const recentFailRate = recent.length ? recentFaults / recent.length : 0
+  // 最近一次成功比最近一次故障更晚，说明已经恢复了。
+  const recovered = stat.lastOkAt > stat.lastFailAt
+  const stale = stat.lastFailAt > 0 && now - stat.lastFailAt > STALE_FAULT_MS
+  const faulting = stat.consecutiveFailures > 0 && !recovered && !stale
+
+  const state = faulting && stat.consecutiveFailures >= DOWN_THRESHOLD
     ? 'down'
-    : recent.length >= FLAKY_MIN_CALLS && recentFailRate > FLAKY_RATE
+    : !stale && recent.length >= FLAKY_MIN_CALLS && recentFailRate > FLAKY_RATE
       ? 'flaky'
       : 'healthy'
 
-  return { state, consecutiveFailures: stat.consecutiveFailures, recentFailRate, recentCalls: recent.length }
+  return {
+    state,
+    consecutiveFailures: faulting ? stat.consecutiveFailures : 0,
+    recentFailRate,
+    recentCalls: recent.length,
+    stale,
+    // 带上最近错误，后台的故障提示才能直接说"因为什么"，不必再跳到用量页。
+    lastError: state === 'healthy' ? '' : stat.lastError,
+  }
 }
 
 /** 后台用量视图。channelNames 用来把 id 翻成人能读的名字，删掉的渠道仍保留统计但标注"已删除"。 */
@@ -252,8 +329,9 @@ export function usageSummary(channelNames = new Map(), userNames = new Map()) {
       avgLatencyMs: stat.total ? Math.round(stat.latencySum / stat.total) : 0,
       lastOkAt: stat.lastOkAt,
       lastFailAt: stat.lastFailAt,
-      lastError: stat.lastError,
       ...channelHealth(id),
+      // 明细表要看历史，即使当前判定已恢复也照样展示最后一次错误。
+      lastError: stat.lastError,
     }))
     .sort((a, b) => b.total - a.total)
 

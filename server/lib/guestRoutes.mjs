@@ -100,6 +100,11 @@ async function relayToChannel(req, res, ctx) {
   // 只统计提交请求。异步渠道的轮询是 GET，一次出图能轮几十次，全记会把成功率算歪。
   const counted = req.method === 'POST'
   const started = Date.now()
+  // 访客提前断开（点了停止、关了标签页）会让转发以失败结算，但这跟渠道好坏无关。
+  let clientGone = false
+  res.on('close', () => {
+    if (!res.writableEnded) clientGone = true
+  })
   const track = (ok, status, error) => {
     if (!counted) return
     recordChannelCall({
@@ -110,6 +115,7 @@ async function relayToChannel(req, res, ctx) {
       latencyMs: Date.now() - started,
       at: started,
       error,
+      aborted: !ok && clientGone,
     })
   }
 

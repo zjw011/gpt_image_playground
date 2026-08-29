@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { channelHealth, flushUsage, initUsage, recordChannelCall, resetUsage, usageSummary } from './usage.mjs'
+import { channelHealth, clearChannelFault, flushUsage, initUsage, isChannelFault, recordChannelCall, resetUsage, usageSummary } from './usage.mjs'
 
 function freshDir() {
   const dir = mkdtempSync(join(tmpdir(), 'gip-usage-'))
@@ -58,7 +58,7 @@ describe('recordChannelCall', () => {
     const raw = readFileSync(join(dir, 'usage.json'), 'utf-8')
     expect(existsSync(join(dir, 'usage.json'))).toBe(true)
     expect(Object.keys(JSON.parse(raw))).toEqual(['version', 'channels', 'users', 'days', 'events', 'updatedAt'])
-    expect(Object.keys(JSON.parse(raw).events[0]).sort()).toEqual(['at', 'channelId', 'error', 'latencyMs', 'ok', 'status', 'userId'])
+    expect(Object.keys(JSON.parse(raw).events[0]).sort()).toEqual(['at', 'channelId', 'error', 'fault', 'latencyMs', 'ok', 'status', 'userId'])
   })
 
   it('明细条数有上限，不会让文件无限膨胀', () => {
@@ -164,5 +164,120 @@ describe('usageSummary', () => {
     resetUsage()
     expect(channelHealth('ch-1').state).toBe('unknown')
     expect(usageSummary().totals).toEqual({ total: 0, ok: 0, fail: 0 })
+  })
+})
+
+describe('isChannelFault', () => {
+  it('网络不通、鉴权失败、地址错和 5xx 算渠道的锅', () => {
+    for (const status of [0, 401, 402, 403, 404, 408, 500, 502, 503, 504]) {
+      expect(isChannelFault(status), `status=${status}`).toBe(true)
+    }
+  })
+
+  it('请求内容问题与限流不算——换渠道也一样会失败', () => {
+    for (const status of [400, 422, 429]) {
+      expect(isChannelFault(status), `status=${status}`).toBe(false)
+    }
+  })
+})
+
+describe('健康度的误报防线', () => {
+  it('提示词被拒（400）重复多次也不会把渠道标成故障', () => {
+    freshDir()
+    // 故障转移会让同一个坏提示词把每条渠道都试一遍，各吃一次 400。
+    for (let i = 0; i < 6; i += 1) {
+      recordChannelCall({ channelId: 'ch-1', ok: false, status: 400, latencyMs: 50, error: '内容不合规' })
+    }
+    expect(channelHealth('ch-1')).toMatchObject({ state: 'healthy', consecutiveFailures: 0 })
+    // 但失败次数照样统计，账还是要算的。
+    expect(usageSummary(new Map([['ch-1', 'A']])).channels[0]).toMatchObject({ total: 6, fail: 6 })
+  })
+
+  it('限流（429）不算渠道故障——那是容量问题，会自己恢复', () => {
+    freshDir()
+    for (let i = 0; i < 5; i += 1) {
+      recordChannelCall({ channelId: 'ch-1', ok: false, status: 429, latencyMs: 20, error: '限流' })
+    }
+    expect(channelHealth('ch-1').state).toBe('healthy')
+  })
+
+  it('访客自己取消的请求完全不记，不该污染成功率', () => {
+    freshDir()
+    for (let i = 0; i < 4; i += 1) {
+      recordChannelCall({ channelId: 'ch-1', ok: false, status: 0, latencyMs: 30, aborted: true, error: 'socket hang up' })
+    }
+    expect(channelHealth('ch-1').state).toBe('unknown')
+    expect(usageSummary(new Map([['ch-1', 'A']])).totals).toEqual({ total: 0, ok: 0, fail: 0 })
+  })
+
+  it('400 和真故障混在一起时，只有真故障推进连续计数', () => {
+    freshDir()
+    recordChannelCall({ channelId: 'ch-1', ok: false, status: 500, latencyMs: 10, error: '上游 500' })
+    recordChannelCall({ channelId: 'ch-1', ok: false, status: 400, latencyMs: 10, error: '参数错' })
+    recordChannelCall({ channelId: 'ch-1', ok: false, status: 500, latencyMs: 10, error: '上游 500' })
+    expect(channelHealth('ch-1').consecutiveFailures).toBe(2)
+    expect(channelHealth('ch-1').state).not.toBe('down')
+    recordChannelCall({ channelId: 'ch-1', ok: false, status: 503, latencyMs: 10, error: '上游 503' })
+    expect(channelHealth('ch-1').state).toBe('down')
+  })
+
+  it('陈旧故障自动过期：超过 6 小时没再出错就按恢复处理', () => {
+    freshDir()
+    const old = Date.now() - 7 * 3_600_000
+    for (let i = 0; i < 4; i += 1) {
+      recordChannelCall({ channelId: 'ch-1', ok: false, status: 500, latencyMs: 10, at: old, error: '上游 500' })
+    }
+    // 用当时的时间点看，它确实是挂的。
+    expect(channelHealth('ch-1', 20, old + 1000).state).toBe('down')
+    // 七小时后再看，不该还挂着——之后一直没人用它，没有新数据来翻案。
+    expect(channelHealth('ch-1')).toMatchObject({ state: 'healthy', stale: true, consecutiveFailures: 0 })
+  })
+
+  it('最近一次成功晚于最近一次失败时判定恢复，即使连续计数还没被清', () => {
+    freshDir()
+    recordChannelCall({ channelId: 'ch-1', ok: false, status: 500, latencyMs: 10, at: 1000, error: 'x' })
+    recordChannelCall({ channelId: 'ch-1', ok: false, status: 500, latencyMs: 10, at: 2000, error: 'x' })
+    recordChannelCall({ channelId: 'ch-1', ok: false, status: 500, latencyMs: 10, at: 3000, error: 'x' })
+    expect(channelHealth('ch-1', 20, 4000).state).toBe('down')
+    recordChannelCall({ channelId: 'ch-1', ok: true, status: 200, latencyMs: 10, at: 4000 })
+    expect(channelHealth('ch-1', 20, 5000).state).toBe('healthy')
+  })
+})
+
+describe('clearChannelFault', () => {
+  it('管理员手动消除后立刻回到正常，且不删掉用量数据', () => {
+    freshDir()
+    record('ch-1', false, 4)
+    expect(channelHealth('ch-1').state).toBe('down')
+
+    expect(clearChannelFault('ch-1')).toBe(true)
+    expect(channelHealth('ch-1')).toMatchObject({ state: 'healthy', consecutiveFailures: 0 })
+    // 调用次数和失败次数仍在——消除的是判定，不是账。
+    expect(usageSummary(new Map([['ch-1', 'A']])).channels[0]).toMatchObject({ total: 4, fail: 4 })
+  })
+
+  it('消除后再出现真故障会重新计数，不会永久免疫', () => {
+    freshDir()
+    record('ch-1', false, 4)
+    clearChannelFault('ch-1')
+    expect(channelHealth('ch-1').state).toBe('healthy')
+    record('ch-1', false, 3)
+    expect(channelHealth('ch-1').state).toBe('down')
+  })
+
+  it('本来就没有故障时返回 false，好让调用方知道什么都没发生', () => {
+    freshDir()
+    record('ch-1', true, 2)
+    expect(clearChannelFault('ch-1')).toBe(false)
+    expect(clearChannelFault('')).toBe(false)
+  })
+
+  it('只影响指定渠道', () => {
+    freshDir()
+    record('ch-1', false, 4)
+    record('ch-2', false, 4)
+    clearChannelFault('ch-1')
+    expect(channelHealth('ch-1').state).toBe('healthy')
+    expect(channelHealth('ch-2').state).toBe('down')
   })
 })
