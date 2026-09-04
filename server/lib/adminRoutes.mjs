@@ -2,6 +2,7 @@
 // 所有路由都要求管理员会话，除了 /api/admin/state（用于判断是否首次初始化）与 /api/admin/login。
 
 import { randomBytes } from 'node:crypto'
+import { auditChannel } from './channelAudit.mjs'
 import { HttpError, readJsonBody, sendJson } from './http.mjs'
 import {
   ACCESS_MODES,
@@ -211,6 +212,46 @@ export async function handleAdminRoute(req, res, ctx) {
     if (!findChannel(id)) throw new HttpError(404, '渠道不存在')
     clearChannelFault(id)
     return sendJson(res, 200, { ok: true, health: channelHealth(id) })
+  }
+
+  // 深度自检：真发一次最小出图请求，区分"没余额"和"密钥错"。
+  // 会消耗额度，所以只在管理员明确点击时执行，且逐条串行——
+  // 几十条渠道同时真出图既烧钱又容易撞上限流，把好渠道也判成坏的。
+  if (path === '/api/admin/channels/audit' && method === 'POST') {
+    const config = getConfig()
+    const body = await readJsonBody(req)
+    const only = Array.isArray(body.ids) ? new Set(body.ids.filter((id) => typeof id === 'string')) : null
+    const targets = only ? config.channels.filter((item) => only.has(item.id)) : config.channels
+
+    const results = []
+    for (const channel of targets) {
+      const result = await auditChannel(channel, config.customProviders)
+      // 自检真出图成功，说明这条渠道现在确实是好的，顺手把故障标记撤掉。
+      if (result.verdict === 'ok') clearChannelFault(channel.id)
+      results.push({ id: channel.id, name: channel.name, enabled: channel.enabled, ...result })
+    }
+    return sendJson(res, 200, { results })
+  }
+
+  // 批量停用：自检点出没余额的渠道后一键处理。停用而不是删除，
+  // 密钥留着，充值后重新勾上就能继续用。
+  if (path === '/api/admin/channels/bulk-disable' && method === 'POST') {
+    const body = await readJsonBody(req)
+    const ids = Array.isArray(body.ids) ? body.ids.filter((id) => typeof id === 'string') : []
+    if (!ids.length) throw new HttpError(400, '没有指定要停用的渠道')
+
+    const wanted = new Set(ids)
+    const disabled = []
+    updateConfig((config) => {
+      for (const channel of config.channels) {
+        if (!wanted.has(channel.id) || !channel.enabled) continue
+        channel.enabled = false
+        channel.updatedAt = Date.now()
+        disabled.push(channel.name)
+      }
+      return config
+    })
+    return sendJson(res, 200, { disabled, channels: getConfig().channels.map(toAdminChannel) })
   }
 
   // ===== 自定义服务商 =====

@@ -36,6 +36,18 @@ const HEALTH_LABELS = {
   unknown: { tone: 'idle', text: '未使用' },
 }
 
+/** 深度自检的判定展示。文案落在"这条渠道到底还能不能用"上。 */
+const AUDIT_LABELS = {
+  ok: { tone: 'live', text: '✓ 能出图', hint: '真出了一张图，余额和密钥都正常。' },
+  'no-balance': { tone: 'alert', text: '✗ 没余额', hint: '上游明确回了额度/余额不足，充值前这条渠道每次都会失败。' },
+  auth: { tone: 'alert', text: '✗ 密钥无效', hint: '密钥错了、过期了或被封了，跟余额无关，重填密钥才能用。' },
+  model: { tone: 'warn', text: '✗ 模型不可用', hint: '密钥能用，但这个模型 ID 在该渠道下取不到，改模型或换分组。' },
+  'rate-limit': { tone: 'warn', text: '限流', hint: '被上游限流了，说明密钥有效。过一会儿再测才能确认余额。' },
+  unreachable: { tone: 'alert', text: '✗ 连不上', hint: '地址打不通或超时，先确认 baseUrl 和网络。' },
+  error: { tone: 'alert', text: '✗ 出错', hint: '出图失败但不属于上面任何一类，看具体错误。' },
+  skipped: { tone: 'idle', text: '未检测', hint: '这条渠道没法用自检判断，需要手动确认。' },
+}
+
 const AGENT_MODES = [
   {
     id: 'off',
@@ -86,6 +98,11 @@ let freshCredential = null
 // 一键测全部的结果，按渠道 id 存；null 表示还没测过。
 let probeAll = null
 let probeAllRunning = false
+// 深度自检的结果，按渠道 id 存；null 表示还没自检过。
+let auditResults = null
+let auditRunning = false
+// 正在自检的渠道名，用来在按钮上显示进度。
+let auditProgress = ''
 let toastTimer = 0
 
 /** 相对时间。后台看的是"多久之前"，绝对时间戳还得自己算差值。 */
@@ -347,6 +364,7 @@ function channelNode(channel, idx) {
   const live = channel.enabled && channel.hasApiKey
   const health = HEALTH_LABELS[channel.health?.state ?? 'unknown']
   const probe = probeAll?.[channel.id]
+  const audit = auditResults?.[channel.id]
   return `
     <div class="node ${live ? 'live' : 'idle'}" data-id="${esc(channel.id)}" draggable="true">
       <span class="node-index" title="拖动可调整故障转移顺序">${idx + 1}</span>
@@ -362,6 +380,7 @@ function channelNode(channel, idx) {
           <span class="tag">${esc(channel.provider)}</span>
           <span class="tag mono">${esc(channel.model)}</span>
           <span class="spacer"></span>
+          ${audit ? `<span class="tag ${(AUDIT_LABELS[audit.verdict] ?? AUDIT_LABELS.error).tone}" title="${esc(audit.message)}">${(AUDIT_LABELS[audit.verdict] ?? AUDIT_LABELS.error).text}</span>` : ''}
           ${probe ? `<span class="tag ${probe.ok ? 'live' : 'alert'}" title="${esc(probe.message)}">${probe.ok ? `✓ ${probe.latencyMs ?? 0}ms` : '✗ 探测失败'}</span>` : ''}
           <button class="ghost" data-act="toggle-channel" data-id="${esc(channel.id)}">${open ? '收起' : '编辑'}</button>
         </div>
@@ -386,6 +405,63 @@ function healthTitle(health) {
   return '最近一次调用成功'
 }
 
+/** 深度自检结果面板。真出图才能区分"没余额"和"密钥错"，所以结果单独列出来，不挤在卡片徽标里。 */
+function auditPanel() {
+  if (!auditResults) return ''
+
+  // enabled 取当前 state 而不是自检时的快照——停用之后这张表要立刻反映出来。
+  const rows = state.channels
+    .filter((channel) => auditResults[channel.id])
+    .map((channel) => ({ ...auditResults[channel.id], enabled: channel.enabled }))
+  if (!rows.length) return ''
+  const noBalance = rows.filter((item) => item.verdict === 'no-balance')
+  const ok = rows.filter((item) => item.verdict === 'ok')
+  const actionable = noBalance.filter((item) => item.enabled)
+
+  return `
+    <div class="panel">
+      <div class="card-head" style="margin-bottom:12px">
+        <h2 style="margin:0">自检结果</h2>
+        <span class="spacer"></span>
+        ${auditRunning ? `<span class="tag warn">正在测 ${esc(auditProgress)}（${rows.length} / ${state.channels.length}）</span>` : '<button class="ghost" id="clear-audit" type="button">收起</button>'}
+      </div>
+      <p class="hint" style="margin-bottom:14px">${ok.length} 条能出图，${noBalance.length} 条没余额，已测 ${rows.length} 条。判定来自上游对一次真实出图请求的回复，比连通测试可靠。</p>
+      ${actionable.length && !auditRunning
+        ? `<div class="alert">
+            <div class="alert-body">
+              <strong>${actionable.length} 条渠道没余额</strong>
+              <p>${actionable.map((item) => esc(item.name)).join('、')}。留在链路里只会让每次出图都先失败一轮再转移，拖慢所有人。建议停用——密钥保留，充值后重新启用即可。</p>
+            </div>
+            <button class="primary" id="disable-no-balance" type="button">停用这 ${actionable.length} 条</button>
+          </div>`
+        : noBalance.length && !auditRunning
+          ? `<div class="alert">
+              <div class="alert-body">
+                <strong>${noBalance.length} 条没余额的渠道已经是停用状态</strong>
+                <p>${noBalance.map((item) => esc(item.name)).join('、')}。它们已经不在出图链路里，不影响出图。充值后回到卡片里重新勾上「启用此渠道」。</p>
+              </div>
+            </div>`
+          : ''}
+      <table class="grid">
+        <thead><tr><th>渠道</th><th>判定</th><th>说明</th><th class="num">耗时</th></tr></thead>
+        <tbody>
+          ${rows.map((item) => {
+            const label = AUDIT_LABELS[item.verdict] ?? AUDIT_LABELS.error
+            return `
+              <tr>
+                <td>${esc(item.name)}${item.enabled ? '' : ' <span class="tag idle">已停用</span>'}</td>
+                <td><span class="tag ${label.tone}" title="${esc(label.hint)}">${label.text}</span></td>
+                <td class="muted">${esc(item.message)}</td>
+                <td class="num">${item.latencyMs ? `${(item.latencyMs / 1000).toFixed(1)}s` : '—'}</td>
+              </tr>
+            `
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `
+}
+
 function renderChannelsView() {
   const live = state.channels.filter((item) => item.enabled && item.hasApiKey).length
   const broken = state.channels.filter((item) => item.enabled && item.hasApiKey && item.health?.state === 'down')
@@ -403,16 +479,21 @@ function renderChannelsView() {
           <button type="button" data-view="usage">查看详情</button>
         </div>`
       : ''}
+    ${auditPanel()}
     ${state.channels.length
       ? `<div class="chain" id="chain">${state.channels.map(channelNode).join('')}</div>`
       : '<div class="empty">还没有渠道。新增一条并填入真实 API Key 后，前端才能出图。</div>'}
     <div class="btn-row">
       <button class="primary" id="add-channel" type="button">新增渠道</button>
       ${state.channels.length
-        ? `<button id="test-all" type="button"${probeAllRunning ? ' disabled' : ''}>${probeAllRunning ? '正在探测…' : '一键测全部'}</button>`
+        ? `<button id="test-all" type="button"${probeAllRunning || auditRunning ? ' disabled' : ''}>${probeAllRunning ? '正在探测…' : '一键测全部'}</button>
+           <button id="audit-all" type="button"${probeAllRunning || auditRunning ? ' disabled' : ''}>${auditRunning ? `正在自检 ${esc(auditProgress)}…` : '深度自检（会真出图）'}</button>`
         : ''}
       ${probeAll ? '<button class="ghost" id="clear-probe" type="button">清除探测结果</button>' : ''}
     </div>
+    ${state.channels.length
+      ? '<p class="hint" style="margin-top:10px">「一键测全部」只看端点通不通，欠费的渠道照样显示正常。要查出到底哪条没余额，用「深度自检」——它给每条渠道真发一次 1024×1024 低质量出图请求，会消耗一点额度。</p>'
+      : ''}
   `
 }
 
@@ -1270,6 +1351,66 @@ function bindChannelEvents() {
   app.querySelector('#clear-probe')?.addEventListener('click', () => {
     probeAll = null
     render()
+  })
+
+  app.querySelector('#audit-all')?.addEventListener('click', async () => {
+    if (!await confirmDialog({
+      title: `给 ${state.channels.length} 条渠道各发一次真实出图请求？`,
+      message: '自检会真的出图，每条渠道消耗一张 1024×1024 低质量图的额度。这是区分「没余额」和「密钥错」的唯一办法——只列模型的连通测试对欠费账号一律显示正常。逐条进行，几十条渠道可能要等几分钟。',
+      confirmText: '开始自检',
+    })) return
+
+    auditRunning = true
+    auditResults = {}
+    render()
+    // 一条一条请求，而不是让服务端在一个请求里跑完全部：单次 HTTP 挂几分钟
+    // 很容易被反代掐断，而且中途失败就什么结果都拿不到。这样还能边测边出结果。
+    for (const channel of [...state.channels]) {
+      auditProgress = channel.name
+      render()
+      try {
+        const result = await api('/api/admin/channels/audit', { method: 'POST', body: { ids: [channel.id] } })
+        if (result.results[0]) auditResults[channel.id] = result.results[0]
+      } catch (err) {
+        auditResults[channel.id] = { id: channel.id, name: channel.name, verdict: 'error', message: err.message, latencyMs: 0 }
+      }
+      render()
+    }
+
+    auditProgress = ''
+    auditRunning = false
+    const rows = Object.values(auditResults)
+    const noBalance = rows.filter((item) => item.verdict === 'no-balance').length
+    const ok = rows.filter((item) => item.verdict === 'ok').length
+    // 自检成功的渠道服务端已撤掉故障标记，重新拉一次 state 让徽标同步。
+    await refresh()
+    showToast(noBalance ? `${noBalance} 条渠道没余额，${ok} 条正常` : `自检完成：${ok} / ${rows.length} 条能出图`, noBalance ? 'bad' : 'good')
+  })
+
+  app.querySelector('#clear-audit')?.addEventListener('click', () => {
+    auditResults = null
+    render()
+  })
+
+  app.querySelector('#disable-no-balance')?.addEventListener('click', async () => {
+    const targets = state.channels
+      .filter((channel) => channel.enabled && auditResults?.[channel.id]?.verdict === 'no-balance')
+      .map((channel) => ({ id: channel.id, name: channel.name }))
+    if (!targets.length) return showToast('这些渠道已经都是停用状态了', 'good')
+
+    if (!await confirmDialog({
+      title: `停用 ${targets.length} 条没余额的渠道？`,
+      message: `${targets.map((item) => item.name).join('、')} 会从出图链路里移除，前端立刻看不到它们。密钥和其他配置都保留——充值后回到卡片里重新勾上「启用此渠道」就能继续用。`,
+      confirmText: `停用这 ${targets.length} 条`,
+    })) return
+
+    try {
+      const result = await api('/api/admin/channels/bulk-disable', { method: 'POST', body: { ids: targets.map((item) => item.id) } })
+      await refresh()
+      showToast(`已停用 ${result.disabled.length} 条：${result.disabled.join('、')}`, 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
   })
 
   for (const button of app.querySelectorAll('[data-act=clear-fault]')) {
