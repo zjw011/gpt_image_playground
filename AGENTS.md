@@ -168,3 +168,13 @@ else params = baseParams
 - `src/lib/apiProfiles.ts` 包含多供应商配置，修改时注意向后兼容。
 - `src/lib/db.ts` 是 IndexedDB 封装层，修改 schema 时需升级 `DB_VERSION` 并处理 `onupgradeneeded`。
 - 修改完成后优先运行 `npm run build` 验证编译，再运行 `npm test` 验证测试。
+
+## 交付约定
+
+改动推送后，回复末尾附上服务器更新命令，不要给多个方案让用户自己挑：
+
+```bash
+git pull && docker compose up -d --build
+```
+
+即使本次只改了 `server/`（理论上 `docker compose restart` 就够），也照样给这一条——统一一条命令，用户不必判断该用哪个。
