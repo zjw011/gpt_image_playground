@@ -72,6 +72,35 @@ function toInt(value, fallback = 0) {
   return Number.isFinite(numeric) ? Math.max(0, Math.trunc(numeric)) : fallback
 }
 
+/** 按天交叉桶：{ [id]: { total, ok, fail, latencySum, lastAt } }。 */
+function normalizeBuckets(input) {
+  if (!isRecord(input)) return {}
+  const next = {}
+  for (const [id, raw] of Object.entries(input)) {
+    if (!isRecord(raw)) continue
+    next[id] = {
+      total: toInt(raw.total),
+      ok: toInt(raw.ok),
+      fail: toInt(raw.fail),
+      latencySum: toInt(raw.latencySum),
+      lastAt: toInt(raw.lastAt),
+    }
+  }
+  return next
+}
+
+/** 往交叉桶里累加一次调用。桶不存在就现建。 */
+function bumpBucket(buckets, id, ok, at, latencyMs) {
+  if (!id) return
+  const bucket = buckets[id] ?? { total: 0, ok: 0, fail: 0, latencySum: 0, lastAt: 0 }
+  bucket.total += 1
+  if (ok) bucket.ok += 1
+  else bucket.fail += 1
+  bucket.latencySum += latencyMs
+  bucket.lastAt = Math.max(bucket.lastAt, at)
+  buckets[id] = bucket
+}
+
 /** 统计文件是纯派生数据，读坏了就从零开始——不值得为它中断服务。 */
 function normalizeUsage(input) {
   const record = isRecord(input) ? input : {}
@@ -103,7 +132,15 @@ function normalizeUsage(input) {
   if (isRecord(record.days)) {
     for (const [day, raw] of Object.entries(record.days)) {
       if (!isRecord(raw) || !/^\d{4}-\d{2}-\d{2}$/.test(day)) continue
-      next.days[day] = { total: toInt(raw.total), ok: toInt(raw.ok), fail: toInt(raw.fail) }
+      next.days[day] = {
+        total: toInt(raw.total),
+        ok: toInt(raw.ok),
+        fail: toInt(raw.fail),
+        // 交叉维度：这一天里各用户、各渠道分别用了多少。
+        // 老数据没有这两个字段，就当空的——历史几天缺交叉数据可以接受，不做回填。
+        users: normalizeBuckets(raw.users),
+        channels: normalizeBuckets(raw.channels),
+      }
     }
   }
 
@@ -173,8 +210,18 @@ export function flushUsage() {
   writeUsageFile()
 }
 
+/**
+ * 按天聚合的分桶键。
+ *
+ * 用**本地时区**而不是 UTC：后台要回答的是"今天出了多少图"，
+ * 而管理员心里的"今天"是服务器所在时区的今天。用 toISOString 的话，
+ * 在 UTC+8 下"今天"会从早上 8 点才开始算，凌晨的请求全归到昨天。
+ */
 function dayKey(at) {
-  return new Date(at).toISOString().slice(0, 10)
+  const date = new Date(at)
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${date.getFullYear()}-${month}-${day}`
 }
 
 /**
@@ -226,10 +273,14 @@ export function recordChannelCall(entry) {
   }
 
   const key = dayKey(at)
-  const day = cache.days[key] ?? { total: 0, ok: 0, fail: 0 }
+  const day = cache.days[key] ?? { total: 0, ok: 0, fail: 0, users: {}, channels: {} }
   day.total += 1
   if (ok) day.ok += 1
   else day.fail += 1
+  // 交叉维度：概览页要回答"今天谁用了多少、走的哪条渠道"，
+  // 光有按天总数和全期分用户数据是拼不出来的。
+  bumpBucket(day.users, entry.userId ?? '', ok, at, latencyMs)
+  bumpBucket(day.channels, entry.channelId, ok, at, latencyMs)
   cache.days[key] = day
 
   // 只保留最近 MAX_DAYS 天：按字符串排序对 YYYY-MM-DD 就是按时间排序。
@@ -347,9 +398,10 @@ export function usageSummary(channelNames = new Map(), userNames = new Map()) {
     }))
     .sort((a, b) => b.total - a.total)
 
+  // 只给柱状图要的三个数，不把按天的交叉桶整份塞进响应。
   const days = Object.entries(cache.days)
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([day, stat]) => ({ day, ...stat }))
+    .map(([day, stat]) => ({ day, total: stat.total, ok: stat.ok, fail: stat.fail }))
 
   const totals = days.reduce(
     (acc, item) => ({ total: acc.total + item.total, ok: acc.ok + item.ok, fail: acc.fail + item.fail }),
@@ -375,4 +427,105 @@ export function resetUsage() {
   cache = emptyUsage()
   flushUsage()
   return cache
+}
+
+/** 概览支持的时间范围。今日是默认——后台首屏要回答的第一个问题是"今天怎么样"。 */
+const RANGE_DAYS = { today: 1, week: 7, all: MAX_DAYS }
+
+/** 把 range 参数收敛到已知值，非法输入退回今日而不是报错。 */
+export function normalizeRange(value) {
+  return value === 'week' || value === 'all' ? value : 'today'
+}
+
+/** 从今天往前数 n 天的日期键，最近的在前。 */
+function recentDayKeys(n, now) {
+  return Array.from({ length: n }, (_, i) => dayKey(now - i * 86_400_000))
+}
+
+/** 合并若干天的交叉桶，得到该区间内每个 id 的汇总。 */
+function mergeBuckets(days, field) {
+  const merged = new Map()
+  for (const day of days) {
+    for (const [id, bucket] of Object.entries(day?.[field] ?? {})) {
+      const acc = merged.get(id) ?? { total: 0, ok: 0, fail: 0, latencySum: 0, lastAt: 0 }
+      acc.total += bucket.total
+      acc.ok += bucket.ok
+      acc.fail += bucket.fail
+      acc.latencySum += bucket.latencySum
+      acc.lastAt = Math.max(acc.lastAt, bucket.lastAt)
+      merged.set(id, acc)
+    }
+  }
+  return merged
+}
+
+function bucketRows(merged, names, missingLabel) {
+  return [...merged.entries()]
+    .map(([id, stat]) => ({
+      id,
+      name: names.get(id) ?? missingLabel,
+      exists: names.has(id),
+      total: stat.total,
+      ok: stat.ok,
+      fail: stat.fail,
+      avgLatencyMs: stat.total ? Math.round(stat.latencySum / stat.total) : 0,
+      lastAt: stat.lastAt,
+    }))
+    .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
+}
+
+/**
+ * 后台概览：一屏回答"今天出了多少图、谁在用、走哪条渠道、有没有渠道坏了"。
+ *
+ * 计的是**出图请求次数**而不是图片张数：转发层是纯流式透传，不解析请求体，
+ * 所以拿不到 n。一次 n=4 的请求在这里算 1 次。要按张数计费得让前端上报，
+ * 那是客户端可伪造的数据，目前不值得为它引入一条上报路径。
+ */
+export function usageOverview(channelNames = new Map(), userNames = new Map(), options = {}) {
+  const range = normalizeRange(options.range)
+  const now = options.now ?? Date.now()
+  const empty = { total: 0, ok: 0, fail: 0 }
+  if (!cache) {
+    return { range, today: '', totals: empty, previous: empty, users: [], channels: [], days: [], activeUsers: 0, brokenChannels: [], updatedAt: 0 }
+  }
+
+  const today = dayKey(now)
+  const span = RANGE_DAYS[range]
+  const keys = recentDayKeys(span, now)
+  const picked = keys.map((key) => cache.days[key]).filter(Boolean)
+
+  const totals = picked.reduce(
+    (acc, item) => ({ total: acc.total + item.total, ok: acc.ok + item.ok, fail: acc.fail + item.fail }),
+    { ...empty },
+  )
+  // 环比：跟前面同样长度的区间比。没有上一段数据时前端会自动不显示箭头。
+  const previous = recentDayKeys(span * 2, now)
+    .slice(span)
+    .map((key) => cache.days[key])
+    .filter(Boolean)
+    .reduce((acc, item) => ({ total: acc.total + item.total, ok: acc.ok + item.ok, fail: acc.fail + item.fail }), { ...empty })
+
+  const userRows = bucketRows(mergeBuckets(picked, 'users'), userNames, '（已删除的用户）')
+  const channelRows = bucketRows(mergeBuckets(picked, 'channels'), channelNames, '（已删除的渠道）')
+
+  return {
+    range,
+    today,
+    totals,
+    previous,
+    users: userRows,
+    channels: channelRows.map((item) => ({ ...item, ...channelHealth(item.id) })),
+    // 趋势图始终给满 14 天（没有数据的天补 0），不随 range 变——它的作用是提供上下文。
+    days: recentDayKeys(MAX_DAYS, now).reverse().map((key) => ({
+      day: key,
+      total: cache.days[key]?.total ?? 0,
+      ok: cache.days[key]?.ok ?? 0,
+      fail: cache.days[key]?.fail ?? 0,
+    })),
+    activeUsers: userRows.length,
+    brokenChannels: [...channelNames.entries()]
+      .filter(([id]) => channelHealth(id).state === 'down')
+      .map(([id, name]) => ({ id, name })),
+    updatedAt: cache.updatedAt,
+  }
 }

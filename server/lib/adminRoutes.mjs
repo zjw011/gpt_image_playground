@@ -25,7 +25,7 @@ import {
   verifyPassword,
 } from './store.mjs'
 import { buildUpstreamUrl } from './upstream.mjs'
-import { channelHealth, clearChannelFault, resetUsage, usageSummary } from './usage.mjs'
+import { channelHealth, clearChannelFault, resetUsage, usageOverview, usageSummary } from './usage.mjs'
 
 function genChannelId() {
   return `ch-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
@@ -74,6 +74,22 @@ export async function handleAdminRoute(req, res, ctx) {
   }
 
   if (ctx.role !== 'admin') throw new HttpError(401, '需要管理员登录')
+
+  // ===== 概览：后台首屏，回答"今天出了多少图、谁在用" =====
+  if (path === '/api/admin/overview' && method === 'GET') {
+    const config = getConfig()
+    return sendJson(res, 200, {
+      ...usageOverview(
+        new Map(config.channels.map((item) => [item.id, item.name])),
+        new Map(config.users.map((item) => [item.id, item.displayName || item.username])),
+        { range: new URLSearchParams(ctx.search ?? '').get('range') },
+      ),
+      // 只有多用户模式才知道"是谁"，其他模式下前端要据此隐藏按用户表。
+      accessMode: config.site.accessMode,
+      userCount: config.users.length,
+      channelCount: config.channels.length,
+    })
+  }
 
   // ===== 用量统计 =====
   if (path === '/api/admin/usage' && method === 'GET') {

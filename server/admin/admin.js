@@ -12,12 +12,20 @@ const BUILT_IN_PROVIDERS = [
 ]
 
 const NAV = [
+  { id: 'overview', label: '概览' },
   { id: 'channels', label: '渠道链路' },
   { id: 'usage', label: '用量与健康' },
   { id: 'agent', label: 'Agent 模式' },
   { id: 'users', label: '用户' },
   { id: 'access', label: '访问与安全' },
   { id: 'providers', label: '自定义服务商' },
+]
+
+/** 概览的时间范围选项。 */
+const RANGES = [
+  { id: 'today', label: '今日' },
+  { id: 'week', label: '近 7 天' },
+  { id: 'all', label: '近 14 天' },
 ]
 
 /** 渠道健康度的展示映射。文案直接说"该怎么办"，不是只报一个状态词。 */
@@ -66,7 +74,10 @@ const ACCESS_MODES = [
 
 let state = null
 let usage = null
-let view = 'channels'
+let overview = null
+// 概览的时间范围。今日是默认——首屏要回答的第一个问题是"今天怎么样"。
+let overviewRange = 'today'
+let view = 'overview'
 let expandedChannelId = null
 let expandedUserId = null
 let creatingUser = false
@@ -160,6 +171,8 @@ async function api(path, options = {}) {
 
 async function refresh() {
   state = await api('/api/admin/state')
+  // 概览是首屏，但要先拿到 state 才知道有没有登录——未登录时请求 /overview 只会换来一个 401。
+  if (state.authenticated && view === 'overview') await fetchOverview()
   render()
 }
 
@@ -170,6 +183,20 @@ async function loadUsage() {
     usage = null
     showToast(err.message, 'bad')
   }
+  render()
+}
+
+async function fetchOverview() {
+  try {
+    overview = await api(`/api/admin/overview?range=${overviewRange}`)
+  } catch (err) {
+    overview = null
+    showToast(err.message, 'bad')
+  }
+}
+
+async function loadOverview() {
+  await fetchOverview()
   render()
 }
 
@@ -558,6 +585,134 @@ function renderUsersView() {
   `
 }
 
+// ===== 概览 =====
+
+/**
+ * 环比。上一段没有数据时返回空串——"从 0 涨到 5"说成 +∞% 没有意义。
+ *
+ * graded 控制配色：成功率跌了是坏事，用红色；出图量跌了只是没人用，不该染成告警色。
+ */
+function delta(current, previous, graded = false) {
+  if (!previous) return current ? '<span class="trend flat">新增</span>' : ''
+  const ratio = (current - previous) / previous
+  if (Math.abs(ratio) < 0.005) return '<span class="trend flat">持平</span>'
+  const up = ratio > 0
+  const tone = graded ? (up ? 'up' : 'down') : 'flat'
+  return `<span class="trend ${tone}">${up ? '↑' : '↓'} ${Math.abs(Math.round(ratio * 100))}%</span>`
+}
+
+const RANGE_HINTS = {
+  today: '今天',
+  week: '近 7 天',
+  all: '近 14 天',
+}
+
+function renderOverviewView() {
+  if (!overview) return '<div class="page-head"><h1>概览</h1></div><div class="empty">正在加载…</div>'
+
+  const label = RANGE_HINTS[overview.range]
+  const okRate = overview.totals.total ? overview.totals.ok / overview.totals.total : 0
+  const prevOkRate = overview.previous.total ? overview.previous.ok / overview.previous.total : 0
+  // 只有多用户模式服务端才知道"是谁"，其他模式下按用户表没有意义。
+  const knowsUsers = overview.accessMode === 'accounts'
+
+  return `
+    <div class="page-head">
+      <h1>概览</h1>
+      <p>计的是出图请求次数，不是图片张数——一次要 4 张的请求在这里算 1 次。提示词和图片一个字都不记。</p>
+    </div>
+
+    <div class="range-row">
+      <div class="range">
+        ${RANGES.map((item) => `
+          <button class="range-item" type="button" data-range="${item.id}" aria-current="${overview.range === item.id}">${esc(item.label)}</button>
+        `).join('')}
+      </div>
+      <button class="ghost" id="reload-overview" type="button">刷新</button>
+    </div>
+
+    ${overview.brokenChannels.length
+      ? `<div class="alert">
+          <div class="alert-body">
+            <strong>${overview.brokenChannels.length} 条渠道疑似故障</strong>
+            <p>${overview.brokenChannels.map((item) => esc(item.name)).join('、')} 正在被出图请求绕过。确认没问题的话去渠道页消除标记。</p>
+          </div>
+          <button type="button" data-view="channels">去处理</button>
+        </div>`
+      : ''}
+
+    <div class="panel">
+      <h2>${esc(label)}</h2>
+      <div class="stats">
+        <div class="stat">
+          <strong>${overview.totals.total}</strong>
+          <span>出图请求 ${delta(overview.totals.total, overview.previous.total)}</span>
+        </div>
+        <div class="stat">
+          <strong class="${okRate >= 0.9 ? 'ok' : okRate >= 0.7 ? 'warn' : 'bad'}">${overview.totals.total ? pct(okRate) : '—'}</strong>
+          <span>成功率 ${overview.totals.total && overview.previous.total ? delta(Math.round(okRate * 1000), Math.round(prevOkRate * 1000), true) : ''}</span>
+        </div>
+        <div class="stat">
+          <strong>${knowsUsers ? overview.activeUsers : '—'}</strong>
+          <span>${knowsUsers ? '活跃用户' : '活跃用户（当前模式不记身份）'}</span>
+        </div>
+        <div class="stat">
+          <strong class="${overview.brokenChannels.length ? 'bad' : ''}">${overview.brokenChannels.length}</strong>
+          <span>疑似故障渠道</span>
+        </div>
+      </div>
+      <div style="margin-top:18px">${usageBars(overview.days)}</div>
+      <p class="hint" style="margin-top:12px">柱状图固定看近 14 天，方便判断上面这几个数字是高还是低。</p>
+    </div>
+
+    <div class="panel">
+      <h2>${esc(label)}谁在用</h2>
+      ${!knowsUsers
+        ? `<div class="empty">当前是「${esc(ACCESS_MODES.find((item) => item.id === overview.accessMode)?.title ?? overview.accessMode)}」模式，服务端不知道每个请求来自谁，所以没法按人统计。切到「多用户账号」模式后这张表才有数据。</div>`
+        : overview.users.length
+          ? `<table class="grid">
+              <thead><tr><th>用户</th><th class="num">出图请求</th><th class="num">占比</th><th class="num">成功率</th><th>最近一次</th></tr></thead>
+              <tbody>
+                ${overview.users.map((item) => `
+                  <tr>
+                    <td>${esc(item.name)}${item.exists ? '' : ' <span class="tag idle">已删除</span>'}</td>
+                    <td class="num">${item.total}</td>
+                    <td class="num muted">${overview.totals.total ? pct(item.total / overview.totals.total) : '—'}</td>
+                    <td class="num ${item.total && item.ok / item.total < 0.7 ? 'bad' : ''}">${item.total ? pct(item.ok / item.total) : '—'}</td>
+                    <td class="muted">${esc(ago(item.lastAt))}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>`
+          : `<div class="empty">${esc(label)}还没有人出图。</div>`}
+    </div>
+
+    <div class="panel">
+      <h2>${esc(label)}走了哪些渠道</h2>
+      ${overview.channels.length
+        ? `<table class="grid">
+            <thead><tr><th>渠道</th><th>状态</th><th class="num">出图请求</th><th class="num">占比</th><th class="num">成功率</th><th class="num">平均耗时</th></tr></thead>
+            <tbody>
+              ${overview.channels.map((item) => {
+                const health = HEALTH_LABELS[item.state]
+                return `
+                  <tr>
+                    <td>${esc(item.name)}${item.exists ? '' : ' <span class="tag idle">已删除</span>'}</td>
+                    <td><span class="tag ${health.tone}">${health.text}</span></td>
+                    <td class="num">${item.total}</td>
+                    <td class="num muted">${overview.totals.total ? pct(item.total / overview.totals.total) : '—'}</td>
+                    <td class="num ${item.total && item.ok / item.total < 0.7 ? 'bad' : ''}">${item.total ? pct(item.ok / item.total) : '—'}</td>
+                    <td class="num">${item.avgLatencyMs ? `${(item.avgLatencyMs / 1000).toFixed(1)}s` : '—'}</td>
+                  </tr>
+                `
+              }).join('')}
+            </tbody>
+          </table>`
+        : `<div class="empty">${esc(label)}还没有出图记录。共有 ${overview.channelCount} 条渠道待用。</div>`}
+    </div>
+  `
+}
+
 // ===== 用量与健康 =====
 
 /** 迷你柱状图：14 天的调用量，失败部分叠在柱子上方。用 div 而不是 canvas，省一个渲染路径。 */
@@ -867,7 +1022,8 @@ function render() {
     : view === 'agent' ? renderAgentView()
     : view === 'access' ? renderAccessView()
     : view === 'providers' ? renderProvidersView()
-    : renderChannelsView()
+    : view === 'channels' ? renderChannelsView()
+    : renderOverviewView()
 
   app.className = ''
   app.innerHTML = `
@@ -922,6 +1078,7 @@ function bindEvents() {
       creatingUser = false
       freshCredential = null
       if (view === 'usage') return void loadUsage()
+      if (view === 'overview') return void loadOverview()
       render()
     })
   }
@@ -1178,6 +1335,14 @@ function bindChannelDrag() {
 
 function bindUsageEvents() {
   app.querySelector('#reload-usage')?.addEventListener('click', () => void loadUsage())
+  app.querySelector('#reload-overview')?.addEventListener('click', () => void loadOverview())
+
+  for (const button of app.querySelectorAll('[data-range]')) {
+    button.addEventListener('click', () => {
+      overviewRange = button.dataset.range
+      void loadOverview()
+    })
+  }
 
   app.querySelector('#reset-usage')?.addEventListener('click', async () => {
     if (!await confirmDialog({

@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { channelHealth, clearChannelFault, flushUsage, initUsage, isChannelFault, recordChannelCall, resetUsage, usageSummary } from './usage.mjs'
+import { channelHealth, clearChannelFault, flushUsage, initUsage, isChannelFault, normalizeRange, recordChannelCall, resetUsage, usageOverview, usageSummary } from './usage.mjs'
 
 function freshDir() {
   const dir = mkdtempSync(join(tmpdir(), 'gip-usage-'))
@@ -279,5 +279,163 @@ describe('clearChannelFault', () => {
     clearChannelFault('ch-1')
     expect(channelHealth('ch-1').state).toBe('healthy')
     expect(channelHealth('ch-2').state).toBe('down')
+  })
+})
+
+describe('normalizeRange', () => {
+  it('只认识 today / week / all，其他一律退回 today', () => {
+    expect(normalizeRange('today')).toBe('today')
+    expect(normalizeRange('week')).toBe('week')
+    expect(normalizeRange('all')).toBe('all')
+    for (const bad of [undefined, null, '', 'month', 'TODAY', 42, {}]) {
+      expect(normalizeRange(bad)).toBe('today')
+    }
+  })
+})
+
+describe('usageOverview', () => {
+  const CHANNELS = new Map([['ch-a', 'A 渠道'], ['ch-b', 'B 渠道']])
+  const USERS = new Map([['u-1', '张三'], ['u-2', '李四']])
+  const DAY = 86_400_000
+
+  /** 在指定时刻记一次调用。用来铺跨天的数据。 */
+  function at(ts, patch) {
+    recordChannelCall({ channelId: 'ch-a', ok: true, status: 200, latencyMs: 1000, at: ts, ...patch })
+  }
+
+  it('今日只算今天，昨天的量不混进来', () => {
+    freshDir()
+    const now = Date.now()
+    at(now, { userId: 'u-1' })
+    at(now, { userId: 'u-1' })
+    at(now - DAY, { userId: 'u-1' })
+
+    const overview = usageOverview(CHANNELS, USERS, { range: 'today', now })
+    expect(overview.totals).toEqual({ total: 2, ok: 2, fail: 0 })
+    // 昨天那一次成了环比的分母。
+    expect(overview.previous).toEqual({ total: 1, ok: 1, fail: 0 })
+  })
+
+  it('按用户交叉：谁用了多少、成功率、最近一次', () => {
+    freshDir()
+    const now = Date.now()
+    at(now, { userId: 'u-1' })
+    at(now, { userId: 'u-1' })
+    at(now, { userId: 'u-1' })
+    at(now, { userId: 'u-2', ok: false, status: 500 })
+    at(now, { userId: 'u-2' })
+
+    const overview = usageOverview(CHANNELS, USERS, { range: 'today', now })
+    // 按调用次数倒序：用得最多的排最前。
+    expect(overview.users.map((item) => item.id)).toEqual(['u-1', 'u-2'])
+    expect(overview.users[0]).toMatchObject({ name: '张三', total: 3, ok: 3, fail: 0 })
+    expect(overview.users[1]).toMatchObject({ name: '李四', total: 2, ok: 1, fail: 1 })
+    expect(overview.users[1].lastAt).toBe(now)
+    expect(overview.activeUsers).toBe(2)
+  })
+
+  it('按渠道交叉：带平均耗时和健康度', () => {
+    freshDir()
+    const now = Date.now()
+    recordChannelCall({ channelId: 'ch-a', ok: true, status: 200, latencyMs: 1000, at: now })
+    recordChannelCall({ channelId: 'ch-a', ok: true, status: 200, latencyMs: 3000, at: now })
+    recordChannelCall({ channelId: 'ch-b', ok: true, status: 200, latencyMs: 500, at: now })
+
+    const overview = usageOverview(CHANNELS, USERS, { range: 'today', now })
+    expect(overview.channels[0]).toMatchObject({ id: 'ch-a', name: 'A 渠道', total: 2, avgLatencyMs: 2000, state: 'healthy' })
+    expect(overview.channels[1]).toMatchObject({ id: 'ch-b', total: 1, avgLatencyMs: 500 })
+  })
+
+  it('近 7 天把整周合起来，环比对上一个 7 天', () => {
+    freshDir()
+    const now = Date.now()
+    // 本周 3 次。
+    for (let i = 0; i < 3; i += 1) at(now - i * DAY, { userId: 'u-1' })
+    // 上一周 5 次。
+    for (let i = 7; i < 12; i += 1) at(now - i * DAY, { userId: 'u-1' })
+
+    const overview = usageOverview(CHANNELS, USERS, { range: 'week', now })
+    expect(overview.totals.total).toBe(3)
+    expect(overview.previous.total).toBe(5)
+    expect(overview.range).toBe('week')
+  })
+
+  it('趋势图固定给满 14 天，没数据的天补 0', () => {
+    freshDir()
+    const now = Date.now()
+    at(now)
+    const overview = usageOverview(CHANNELS, USERS, { range: 'today', now })
+    expect(overview.days).toHaveLength(14)
+    // 最后一格是今天，前面全是 0。
+    expect(overview.days[13]).toMatchObject({ total: 1 })
+    expect(overview.days.slice(0, 13).every((item) => item.total === 0)).toBe(true)
+  })
+
+  it('故障渠道被点名，好让概览直接指路', () => {
+    freshDir()
+    record('ch-b', false, 3)
+    expect(usageOverview(CHANNELS, USERS).brokenChannels).toEqual([{ id: 'ch-b', name: 'B 渠道' }])
+  })
+
+  it('没有用户 id 时不造出一个空用户行——共享口令模式不该显示"某个人"', () => {
+    freshDir()
+    const now = Date.now()
+    at(now)
+    at(now)
+    const overview = usageOverview(CHANNELS, USERS, { range: 'today', now })
+    expect(overview.totals.total).toBe(2)
+    expect(overview.users).toEqual([])
+    expect(overview.activeUsers).toBe(0)
+  })
+
+  it('删掉的用户和渠道仍然出现在交叉表里并标注出来', () => {
+    freshDir()
+    const now = Date.now()
+    at(now, { userId: 'u-gone' })
+    const overview = usageOverview(new Map(), new Map(), { range: 'today', now })
+    expect(overview.users[0]).toMatchObject({ name: '（已删除的用户）', exists: false, total: 1 })
+    expect(overview.channels[0]).toMatchObject({ name: '（已删除的渠道）', exists: false, total: 1 })
+  })
+
+  it('range 非法时按今日处理', () => {
+    freshDir()
+    const now = Date.now()
+    at(now)
+    at(now - DAY)
+    expect(usageOverview(CHANNELS, USERS, { range: 'month', now }).totals.total).toBe(1)
+  })
+
+  it('访客取消的请求不进概览——它连统计都没进', () => {
+    freshDir()
+    const now = Date.now()
+    at(now)
+    recordChannelCall({ channelId: 'ch-a', ok: false, status: 0, latencyMs: 10, at: now, aborted: true })
+    expect(usageOverview(CHANNELS, USERS, { range: 'today', now }).totals).toEqual({ total: 1, ok: 1, fail: 0 })
+  })
+
+  it('还没有任何数据时返回结构完整的空壳，前端不用做兜底', () => {
+    freshDir()
+    const overview = usageOverview(CHANNELS, USERS)
+    expect(overview.totals).toEqual({ total: 0, ok: 0, fail: 0 })
+    expect(overview.users).toEqual([])
+    expect(overview.channels).toEqual([])
+    expect(overview.days).toHaveLength(14)
+    expect(overview.activeUsers).toBe(0)
+  })
+
+  it('清空统计后概览也跟着归零', () => {
+    freshDir()
+    at(Date.now(), { userId: 'u-1' })
+    resetUsage()
+    expect(usageOverview(CHANNELS, USERS).totals).toEqual({ total: 0, ok: 0, fail: 0 })
+  })
+
+  it('按天分桶用本地时区——否则 UTC+8 下"今天"要到早上 8 点才开始', () => {
+    freshDir()
+    // 本地时间今天的 00:30，用 UTC 切片会被归到昨天。
+    const midnight = new Date()
+    midnight.setHours(0, 30, 0, 0)
+    at(midnight.getTime(), { userId: 'u-1' })
+    expect(usageOverview(CHANNELS, USERS, { range: 'today', now: midnight.getTime() + 3600_000 }).totals.total).toBe(1)
   })
 })

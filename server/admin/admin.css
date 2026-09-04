@@ -656,6 +656,40 @@ form > .btn-row { margin-top: 18px; }
 
 /* ===== 用量与健康 ===== */
 
+/* 时间范围切换：分段控件，和导航同一套视觉语言但更小。 */
+.range-row { display: flex; gap: 10px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+.range {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.range-item {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: calc(var(--r-md) - 4px);
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-dim);
+  cursor: pointer;
+}
+.range-item:hover { color: var(--ink); }
+.range-item[aria-current=true] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+.range-row .ghost { margin-left: auto; }
+
+/* 环比：跟在标签后面的小字，不抢主数字的注意力。 */
+.trend { margin-left: 5px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.trend.up { color: var(--ok); }
+.trend.down { color: var(--danger); }
+.trend.flat { color: var(--ink-faint); }
+
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 16px; }
 .stat {
   padding: 13px 15px;
@@ -835,6 +869,10 @@ form > .btn-row { margin-top: 18px; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .bars { height: 84px; }
   .bar > span { font-size: 9px; }
+  /* 范围切换在窄屏占满一行，「刷新」跟着换行靠右，免得三个选项被压扁。 */
+  .range { flex: 1; }
+  .range-item { flex: 1; padding: 6px 8px; }
+  .range-row .ghost { margin-left: 0; flex-basis: 100%; }
   /* 明细表列多，横向滚动比换行压扁更好读。 */
   .grid { display: block; overflow-x: auto; white-space: nowrap; }
   .grid .muted { white-space: normal; }
