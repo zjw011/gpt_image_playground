@@ -400,10 +400,14 @@ export function removeAccount(userId) {
 // ===== 查询 =====
 
 function ledgerRow(entry, userNames) {
+  // userNames 缺席表示"这次压根不需要解析名字"（前台看自己的流水就是这种），
+  // 它不等于"这个用户被删了"。把两者混为一谈，用户就会在自己的积分明细里
+  // 看到每一行都标着「（已删除的用户）」——所以缺席时宁可不给名字。
+  if (!userNames) return { ...entry, userName: '', exists: true }
   return {
     ...entry,
-    userName: userNames?.get(entry.userId) ?? (entry.userId ? '（已删除的用户）' : ''),
-    exists: userNames ? userNames.has(entry.userId) : true,
+    userName: userNames.get(entry.userId) ?? (entry.userId ? '（已删除的用户）' : ''),
+    exists: userNames.has(entry.userId),
   }
 }
 

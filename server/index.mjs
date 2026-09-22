@@ -14,7 +14,13 @@ import { fileURLToPath } from 'node:url'
 
 import { handleAdminRoute } from './lib/adminRoutes.mjs'
 import { initCards } from './lib/cards.mjs'
-import { initCredits } from './lib/credits.mjs'
+import { initCredits, grantSignupBonus } from './lib/credits.mjs'
+import {
+  cancelEmailCode,
+  issueEmailCode,
+  normalizeEmail,
+  verifyEmailCode,
+} from './lib/emailCodes.mjs'
 import { handleGuestRoute } from './lib/guestRoutes.mjs'
 import { clearCookie, getClientIp, HttpError, parseCookies, readJsonBody, sendError, sendJson, sendText, setCookie } from './lib/http.mjs'
 import { getLockRemainingSeconds, isLocked, recordFailure, recordSuccess } from './lib/rateLimit.mjs'
@@ -27,14 +33,17 @@ import {
   getSession,
   GUEST_COOKIE,
 } from './lib/sessions.mjs'
+import { describeSmtpError, sendMail } from './lib/smtp.mjs'
 import { serveStatic } from './lib/staticFiles.mjs'
 import {
+  findUserByEmail,
   findUserById,
   findUserByUsername,
   getConfig,
   hashPassword,
   initStore,
   inviteStatus,
+  isSmtpConfigured,
   isValidUsername,
   MIN_USER_PASSWORD_LENGTH,
   normalizeInviteCode,
@@ -108,9 +117,225 @@ function assertSameOrigin(req) {
 const SAME_ORIGIN_API_PATHS = new Set([
   '/api/session',
   '/api/register',
+  '/api/auth/email-code',
+  '/api/auth/reset-password',
   '/api/credits/redeem',
   '/api/wechat/login',
 ])
+
+// ===== 邮箱验证码 =====
+
+/** 把后台那份 SMTP 配置转成 smtp.mjs 的入参。发件人昵称缺省用站点名。 */
+function smtpSendOptions(smtp) {
+  return {
+    host: smtp.host,
+    port: smtp.port,
+    encryption: smtp.encryption,
+    user: smtp.user,
+    password: smtp.password,
+    from: smtp.from,
+    fromName: smtp.fromName || getConfig().site.title,
+    allowUnauthorized: smtp.allowUnauthorized,
+  }
+}
+
+/**
+ * 验证码邮件的正文。
+ *
+ * 纯文本和 HTML 两份都给：纯文本是给反垃圾系统看的（只有 HTML 的邮件更容易被判垃圾），
+ * HTML 是给人看的。验证码在两边都是纯文本，不做图片——图片里的码没法复制，
+ * 而且带图的邮件更容易被拦。
+ */
+function buildVerificationEmail({ title, code, purpose, ttlMinutes }) {
+  const action = purpose === 'reset' ? '重置密码' : '注册账号'
+  const subject = `【${title}】${action}验证码 ${code}`
+  const warn = purpose === 'reset'
+    ? '如果你没有申请重置密码，说明有人误填了你的邮箱，可以忽略本邮件。'
+    : '如果你没有申请注册，可以忽略本邮件，你的邮箱不会被使用。'
+
+  const text = [
+    `${action}验证码：${code}`,
+    '',
+    `验证码 ${ttlMinutes} 分钟内有效，请勿转发给任何人。`,
+    warn,
+    '',
+    `—— ${title}`,
+  ].join('\n')
+
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN"><body style="margin:0;padding:24px;background:#f5f6f8;font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;color:#1f2329">
+  <div style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:14px;padding:32px 28px">
+    <p style="margin:0 0 4px;font-size:20px;font-weight:600">${escapeHtml(title)}</p>
+    <p style="margin:0 0 24px;font-size:14px;color:#8a9099">${action}验证码</p>
+    <div style="background:#f5f6f8;border-radius:10px;padding:18px 0;text-align:center">
+      <span style="font-size:34px;font-weight:700;letter-spacing:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${code}</span>
+    </div>
+    <p style="margin:20px 0 0;font-size:14px;color:#5c6169">验证码 ${ttlMinutes} 分钟内有效，请勿转发给任何人。</p>
+    <p style="margin:8px 0 0;font-size:13px;color:#8a9099">${escapeHtml(warn)}</p>
+    <hr style="border:none;border-top:1px solid #eceef1;margin:24px 0">
+    <p style="margin:0;font-size:13px;color:#8a9099">${escapeHtml(title)}</p>
+  </div>
+</body></html>`
+
+  return { subject, text, html }
+}
+
+/** 邮件正文里的插值全部转义：站点名是管理员填的，没理由让它能注入 HTML。 */
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/** 签发失败的原因 → 给用户看的话。 */
+function emailCodeErrorMessage(result) {
+  switch (result.reason) {
+    case 'cooldown':
+      return `${result.retryAfterSeconds} 秒后可重新获取验证码`
+    case 'daily-limit':
+      return '该邮箱今天获取验证码的次数已达上限，请明天再试'
+    case 'ip-limit':
+      return '操作过于频繁，请稍后再试'
+    default:
+      return '邮箱地址不正确'
+  }
+}
+
+/** 校验失败的原因 → 给用户看的话。统一成一句话，不告诉对方猜错了几次。 */
+function verifyCodeErrorMessage(reason) {
+  switch (reason) {
+    case 'expired':
+      return '验证码已过期，请重新获取'
+    case 'too-many-attempts':
+      return '错误次数过多，验证码已失效，请重新获取'
+    default:
+      return '验证码不正确，请核对后重试'
+  }
+}
+
+/**
+ * 发送邮箱验证码。
+ *
+ * 这个接口不要求登录，所以它是全网可达的——限流必须做在三层上（见 emailCodes.mjs）。
+ * 另外它也是唯一一个能让服务器主动往外发信的口子，所以：
+ *   · 对外永远只说"发出去了 / 频率太高"，绝不回显验证码；
+ *   · 发信失败的**真实原因**只写进服务端日志，给用户一句模糊的提示。
+ *     否则任何人都能通过这个接口把我们 SMTP 的错误信息（甚至服务器地址）读出来。
+ */
+async function handleEmailCode(req, res, input) {
+  const ip = getClientIp(req)
+  const current = getConfig()
+  const site = current.site
+
+  const purpose = input.purpose === 'reset' ? 'reset' : 'register'
+
+  if (purpose === 'register') {
+    if (site.accessMode !== 'accounts') throw new HttpError(403, '本站未开放账号注册')
+    const status = inviteStatus(site)
+    if (!status.ok) throw new HttpError(403, '本站未开放自助注册')
+  }
+
+  if (!isSmtpConfigured(site.smtp) || !site.smtp.enabled) {
+    throw new HttpError(503, '本站尚未配置邮件发信，暂时无法发送验证码，请联系管理员')
+  }
+
+  const email = normalizeEmail(input.email)
+  if (!email) throw new HttpError(400, '请输入有效的邮箱地址')
+
+  // 注册路径可以直说"这个邮箱已经注册过"——不说的话用户会卡在最后一步反复重试。
+  // 重置密码路径则绝不能承认邮箱是否存在，否则这里就成了一个邮箱探测接口。
+  if (purpose === 'register' && findUserByEmail(email)) {
+    throw new HttpError(409, '该邮箱已被注册，请直接登录或找回密码')
+  }
+
+  const issued = issueEmailCode({
+    email,
+    purpose,
+    ip,
+    dailyPerEmail: site.smtp.dailyLimitPerEmail,
+    hourlyPerIp: site.smtp.hourlyLimitPerIp,
+  })
+  if (!issued.ok) throw new HttpError(429, emailCodeErrorMessage(issued))
+
+  const target = purpose === 'reset' ? findUserByEmail(email) : null
+  // 重置密码时账号不存在：配额已经扣了（让响应时序与存在时一致），但信不发。
+  if (purpose === 'reset' && !target) {
+    return sendJson(res, 200, {
+      ok: true,
+      resendAfterSeconds: issued.resendAfterSeconds,
+      ttlSeconds: issued.ttlSeconds,
+    })
+  }
+
+  const mail = buildVerificationEmail({
+    title: site.title,
+    code: issued.code,
+    purpose,
+    ttlMinutes: Math.round(issued.ttlSeconds / 60),
+  })
+
+  try {
+    await sendMail({ ...smtpSendOptions(site.smtp), to: email, ...mail })
+  } catch (error) {
+    // 发信失败要把配额退回去，否则 SMTP 配错的那一天里用户会一次次白耗额度。
+    cancelEmailCode({ email, purpose, ip })
+    console.error(`[mail] 向 ${email} 发送验证码失败：${describeSmtpError(error)}`)
+    throw new HttpError(502, '验证码发送失败，请稍后重试；若持续失败请联系管理员')
+  }
+
+  return sendJson(res, 200, {
+    ok: true,
+    resendAfterSeconds: issued.resendAfterSeconds,
+    ttlSeconds: issued.ttlSeconds,
+  })
+}
+
+/**
+ * 用邮箱验证码重置密码。
+ * 不自动登录：重置密码是一个"凭证可能已经泄露"的场景，让用户拿新密码重新登一次，
+ * 能顺带确认新密码是对的。
+ */
+async function handleResetPassword(req, res, input) {
+  const ip = getClientIp(req)
+  const key = `guest:${ip}`
+  if (isLocked(key)) throw new HttpError(429, `尝试次数过多，请 ${getLockRemainingSeconds(key)} 秒后重试`)
+
+  const password = String(input.password ?? '')
+  if (password.length < MIN_USER_PASSWORD_LENGTH) {
+    throw new HttpError(400, `新口令至少 ${MIN_USER_PASSWORD_LENGTH} 个字符`)
+  }
+
+  const email = normalizeEmail(input.email)
+  const user = email ? findUserByEmail(email) : null
+
+  // 邮箱不存在和验证码错到不了区分：统一一句话，避免这里变成邮箱探测接口。
+  const verified = user
+    ? verifyEmailCode({ email, purpose: 'reset', code: input.code })
+    : { ok: false }
+  if (!verified.ok) {
+    recordFailure(key)
+    throw new HttpError(400, verified.reason ? verifyCodeErrorMessage(verified.reason) : '验证码不正确或已失效，请重新获取')
+  }
+
+  updateConfig((config) => {
+    const idx = config.users.findIndex((item) => item.id === user.id)
+    if (idx >= 0) {
+      config.users[idx] = {
+        ...config.users[idx],
+        passwordHash: hashPassword(password),
+        updatedAt: Date.now(),
+      }
+    }
+    return config
+  })
+
+  // 密码变了，旧会话必须全部作废，否则被盗号的人还能继续用旧 cookie。
+  destroySessionsByUser(user.id)
+  recordSuccess(key)
+  return sendJson(res, 200, { ok: true, username: user.username })
+}
 
 async function handleAdminLogin(req, res) {
   const ip = getClientIp(req)
@@ -148,8 +373,7 @@ async function handleAdminLogin(req, res) {
 /**
  * 前台登录：passcode 模式只校验共享口令，accounts 模式校验用户名 + 该用户口令。
  * 两种模式共用同一个 cookie，会话里的 userId 决定前端落到哪个工作区。
- */
-async function handleFrontLogin(req, res, credentials) {
+ */async function handleFrontLogin(req, res, credentials) {
   const ip = getClientIp(req)
   const key = `guest:${ip}`
   if (isLocked(key)) throw new HttpError(429, `尝试次数过多，请 ${getLockRemainingSeconds(key)} 秒后重试`)
@@ -198,9 +422,13 @@ async function handleFrontLogin(req, res, credentials) {
 }
 
 /**
- * 自助注册：凭邀请码建账号并直接登录。
- * 与登录共用同一个限流桶——邀请码同样是可爆破的秘密，而且注册比登录更值得防：
- * 它会真的写入配置文件。
+ * 自助注册：凭邮箱验证码建账号并直接登录。
+ *
+ * 校验顺序是刻意排的——**邮箱验证码放在最后验**。
+ * 验证码一验就作废，如果先验码再报"用户名已被占用"，用户改个名字回来发现码没了，
+ * 得重新收一次邮件。所以所有不需要消耗验证码的检查都要排在前面。
+ *
+ * 与登录共用同一个限流桶：注册更值得防，它会真的往配置文件里写东西。
  */
 async function handleRegister(req, res, input) {
   const ip = getClientIp(req)
@@ -208,9 +436,10 @@ async function handleRegister(req, res, input) {
   if (isLocked(key)) throw new HttpError(429, `尝试次数过多，请 ${getLockRemainingSeconds(key)} 秒后重试`)
 
   const current = getConfig()
-  if (current.site.accessMode !== 'accounts') throw new HttpError(403, '本站未开放自助注册')
+  const site = current.site
+  if (site.accessMode !== 'accounts') throw new HttpError(403, '本站未开放自助注册')
 
-  const status = inviteStatus(current.site)
+  const status = inviteStatus(site)
   if (!status.ok) {
     throw new HttpError(403, status.reason === 'expired'
       ? '邀请码已过期，请向管理员索取新的邀请码'
@@ -219,18 +448,32 @@ async function handleRegister(req, res, input) {
         : '本站未开放自助注册')
   }
 
-  if (normalizeInviteCode(input.inviteCode) !== normalizeInviteCode(current.site.inviteCode)) {
+  // 邀请码现在是可选加码：默认不要求，要求时仍然必须对上。
+  if (site.requireInviteCode && normalizeInviteCode(input.inviteCode) !== normalizeInviteCode(site.inviteCode)) {
     recordFailure(key)
     throw new HttpError(403, '邀请码不正确')
   }
 
-  const username = input.username.trim()
+  const email = normalizeEmail(input.email)
+  if (!email) throw new HttpError(400, '请输入有效的邮箱地址')
+  if (findUserByEmail(email)) throw new HttpError(409, '该邮箱已被注册，请直接登录')
+
+  const username = String(input.username ?? '').trim()
   if (!isValidUsername(username)) {
     throw new HttpError(400, '用户名需为 2-32 位字母、数字、下划线、点或连字符，且以字母或数字开头')
   }
   if (findUserByUsername(username)) throw new HttpError(409, `用户名「${username}」已被占用`)
-  if (input.password.length < MIN_USER_PASSWORD_LENGTH) {
+
+  const password = String(input.password ?? '')
+  if (password.length < MIN_USER_PASSWORD_LENGTH) {
     throw new HttpError(400, `登录口令至少 ${MIN_USER_PASSWORD_LENGTH} 个字符`)
+  }
+
+  // 到这里为止所有可能让用户"改一下重试"的检查都过了，现在才动验证码。
+  const verified = verifyEmailCode({ email, purpose: 'register', code: input.code })
+  if (!verified.ok) {
+    recordFailure(key)
+    throw new HttpError(400, verifyCodeErrorMessage(verified.reason))
   }
 
   const now = Date.now()
@@ -239,24 +482,30 @@ async function handleRegister(req, res, input) {
     config.users.push(normalizeUser({
       id,
       username,
-      passwordHash: hashPassword(input.password),
+      email,
+      passwordHash: hashPassword(password),
       enabled: true,
-      note: '自助注册',
-      createdVia: 'invite',
+      note: '邮箱注册',
+      createdVia: 'email',
+      emailVerifiedAt: now,
       createdAt: now,
       updatedAt: now,
       lastSeenAt: now,
     }, id))
-    config.site.inviteUsedCount += 1
+    if (site.requireInviteCode) config.site.inviteUsedCount += 1
     return config
   })
+
+  // 注册赠送只在新账号上发一次。放到建号之后，用户一登录就能看到余额。
+  const bonus = getConfig().site.credits.signupBonus
+  if (bonus > 0) grantSignupBonus(id, bonus, { ref: 'email' })
 
   const session = createSession('guest', id)
   setCookie(req, res, GUEST_COOKIE, session.token, session.maxAgeSeconds)
   recordSuccess(key)
   return sendJson(res, 200, {
     ok: true,
-    user: { id, username, displayName: '' },
+    user: { id, username, displayName: username, email },
     workspaceId: id,
   })
 }
@@ -320,6 +569,8 @@ const server = createServer(async (req, res) => {
         user: activeUser,
         login: (credentials) => handleFrontLogin(req, res, credentials),
         register: (input) => handleRegister(req, res, input),
+        sendEmailCode: (input) => handleEmailCode(req, res, input),
+        resetPassword: (input) => handleResetPassword(req, res, input),
         logout: () => {
           destroySession(cookies[GUEST_COOKIE])
           clearCookie(req, res, GUEST_COOKIE)

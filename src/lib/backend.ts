@@ -46,6 +46,20 @@ export interface BackendUser {
   displayName: string
   /** 微信头像地址；非微信登录的用户拿不到，显示时回退到首字母。 */
   avatar?: string
+  /** 注册邮箱。微信登录和后台手工建的账号没有这个字段。 */
+  email?: string
+}
+
+/**
+ * 自助注册的可用状态。
+ * 拆成三个字段而不是一个布尔，是因为注册页要据此给出三种完全不同的提示：
+ * 站点没开放注册 / 还差管理员配好发信 / 一切就绪。
+ */
+export interface BackendRegistration {
+  enabled: boolean
+  requireInviteCode: boolean
+  /** 服务端是否配好了 SMTP。没配好时注册入口要置灰并说明原因。 */
+  emailVerification: boolean
 }
 
 /** 后台配置的充值套餐，只用于展示，真正的兑换发生在卡密那一层。 */
@@ -59,6 +73,8 @@ export interface BackendCreditsConfig {
   enabled: boolean
   /** 单张图的基准价（分）。实际扣费还要乘上渠道倍率。 */
   costPerImage: number
+  /** 新用户注册时一次性赠送的积分。登录页拿它当拉新文案。 */
+  signupBonus: number
   /** 用户自助购买卡密的链接，由管理员填写。留空则不显示购买入口。 */
   purchaseUrl: string
   packs: BackendCreditPack[]
@@ -130,8 +146,10 @@ export interface BackendBootstrap {
   authenticated: boolean
   user: BackendUser | null
   workspaceId: string
-  /** 是否开放凭邀请码自助注册。只在 accounts 模式下可能为 true。 */
+  /** 是否开放自助注册。只在 accounts 模式下可能为 true。 */
   registrationOpen: boolean
+  /** 注册的详细可用状态，注册页据此决定显示哪种提示。 */
+  registration: BackendRegistration
   credits: BackendCredits
   wechat: BackendWechatConfig
   site: BackendSite
@@ -183,6 +201,7 @@ export function getCreditsConfig(): BackendCreditsConfig | null {
   return {
     enabled: bootstrap.credits.enabled,
     costPerImage: bootstrap.credits.costPerImage,
+    signupBonus: bootstrap.credits.signupBonus,
     purchaseUrl: bootstrap.credits.purchaseUrl,
     packs: bootstrap.credits.packs,
   }
@@ -296,6 +315,7 @@ function normalizeCredits(input: unknown): BackendCredits {
   return {
     enabled: raw.enabled === true,
     costPerImage: toCount(raw.costPerImage),
+    signupBonus: raw.enabled === true ? toCount(raw.signupBonus) : 0,
     purchaseUrl: typeof raw.purchaseUrl === 'string' ? raw.purchaseUrl.trim() : '',
     packs: (Array.isArray(raw.packs) ? raw.packs : [])
       .filter(isRecord)
@@ -315,6 +335,15 @@ function normalizeWechatConfig(input: unknown): BackendWechatConfig {
     enabled: raw.enabled === true,
     loginMode: raw.loginMode === 'qrcode' ? 'qrcode' : 'code',
     hasQrcodeImage: raw.hasQrcodeImage === true,
+  }
+}
+
+function normalizeRegistration(input: unknown, fallback: BackendRegistration): BackendRegistration {
+  if (!isRecord(input)) return fallback
+  return {
+    enabled: input.enabled === true,
+    requireInviteCode: input.requireInviteCode === true,
+    emailVerification: input.emailVerification === true,
   }
 }
 
@@ -340,10 +369,19 @@ function normalizeBootstrap(input: unknown): BackendBootstrap | null {
           username: rawUser.username,
           displayName: typeof rawUser.displayName === 'string' ? rawUser.displayName : '',
           avatar: typeof rawUser.avatar === 'string' ? rawUser.avatar : '',
+          email: typeof rawUser.email === 'string' ? rawUser.email : '',
         }
       : null,
     workspaceId: typeof input.workspaceId === 'string' && input.workspaceId ? input.workspaceId : 'shared',
     registrationOpen: input.registrationOpen === true,
+    registration: normalizeRegistration(input.registration, {
+      // 老版本后端没有 registration 字段，用 registrationOpen 兜底，
+      // 免得前端因为一个字段缺失就把注册入口整个藏掉。
+      enabled: input.registrationOpen === true,
+      requireInviteCode: false,
+      // 老版本没有邮箱验证码，注册直接可用。
+      emailVerification: true,
+    }),
     credits: normalizeCredits(input.credits),
     wechat: normalizeWechatConfig(input.wechat),
     site: {
@@ -449,7 +487,14 @@ export async function submitFrontLogout() {
 }
 
 /** 凭邀请码自助注册。成功后服务端直接下发会话，不需要再登录一次。 */
-export async function submitRegister(input: { username: string, password: string, inviteCode: string }) {
+export async function submitRegister(input: {
+  username: string
+  password: string
+  email: string
+  /** 邮箱验证码。 */
+  code: string
+  inviteCode?: string
+}) {
   const response = await fetch('/api/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -458,6 +503,41 @@ export async function submitRegister(input: { username: string, password: string
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`)
   return payload
+}
+
+/**
+ * 请求邮箱验证码。
+ *
+ * 服务端只回"发出去了"和"多久能再发"，**不回验证码**。
+ * 返回的 resendAfterSeconds 用来驱动前端的倒计时；服务端的冷却才是真正的约束，
+ * 前端倒计时只是别让用户白点。
+ */
+export async function requestEmailCode(input: { email: string, purpose?: 'register' | 'reset' }) {
+  const response = await fetch('/api/auth/email-code', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    // 把 retryAfterSeconds 一并带出去，让调用方能从 429 里恢复出正确的倒计时。
+    const error = new Error(payload.error || `HTTP ${response.status}`) as Error & { retryAfterSeconds?: number }
+    if (typeof payload.resendAfterSeconds === 'number') error.retryAfterSeconds = payload.resendAfterSeconds
+    throw error
+  }
+  return payload as { ok: true, resendAfterSeconds?: number, ttlSeconds?: number }
+}
+
+/** 用邮箱验证码重置密码。成功后不自动登录，用户拿新密码再登一次。 */
+export async function submitResetPassword(input: { email: string, code: string, password: string }) {
+  const response = await fetch('/api/auth/reset-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`)
+  return payload as { ok: true, username: string }
 }
 
 /** 从 URL 读邀请码。管理员发出的邀请链接形如 `/?invite=xxxx-yyyyy`。 */

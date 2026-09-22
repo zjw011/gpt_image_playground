@@ -134,6 +134,26 @@ describe('流水与维度的对账', () => {
     expect(view.ledger).toHaveLength(1)
     expect(view.ledger.every((entry) => entry.userId === 'u-1')).toBe(true)
   })
+
+  it('前台查自己的流水时不会把自己标成「已删除的用户」', () => {
+    initCredits(freshDir())
+    addCredits('u-1', 10)
+
+    // 前台这条路不给 userNames，"不解析名字"被误当成"用户不存在"，
+    // 用户就会在自己的账单里看到一串「（已删除的用户）」。
+    const view = userCreditsView('u-1')
+    expect(view.ledger[0].userName).toBe('')
+    expect(view.ledger[0].exists).toBe(true)
+
+    // 后台带了名字映射时，名字和"是否存在"都要照实给出。
+    const admin = listLedger('u-1', 50, new Map([['u-1', '阿狸']]))
+    expect(admin[0].userName).toBe('阿狸')
+    expect(admin[0].exists).toBe(true)
+
+    const deleted = listLedger('u-1', 50, new Map())
+    expect(deleted[0].userName).toBe('（已删除的用户）')
+    expect(deleted[0].exists).toBe(false)
+  })
 })
 
 describe('注册赠送', () => {

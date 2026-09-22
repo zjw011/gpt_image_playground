@@ -19,6 +19,7 @@ const NAV = [
   { id: 'users', label: '用户' },
   { id: 'credits', label: '积分与卡密' },
   { id: 'wechat', label: '微信登录' },
+  { id: 'smtp', label: '邮件发信' },
   { id: 'access', label: '访问与安全' },
   { id: 'providers', label: '自定义服务商' },
 ]
@@ -153,6 +154,11 @@ let freshCards = null
 // 微信连通性测试的结果；null 表示没测过。
 let wechatProbe = null
 let wechatTesting = false
+
+/** 邮件发信面板的临时状态：探测结果与"正在发"标记，刷新页面即丢。 */
+let smtpProbe = null
+let smtpTesting = false
+let smtpTestTo = ''
 
 /** 相对时间。后台看的是"多久之前"，绝对时间戳还得自己算差值。 */
 function ago(at) {
@@ -742,11 +748,13 @@ function personRow(user) {
           : esc(label.slice(0, 1))}</span>
         <span class="person-id">
           <strong>${esc(label)}</strong>
-          <span>${esc(user.username)} · ${esc(seen)}${user.note ? ` · ${esc(user.note)}` : ''}</span>
+          <span>${esc(user.username)}${user.email ? ` · ${esc(user.email)}` : ''} · ${esc(seen)}${user.note ? ` · ${esc(user.note)}` : ''}</span>
         </span>
         <span class="person-side">
           ${user.wechat ? '<span class="tag accent">微信</span>' : ''}
-          ${user.createdVia === 'invite' ? '<span class="tag">自助注册</span>' : ''}
+          ${user.createdVia === 'email' ? '<span class="tag accent">邮箱注册</span>' : ''}
+          ${user.createdVia === 'invite' ? '<span class="tag">邀请码注册</span>' : ''}
+          ${user.email && !user.emailVerified ? '<span class="tag alert">邮箱未验证</span>' : ''}
           ${creditsOn ? `<span class="tag ${user.balance > 0 ? 'live' : 'idle'}">${num(user.balance)} 积分</span>` : ''}
           ${user.enabled
             ? '<span class="tag live"><span class="dot"></span>可登录</span>'
@@ -761,12 +769,22 @@ function personRow(user) {
   `
 }
 
-/** 自助注册面板。只在多用户模式下有意义，所以非该模式时整块折叠成一句说明。 */
+/**
+ * 自助注册面板。
+ *
+ * 注册的主关卡从「邀请码」换成了「邮箱验证码」，所以这块的重点也变了：
+ * 不再是"先生成邀请码"，而是"先把发信配通"。邀请码降级成一个可选开关。
+ */
 function invitePanel() {
   const site = state.site
+  const smtp = state.smtp ?? {}
   const accounts = site.accessMode === 'accounts'
   const expired = site.inviteExpiresAt && Date.now() > site.inviteExpiresAt
   const exhausted = site.inviteMaxUses && site.inviteUsedCount >= site.inviteMaxUses
+  const needsInvite = site.requireInviteCode === true
+  const mailReady = Boolean(smtp.enabled && smtp.host && smtp.user && smtp.hasPassword)
+  // 开着注册但发不出信，是最容易让管理员困惑的状态：用户点注册只会看到报错。
+  const broken = site.registrationEnabled && !mailReady
   const expiryValue = site.inviteExpiresAt
     // datetime-local 要本地时间且不带时区后缀，所以减掉偏移再截断到分钟。
     ? new Date(site.inviteExpiresAt - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
@@ -776,37 +794,73 @@ function invitePanel() {
     <div class="panel">
       <h2>自助注册</h2>
       <p class="hint">${accounts
-        ? '开启后，别人可以凭邀请码自己注册账号，你不用逐个建号发口令。名额和有效期都能限制，随时能作废重发。'
+        ? '开启后，别人可以用邮箱验证码自己注册账号，你不用逐个建号发口令。邮箱验证码由「邮件发信」里配置的邮箱发出。'
         : '只在「多用户账号」模式下可用——别的模式下前端没有账号这个概念。'}</p>
+
+      ${!accounts ? '' : broken ? `
+        <div class="alert" data-tone="warn" style="margin-top:16px">
+          <div class="alert-body">
+            <strong>注册开着，但验证码发不出去</strong>
+            <p>用户点「获取验证码」会直接看到报错。先去「邮件发信」把发信配通，或先把下面的开关关掉。</p>
+          </div>
+          <button class="primary" type="button" data-view="smtp">去配置邮件发信</button>
+        </div>` : !mailReady ? `
+        <div class="alert" style="margin-top:16px">
+          <div class="alert-body">
+            <strong>还没配置邮件发信</strong>
+            <p>邮箱验证码需要先有一个能发信的邮箱。配好之后再回来打开注册开关。</p>
+          </div>
+          <button class="primary" type="button" data-view="smtp">去配置邮件发信</button>
+        </div>` : ''}
+
       ${accounts ? `
         <form id="invite-form" style="margin-top:16px">
-          <label><span>邀请码</span>
-            <div class="with-action">
-              <input name="inviteCode" value="${esc(site.inviteCode)}" readonly placeholder="还没有邀请码" style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:0.06em" />
-              <button type="button" data-act="new-invite">${site.inviteCode ? '换一个' : '生成'}</button>
-              ${site.inviteCode ? '<button type="button" data-act="copy-invite">复制邀请链接</button>' : ''}
-            </div>
-          </label>
-          <p class="hint" style="margin:-4px 0 16px">${site.inviteCode
-            ? '换新码会立即作废旧码，已用次数一起归零。已经注册的账号不受影响。'
-            : '生成后把邀请链接发给对方，他自己设用户名和口令。'}</p>
           <div class="row">
-            <label><span>名额上限（0 = 不限）</span>
-              <input name="inviteMaxUses" type="number" min="0" max="10000" value="${site.inviteMaxUses}" />
+            <label><span>注册成功后赠送积分</span>
+              <input value="${num(site.credits?.signupBonus ?? 0)} 分" readonly />
             </label>
-            <label><span>有效期（留空 = 不过期）</span>
-              <input name="inviteExpiresAtLocal" type="datetime-local" value="${esc(expiryValue)}" />
+            <label><span>每张图扣费</span>
+              <input value="${num(site.credits?.costPerImage ?? 0)} 分" readonly />
             </label>
           </div>
           <p class="hint" style="margin:-4px 0 16px">
-            已注册 ${site.inviteUsedCount} 人${site.inviteMaxUses ? ` / 上限 ${site.inviteMaxUses}` : ''}。
-            ${expired ? '<span class="warn">邀请码已过期，现在没人能注册。</span>' : ''}
-            ${!expired && exhausted ? '<span class="warn">名额已用完，现在没人能注册。</span>' : ''}
+            这两项在「积分与卡密」里改。赠送积分只在建号时发一次，老用户重新登录不会重复领。
+            ${site.credits?.enabled ? '' : '<span class="warn">注意：积分制当前是关闭的，赠送和扣费都不会生效。</span>'}
           </p>
-          <label class="check"><input type="checkbox" name="registrationEnabled"${site.registrationEnabled ? ' checked' : ''}${site.inviteCode ? '' : ' disabled'} /><span>开放自助注册 <em>${site.inviteCode ? '关掉后邀请链接立即失效，已注册的账号照常能登录' : '需要先生成邀请码'}</em></span></label>
+
+          <label class="check"><input type="checkbox" name="registrationEnabled"${site.registrationEnabled ? ' checked' : ''} /><span>开放自助注册 <em>关掉后注册入口立即从登录页消失，已注册的账号照常能登录</em></span></label>
+
+          <label class="check" style="margin-top:4px"><input type="checkbox" name="requireInviteCode"${needsInvite ? ' checked' : ''} /><span>额外要求邀请码 <em>默认不要求。打开后邮箱验证码和邀请码都要对，适合先小范围放量</em></span></label>
+
+          <div id="invite-extra" style="display:${needsInvite ? 'block' : 'none'}">
+            <label style="margin-top:12px"><span>邀请码</span>
+              <div class="with-action">
+                <input name="inviteCode" value="${esc(site.inviteCode)}" readonly placeholder="还没有邀请码" style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:0.06em" />
+                <button type="button" data-act="new-invite">${site.inviteCode ? '换一个' : '生成'}</button>
+                ${site.inviteCode ? '<button type="button" data-act="copy-invite">复制邀请链接</button>' : ''}
+              </div>
+            </label>
+            <p class="hint" style="margin:-4px 0 16px">${site.inviteCode
+              ? '换新码会立即作废旧码，已用次数一起归零。已经注册的账号不受影响。'
+              : '生成后把邀请链接发给对方，他还要自己收邮箱验证码。'}</p>
+            <div class="row">
+              <label><span>名额上限（0 = 不限）</span>
+                <input name="inviteMaxUses" type="number" min="0" max="10000" value="${site.inviteMaxUses}" />
+              </label>
+              <label><span>有效期（留空 = 不过期）</span>
+                <input name="inviteExpiresAtLocal" type="datetime-local" value="${esc(expiryValue)}" />
+              </label>
+            </div>
+            <p class="hint" style="margin:-4px 0 16px">
+              已注册 ${site.inviteUsedCount} 人${site.inviteMaxUses ? ` / 上限 ${site.inviteMaxUses}` : ''}。
+              ${expired ? '<span class="warn">邀请码已过期，现在没人能注册。</span>' : ''}
+              ${!expired && exhausted ? '<span class="warn">名额已用完，现在没人能注册。</span>' : ''}
+            </p>
+          </div>
+
           <div class="btn-row">
             <button class="primary" type="submit">保存</button>
-            ${site.inviteCode ? '<span class="spacer"></span><button class="danger" type="button" data-act="revoke-invite">作废邀请码</button>' : ''}
+            ${needsInvite && site.inviteCode ? '<span class="spacer"></span><button class="danger" type="button" data-act="revoke-invite">作废邀请码</button>' : ''}
           </div>
         </form>
       ` : ''}
@@ -1767,6 +1821,178 @@ function renderWechatView() {
   `
 }
 
+// ===== 邮件发信 =====
+
+/**
+ * SMTP 服务商预设下拉。选中后自动把 host / port / 加密方式填进表单。
+ * 预设列表由服务端下发（smtp.mjs 里的 SMTP_PRESETS），这里不重复维护一份，
+ * 免得两边加服务商时漏改。
+ */
+function smtpPresetOptions(presets, currentHost, currentPort) {
+  const list = Array.isArray(presets) ? presets : []
+  const matched = list.find((preset) => preset.host && preset.host === currentHost)
+  return [
+    `<option value="">手动填写</option>`,
+    ...list.map((preset) => {
+      const selected = preset.host === currentHost && (!preset.port || preset.port === Number(currentPort))
+      // note 挂在 option 上，选中时直接显示给管理员——"密码要填授权码"这类提醒
+      // 放在选服务商的那一刻最有用。
+      return `<option value="${esc(preset.id)}" data-note="${esc(preset.note ?? '')}"${selected ? ' selected' : ''}>${esc(preset.label)}</option>`
+    }),
+  ].join('')
+}
+
+function renderSmtpView() {
+  const smtp = state.smtp ?? {}
+  const site = state.site ?? {}
+  const configured = Boolean(smtp.host && smtp.user && smtp.hasPassword)
+  const registrationOn = site.registrationEnabled === true
+  const ttlMinutes = Math.round((smtp.codeTtlSeconds ?? 600) / 60)
+  const presets = smtp.presets ?? []
+  const encryptions = [
+    { id: 'ssl', label: 'SSL（465）', detail: '连上去就是加密的。QQ、163、腾讯企业邮都用这个。' },
+    { id: 'starttls', label: 'STARTTLS（587）', detail: '先明文握手再升级加密。Gmail、多数自建邮局用这个。' },
+    { id: 'none', label: '不加密（25）', detail: '只给同机或内网中继用。选它等于授权码明文过网。' },
+  ]
+
+  // 当前选中的预设说明，用来说明"这个服务商该怎么填"。
+  const activePreset = presets.find((preset) => preset.host && preset.host === smtp.host)
+
+  return `
+    <div class="page-head">
+      <h1>邮件发信</h1>
+      <p>注册要验证邮箱，验证码就从这里发出去。填好并测通之后，用户才能在登录页自助注册。</p>
+    </div>
+
+    ${!smtp.enabled
+      ? `<div class="alert" data-tone="warn">
+          <div class="alert-body">
+            <strong>邮件发信还没生效</strong>
+            <p>${configured
+              ? '参数都齐了，但「启用邮件发信」没勾上——勾上并保存，用户才能收到注册验证码。'
+              : '需要先填好服务器地址、登录账号和授权码三项，缺一不可。填完保存后勾上「启用邮件发信」。'}</p>
+          </div>
+        </div>`
+      : registrationOn
+        ? ''
+        : `<div class="alert">
+            <div class="alert-body">
+              <strong>发信通道已就绪，但自助注册还没开</strong>
+              <p>去「访问与安全」把访问方式切到多用户账号模式，然后在「自助注册」里打开开关。</p>
+            </div>
+            <button class="primary" type="button" data-view="access">去开启注册</button>
+          </div>`}
+
+    <div class="panel">
+      <h2>关键前提：这里填的是「授权码」，不是邮箱密码</h2>
+      <p class="hint">
+        QQ、163、腾讯企业邮这类邮箱都<b>不接受网页登录密码</b>去发信。必须先在邮箱后台开启 SMTP 服务，
+        系统会给你一串 16 位的<b>授权码 / 客户端专用密码</b>，把它填到下面的「授权码」栏。
+        这是本站最容易卡住的一步，填错会一直报 535。
+      </p>
+      <div class="stats" style="margin-top:16px">
+        <div class="stat"><strong class="ok">1. 开启 SMTP</strong><span>邮箱设置里打开收发服务</span></div>
+        <div class="stat"><strong class="ok">2. 拿授权码</strong><span>16 位，只显示一次</span></div>
+        <div class="stat"><strong class="ok">3. 填进本页</strong><span>然后点「测试连接」</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>发信设置</h2>
+      <form id="smtp-form" style="margin-top:14px">
+        <label class="check"><input type="checkbox" name="enabled"${smtp.enabled ? ' checked' : ''} /><span>启用邮件发信 <em>关掉后注册页会提示"本站还没配置邮件发信"</em></span></label>
+
+        <fieldset class="group">
+          <legend>服务器</legend>
+          <label><span>快速预设</span>
+            <select id="smtp-preset">${smtpPresetOptions(presets, smtp.host ?? '', smtp.port ?? 0)}</select>
+          </label>
+          <p class="hint" style="margin:-4px 0 16px" id="smtp-preset-note">${esc(activePreset?.note ?? '选一个预设会自动填好服务器地址、端口和加密方式，也可以自己填。')}</p>
+          <div class="row">
+            <label><span>SMTP 服务器</span><input name="host" value="${esc(smtp.host ?? '')}" placeholder="smtp.qq.com" /></label>
+            <label><span>端口</span><input name="port" type="number" min="1" max="65535" value="${esc(smtp.port ?? 465)}" /></label>
+          </div>
+          <div class="modes three" style="margin-top:6px">${encryptions.map((mode) => `
+            <label class="mode" data-selected="${(smtp.encryption ?? 'ssl') === mode.id}">
+              <input type="radio" name="encryption" value="${mode.id}"${(smtp.encryption ?? 'ssl') === mode.id ? ' checked' : ''} />
+              <span>
+                <strong>${esc(mode.label)}</strong>
+                <small>${esc(mode.detail)}</small>
+              </span>
+            </label>
+          `).join('')}</div>
+        </fieldset>
+
+        <fieldset class="group">
+          <legend>账号与凭据</legend>
+          <div class="row">
+            <label><span>登录账号（完整邮箱地址）</span><input name="user" value="${esc(smtp.user ?? '')}" placeholder="you@qq.com" autocomplete="off" /></label>
+            <label><span>授权码 / 客户端专用密码</span>
+              <input name="password" type="password" autocomplete="new-password" placeholder="${smtp.hasPassword ? `当前 ${esc(smtp.passwordMask)}，留空表示不修改` : '不是邮箱登录密码，是邮箱后台生成的授权码'}" />
+            </label>
+          </div>
+          <div class="row">
+            <label><span>发件人地址</span><input name="from" value="${esc(smtp.from ?? '')}" placeholder="留空 = 用上面的登录账号" /></label>
+            <label><span>发件人显示名</span><input name="fromName" value="${esc(smtp.fromName ?? '')}" placeholder="留空 = 用站点标题" /></label>
+          </div>
+          <p class="hint" style="margin:-4px 0 16px">
+            QQ、163 等邮箱<b>强制要求发件人地址和登录账号是同一个</b>，不一致会被 550 拒投，所以这里留空最省事。
+          </p>
+          <label class="check"><input type="checkbox" name="allowUnauthorized"${smtp.allowUnauthorized ? ' checked' : ''} /><span>跳过 TLS 证书校验 <em>只给用自签证书的自建邮局用，公网服务商千万别勾</em></span></label>
+        </fieldset>
+
+        <fieldset class="group">
+          <legend>发信限流</legend>
+          <div class="row">
+            <label><span>同一邮箱每天最多</span><input name="dailyLimitPerEmail" type="number" min="1" max="200" value="${esc(smtp.dailyLimitPerEmail ?? 8)}" /></label>
+            <label><span>同一 IP 每小时最多</span><input name="hourlyLimitPerIp" type="number" min="1" max="2000" value="${esc(smtp.hourlyLimitPerIp ?? 20)}" /></label>
+          </div>
+          <p class="hint" style="margin:-4px 0 16px">
+            两道限制护的是不同的东西：前者防止有人拿本站去骚扰别人的邮箱，后者防止有人换着一堆邮箱把你的发信额度刷爆。
+            QQ 个人邮箱每天的发信量有硬上限，被刷爆之后全站都注册不了。验证码 ${ttlMinutes} 分钟有效，同一邮箱 60 秒内只能要一次。
+          </p>
+        </fieldset>
+
+        <div class="btn-row">
+          <button class="primary" type="submit">保存</button>
+          <button type="button" id="smtp-test"${smtpTesting ? ' disabled' : ''}>${smtpTesting ? '正在测试…' : '测试连接'}</button>
+        </div>
+        <p class="probe ${smtpProbe ? (smtpProbe.ok ? 'ok' : 'bad') : ''}" id="smtp-probe">${smtpProbe
+          ? `${smtpProbe.ok ? '✓' : '✗'} ${esc(smtpProbe.message)}`
+          : ''}</p>
+        <p class="hint" style="margin-top:10px">「测试连接」只握手和认证，不发信、不消耗额度。它验证四件事：服务器地址、端口、加密方式、授权码。</p>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h2>真发一封试试</h2>
+      <p class="hint">
+        连接测试通过只能说明"能登录"，证明不了"信能进收件箱"。域名信誉、内容是否被判垃圾邮件，
+        都只有真发一封才看得出来。这里发的是一封测试邮件，不占用任何用户的额度。
+      </p>
+      <form id="smtp-send-form" style="margin-top:16px">
+        <label><span>收件地址</span>
+          <div class="with-action">
+            <input name="to" value="${esc(smtpTestTo || smtp.user || '')}" placeholder="留空 = 发给自己（登录账号）" />
+            <button type="button" id="smtp-send"${smtpTesting ? ' disabled' : ''}>发送测试邮件</button>
+          </div>
+        </label>
+        <p class="hint" style="margin:6px 0 0">如果没收到，先翻<b>垃圾邮件</b>文件夹。个人邮箱刚配好时，第一封很容易被拦。</p>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h2>常见故障</h2>
+      <div class="stats" style="margin-top:14px">
+        <div class="stat"><strong class="bad">535</strong><span>账号或授权码错。九成是填了邮箱登录密码。</span></div>
+        <div class="stat"><strong class="bad">550</strong><span>发件地址和登录账号不是同一个邮箱。</span></div>
+        <div class="stat"><strong class="bad">连接超时</strong><span>端口或加密方式不匹配，或服务器出网被拦。</span></div>
+        <div class="stat"><strong class="bad">421</strong><span>触发了邮箱服务商的每日发信上限。</span></div>
+      </div>
+    </div>
+  `
+}
+
 // ===== 骨架 =====
 
 function render() {
@@ -1783,6 +2009,7 @@ function render() {
     : view === 'agent' ? renderAgentView()
     : view === 'credits' ? renderCreditsView()
     : view === 'wechat' ? renderWechatView()
+    : view === 'smtp' ? renderSmtpView()
     : view === 'access' ? renderAccessView()
     : view === 'providers' ? renderProvidersView()
     : view === 'channels' ? renderChannelsView()
@@ -1895,6 +2122,7 @@ function bindEvents() {
   bindUsageEvents()
   bindCreditsEvents()
   bindWechatEvents()
+  bindSmtpEvents()
 
   app.querySelector('#providers-form')?.addEventListener('submit', async (event) => {
     event.preventDefault()
@@ -2292,6 +2520,13 @@ function bindInviteEvents() {
   const form = app.querySelector('#invite-form')
   if (!form) return
 
+  // 只有勾了"额外要求邀请码"才展开邀请码那一块——默认不要求，展开只会让人以为必填。
+  const requireInput = form.querySelector('[name=requireInviteCode]')
+  const extra = form.querySelector('#invite-extra')
+  requireInput?.addEventListener('change', () => {
+    if (extra) extra.style.display = requireInput.checked ? 'block' : 'none'
+  })
+
   form.querySelector('[data-act=new-invite]')?.addEventListener('click', async (event) => {
     if (state.site.inviteCode && !await confirmDialog({
       title: '换一个新邀请码？',
@@ -2303,7 +2538,7 @@ function bindInviteEvents() {
     try {
       await api('/api/admin/invite', { method: 'POST' })
       await refresh()
-      showToast('邀请码已生成，记得开启自助注册', 'good')
+      showToast('邀请码已生成', 'good')
     } catch (err) {
       showToast(err.message, 'bad')
       event.target.disabled = false
@@ -2328,13 +2563,13 @@ function bindInviteEvents() {
   form.querySelector('[data-act=revoke-invite]')?.addEventListener('click', async () => {
     if (!await confirmDialog({
       title: '作废邀请码？',
-      message: '自助注册会一起关掉，发出去的邀请链接全部失效。已注册的账号照常能登录。',
+      message: '发出去的邀请链接全部失效，已用次数归零。已注册的账号照常能登录。如果你还勾着「额外要求邀请码」，自助注册会一起停掉。',
       confirmText: '作废',
     })) return
     try {
       await api('/api/admin/invite', { method: 'DELETE' })
       await refresh()
-      showToast('邀请码已作废，自助注册已关闭', 'good')
+      showToast('邀请码已作废', 'good')
     } catch (err) {
       showToast(err.message, 'bad')
     }
@@ -2721,6 +2956,90 @@ function readImageAsDataUrl(file) {
     reader.onload = () => resolve(String(reader.result ?? ''))
     reader.onerror = () => reject(new Error('读取图片失败'))
     reader.readAsDataURL(file)
+  })
+}
+
+function bindSmtpEvents() {
+  const form = app.querySelector('#smtp-form')
+  if (!form) return
+
+  // 预设只负责填表单，保存仍然走常规路径——这样管理员选完还能手动微调。
+  form.querySelector('#smtp-preset')?.addEventListener('change', (event) => {
+    const option = event.target.selectedOptions?.[0]
+    const preset = (state.smtp?.presets ?? []).find((item) => item.id === event.target.value)
+    const note = app.querySelector('#smtp-preset-note')
+    if (note) note.textContent = option?.dataset.note || '按服务商文档填写服务器地址、端口和加密方式。'
+    if (!preset) return
+    if (preset.host) form.querySelector('[name=host]').value = preset.host
+    if (preset.port) form.querySelector('[name=port]').value = preset.port
+    if (preset.encryption) {
+      const radio = form.querySelector(`[name=encryption][value=${preset.encryption}]`)
+      if (radio) {
+        radio.checked = true
+        // radio 的 :checked 影响不到祖先卡片，选中态得手动同步。
+        for (const card of form.querySelectorAll('.mode')) {
+          card.dataset.selected = String(card.querySelector('input').checked)
+        }
+      }
+    }
+  })
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const data = new FormData(form)
+    const body = {
+      enabled: data.get('enabled') === 'on',
+      host: String(data.get('host') ?? '').trim(),
+      port: Number(data.get('port')) || 0,
+      encryption: String(data.get('encryption') ?? 'ssl'),
+      user: String(data.get('user') ?? '').trim(),
+      from: String(data.get('from') ?? '').trim(),
+      fromName: String(data.get('fromName') ?? '').trim(),
+      allowUnauthorized: data.get('allowUnauthorized') === 'on',
+      dailyLimitPerEmail: Number(data.get('dailyLimitPerEmail')) || 8,
+      hourlyLimitPerIp: Number(data.get('hourlyLimitPerIp')) || 20,
+    }
+    // 授权码遵循"留空 = 不修改"：后台每次保存都重填一遍授权码太反人类。
+    const password = String(data.get('password') ?? '').trim()
+    if (password) body.password = password
+
+    try {
+      await api('/api/admin/smtp', { method: 'PUT', body })
+      smtpProbe = null
+      await refresh()
+      showToast('邮件设置已保存', 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
+  })
+
+  form.querySelector('#smtp-test')?.addEventListener('click', async () => {
+    smtpTesting = true
+    smtpProbe = null
+    render()
+    try {
+      smtpProbe = await api('/api/admin/smtp/test', { method: 'POST' })
+    } catch (err) {
+      smtpProbe = { ok: false, message: err.message }
+    } finally {
+      smtpTesting = false
+    }
+    render()
+  })
+
+  app.querySelector('#smtp-send')?.addEventListener('click', async (event) => {
+    const input = app.querySelector('#smtp-send-form [name=to]')
+    smtpTestTo = String(input?.value ?? '').trim()
+    event.target.disabled = true
+    smtpProbe = null
+    try {
+      smtpProbe = await api('/api/admin/smtp/send-test', { method: 'POST', body: { to: smtpTestTo } })
+    } catch (err) {
+      smtpProbe = { ok: false, message: err.message }
+    } finally {
+      event.target.disabled = false
+    }
+    render()
   })
 }
 

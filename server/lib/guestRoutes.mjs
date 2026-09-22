@@ -7,7 +7,7 @@ import { redeemCard } from './cards.mjs'
 import { getClientIp, HttpError, readJsonBody, sendJson } from './http.mjs'
 import { isLocked, getLockRemainingSeconds, recordFailure, recordSuccess } from './rateLimit.mjs'
 import { handleRelay } from './relay.mjs'
-import { getConfig, getEnabledChannels, inviteStatus, toPublicChannel } from './store.mjs'
+import { getConfig, getEnabledChannels, inviteStatus, isSmtpConfigured, toPublicChannel } from './store.mjs'
 import { handleWechatCallback, pollWechatLogin, serveFixedQrcode, serveSceneQrcode, startWechatLogin } from './wechatRoutes.mjs'
 
 /** 共享工作区标识：open / passcode 模式下所有人同一个本地仓库。 */
@@ -23,11 +23,16 @@ export function getWorkspaceId(accessMode, user) {
   return requiresAccount(accessMode) && user ? user.id : SHARED_WORKSPACE_ID
 }
 
-/** 积分开关的公开投影。管理员没开积分制时前端完全看不到相关入口。 */
+/**
+ * 积分开关的公开投影。管理员没开积分制时前端完全看不到相关入口。
+ * signupBonus 是故意公开的：它是登录页最有效的拉新文案（"注册即送 50 积分"），
+ * 本身也不是什么秘密——任何人注册一次就知道了。
+ */
 function publicCredits(site) {
   return {
     enabled: site.credits.enabled,
     costPerImage: site.credits.costPerImage,
+    signupBonus: site.credits.enabled ? site.credits.signupBonus : 0,
     purchaseUrl: site.credits.purchaseUrl,
     packs: site.credits.packs,
   }
@@ -61,11 +66,19 @@ export async function handleGuestRoute(req, res, ctx) {
             username: ctx.user.username,
             displayName: ctx.user.wechatNickname || ctx.user.displayName || ctx.user.username,
             avatar: ctx.user.wechatAvatar || '',
+            email: ctx.user.email || '',
           }
         : null,
       workspaceId: getWorkspaceId(accessMode, ctx.user),
-      // 注册入口是否可见。只回传"能不能注册"，邀请码本身不下发——它得由管理员另行转达。
+      // 注册入口是否可见。只回传"能不能注册"和"要不要邀请码"，邀请码本身不下发。
       registrationOpen: accessMode === 'accounts' && inviteStatus(config.site).ok,
+      // 自助注册还依赖"能发验证码"这一条。没配 SMTP 时前端要把注册入口关掉并说明原因，
+      // 而不是让用户填完表单才在最后一步撞 503。
+      registration: {
+        enabled: accessMode === 'accounts' && inviteStatus(config.site).ok,
+        requireInviteCode: config.site.requireInviteCode,
+        emailVerification: isSmtpConfigured(config.site.smtp) && config.site.smtp.enabled,
+      },
       credits: publicCredits(config.site),
       // 登录页需要知道的：用哪种方式、要不要显示二维码。凭据一律不下发。
       wechat: {
@@ -112,7 +125,28 @@ export async function handleGuestRoute(req, res, ctx) {
     return ctx.register({
       username: String(body.username ?? ''),
       password: String(body.password ?? ''),
+      email: String(body.email ?? ''),
+      code: String(body.code ?? ''),
       inviteCode: String(body.inviteCode ?? ''),
+    })
+  }
+
+  // ===== 邮箱验证码 =====
+
+  if (ctx.path === '/api/auth/email-code' && req.method === 'POST') {
+    const body = await readJsonBody(req)
+    return ctx.sendEmailCode({
+      email: String(body.email ?? ''),
+      purpose: body.purpose === 'reset' ? 'reset' : 'register',
+    })
+  }
+
+  if (ctx.path === '/api/auth/reset-password' && req.method === 'POST') {
+    const body = await readJsonBody(req)
+    return ctx.resetPassword({
+      email: String(body.email ?? ''),
+      code: String(body.code ?? ''),
+      password: String(body.password ?? ''),
     })
   }
 

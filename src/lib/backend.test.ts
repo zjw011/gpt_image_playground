@@ -46,7 +46,8 @@ function createBootstrap(site: Partial<BackendBootstrap['site']> = {}): BackendB
     user: null,
     workspaceId: 'shared',
     registrationOpen: false,
-    credits: { enabled: false, costPerImage: 0, purchaseUrl: '', packs: [] },
+    registration: { enabled: false, requireInviteCode: false, emailVerification: true },
+    credits: { enabled: false, costPerImage: 0, signupBonus: 0, purchaseUrl: '', packs: [] },
     wechat: { enabled: false, loginMode: 'code', hasQrcodeImage: false },
     site: {
       title: 'T',

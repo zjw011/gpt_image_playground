@@ -80,10 +80,27 @@ function createEmptyConfig() {
       agentWebSearch: false,
       // 自助注册默认关闭：开着等于把渠道额度对全网敞开，必须由管理员显式打开。
       registrationEnabled: false,
+      // 加了邮箱验证码之后，邀请码从"必经关卡"降级成"可选加码"。默认不要求——
+      // 少一个用户看不懂的东西，注册转化率就高一点。
+      requireInviteCode: false,
       inviteCode: '',
       inviteMaxUses: 0,
       inviteUsedCount: 0,
       inviteExpiresAt: 0,
+      // 发验证码用的 SMTP。默认空配置，此时注册功能拿不到验证码，等于不可用。
+      smtp: {
+        enabled: false,
+        host: '',
+        port: 465,
+        encryption: 'ssl',
+        user: '',
+        password: '',
+        from: '',
+        fromName: '',
+        allowUnauthorized: false,
+        dailyLimitPerEmail: 8,
+        hourlyLimitPerIp: 20,
+      },
       // 微信扫码关注登录。默认关闭，且必须凑齐 AppID/AppSecret/Token 才能真正启用。
       wechat: {
         enabled: false,
@@ -197,10 +214,14 @@ export function normalizeUser(input, fallbackId) {
     username,
     displayName: normalizeString(record.displayName, '').trim(),
     passwordHash: normalizeString(record.passwordHash, ''),
+    // 注册邮箱一律小写存储：A@qq.com 和 a@qq.com 必须落到同一个账号，
+    // 否则同一台邮箱能反复注册出无数个小号来领注册赠送的积分。
+    email: normalizeString(record.email, '').trim().toLowerCase(),
     enabled: normalizeBool(record.enabled, true),
     note: normalizeString(record.note, ''),
     // 区分账号是怎么来的，后台名册上要能一眼看出来。
-    createdVia: record.createdVia === 'invite' ? 'invite' : record.createdVia === 'wechat' ? 'wechat' : 'admin',
+    createdVia: normalizeCreatedVia(record.createdVia),
+    emailVerifiedAt: normalizeInt(record.emailVerifiedAt, 0, 0, Number.MAX_SAFE_INTEGER),
     createdAt: normalizeInt(record.createdAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
     updatedAt: normalizeInt(record.updatedAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
     lastSeenAt: normalizeInt(record.lastSeenAt, 0, 0, Number.MAX_SAFE_INTEGER),
@@ -211,6 +232,13 @@ export function normalizeUser(input, fallbackId) {
     wechatAvatar: normalizeString(record.wechatAvatar, '').trim(),
     wechatSubscribed: normalizeBool(record.wechatSubscribed, false),
   }
+}
+
+const CREATED_VIA = new Set(['admin', 'invite', 'wechat', 'email'])
+
+function normalizeCreatedVia(value) {
+  const raw = normalizeString(value, '').trim()
+  return CREATED_VIA.has(raw) ? raw : 'admin'
 }
 
 /** 老配置只有 guestGateEnabled 布尔值，映射成新的三档 accessMode。 */
@@ -250,20 +278,70 @@ function normalizeAgentSettings(site, channels) {
 
 /**
  * 自助注册设置清洗。
- * 注册只在多用户模式下有意义——别的模式下根本没有"账号"这个概念，
- * 所以这里会在缺少邀请码或不是 accounts 模式时把开关强制关掉，而不是留一个半开的状态。
+ * 注册只在多用户模式下有意义——别的模式下根本没有"账号"这个概念。
+ *
+ * 邀请码从"必经关卡"改成了"可选加码"：主关卡换成了邮箱验证码。
+ * 所以这里只检查"要邀请码时是否真的配了码"，不再要求必须有码才能开注册。
  */
 function normalizeRegistration(site, accessMode) {
   const inviteCode = normalizeString(site.inviteCode, '').trim()
   const expiresAt = normalizeInt(site.inviteExpiresAt, 0, 0, Number.MAX_SAFE_INTEGER)
+  const requireInviteCode = normalizeBool(site.requireInviteCode, false)
 
   return {
-    registrationEnabled: normalizeBool(site.registrationEnabled, false) && accessMode === 'accounts' && Boolean(inviteCode),
+    registrationEnabled: normalizeBool(site.registrationEnabled, false)
+      && accessMode === 'accounts'
+      && (!requireInviteCode || Boolean(inviteCode)),
+    requireInviteCode,
     inviteCode,
     inviteMaxUses: normalizeInt(site.inviteMaxUses, 0, 0, 10_000),
     inviteUsedCount: normalizeInt(site.inviteUsedCount, 0, 0, Number.MAX_SAFE_INTEGER),
     inviteExpiresAt: expiresAt,
   }
+}
+
+/** 邮件加密方式。与 smtp.mjs 里的一致，`none` 是明文（只给内网中继用）。 */
+export const SMTP_ENCRYPTIONS = new Set(['ssl', 'starttls', 'none'])
+
+/** 邮件发信设置是否真的能跑通：四要素缺一不可。 */
+export function isSmtpConfigured(smtp) {
+  return Boolean(smtp && smtp.host && smtp.user && smtp.password && (smtp.from || smtp.user))
+}
+
+/**
+ * 邮件发信设置清洗。
+ *
+ * `enabled` 用服务端算出来的那份：缺任何一项都不可能发出信，留一个"开着但一定失败"
+ * 的开关只会让管理员反复排查前端为什么收不到验证码。
+ */
+function normalizeSmtp(site) {
+  const raw = isRecord(site.smtp) ? site.smtp : {}
+  const host = normalizeString(raw.host, '').trim().slice(0, 200)
+  const user = normalizeString(raw.user, '').trim().slice(0, 200)
+  // 密码在这里是"授权码 / 客户端专用密码"，长度上限给宽一点（有的服务商字符串很长）。
+  const password = normalizeString(raw.password, '').slice(0, 400)
+  const from = normalizeString(raw.from, '').trim().slice(0, 200)
+  const encryptionInput = normalizeString(raw.encryption, '').trim().toLowerCase()
+
+  const normalized = {
+    enabled: false,
+    host,
+    port: normalizeInt(raw.port, 0, 0, 65535),
+    encryption: SMTP_ENCRYPTIONS.has(encryptionInput) ? encryptionInput : 'ssl',
+    user,
+    password,
+    // 发件人留空时取登录账号。QQ / 163 本来就强制要求两者一致，
+    // 自动兜底能省掉管理员一个必填项，也少一次 550。
+    from: from || user,
+    fromName: normalizeString(raw.fromName, '').trim().slice(0, 60),
+    allowUnauthorized: normalizeBool(raw.allowUnauthorized, false),
+    // 限流值的上限是"防手滑"的保险丝：填成 0 会让注册功能彻底不可用。
+    dailyLimitPerEmail: normalizeInt(raw.dailyLimitPerEmail, 8, 1, 200),
+    hourlyLimitPerIp: normalizeInt(raw.hourlyLimitPerIp, 20, 1, 2000),
+  }
+
+  normalized.enabled = normalizeBool(raw.enabled, false) && isSmtpConfigured(normalized)
+  return normalized
 }
 
 /** 微信登录方式：code 扫码后回复验证码（未认证也能用）、qrcode 带参数二维码（需认证）。 */
@@ -300,6 +378,17 @@ function normalizeWechat(site) {
 }
 
 /**
+ * 套餐价格是"展示文案"（"¥9.9"、"限时 8 折"），所以存字符串不下发货币单位。
+ * 但后台填价格时人手最容易直接敲 `9.9`，如果严格只认字符串就会静默丢掉价格——
+ * 管理员在界面上看到「已保存」，回列表却发现标价空了。这里顺手把数字转成字符串。
+ */
+function normalizePackPrice(value) {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return ''
+}
+
+/**
  * 积分设置清洗。
  * 面额与单价的上下限是防手滑的保险丝：单价 0 等于全站免费，面额 999 亿等于余额溢出。
  */
@@ -311,7 +400,7 @@ function normalizeCreditSettings(site) {
     .slice(0, 12)
     .map((pack) => ({
       name: normalizeString(pack.name, '').trim().slice(0, 40),
-      price: normalizeString(pack.price, '').trim().slice(0, 20),
+      price: normalizePackPrice(pack.price).trim().slice(0, 20),
       credits: normalizeInt(pack.credits, 0, 0, 100_000_000),
     }))
     .filter((pack) => pack.credits > 0)
@@ -380,6 +469,7 @@ function normalizeConfig(input) {
       allowGuestParamOverride: normalizeBool(site.allowGuestParamOverride, true),
       ...normalizeAgentSettings(site, normalizedChannels),
       ...normalizeRegistration(site, accessMode),
+      smtp: normalizeSmtp(site),
       wechat: normalizeWechat(site),
       credits: normalizeCreditSettings(site),
     },
@@ -499,6 +589,41 @@ export function getEnabledChannels() {
   return getConfig().channels.filter((channel) => channel.enabled && channel.apiKey)
 }
 
+/**
+ * 后台可见的站点设置投影。
+ *
+ * 把两处凭据从 site 里剔掉：微信的 AppSecret / Token / EncodingAESKey，以及 SMTP 授权码。
+ * 它们各自有专门的带掩码投影（toAdminWechat / toAdminSmtp）。
+ * 原样把整个 site 丢给前端，等于让这些密钥在管理页每次刷新时都过一次网络。
+ */
+export function toAdminSite(site) {
+  const { wechat, smtp, ...rest } = site
+  return rest
+}
+
+/**
+ * 邮件发信设置的后台投影。
+ * 授权码（password）只回"有没有"和打码后的样子——
+ * 后台的"留空表示不修改"依赖这个 mask，让管理员确认填过什么而不必读出明文。
+ */
+export function toAdminSmtp(site) {
+  const smtp = site.smtp
+  return {
+    enabled: smtp.enabled,
+    host: smtp.host,
+    port: smtp.port,
+    encryption: smtp.encryption,
+    user: smtp.user,
+    passwordMask: maskApiKey(smtp.password),
+    hasPassword: Boolean(smtp.password),
+    from: smtp.from,
+    fromName: smtp.fromName,
+    allowUnauthorized: smtp.allowUnauthorized,
+    dailyLimitPerEmail: smtp.dailyLimitPerEmail,
+    hourlyLimitPerIp: smtp.hourlyLimitPerIp,
+  }
+}
+
 export function findChannel(id) {
   return getConfig().channels.find((channel) => channel.id === id) ?? null
 }
@@ -516,6 +641,16 @@ export function findUserByUsername(username) {
   return getConfig().users.find((user) => user.username.toLowerCase() === target) ?? null
 }
 
+/**
+ * 邮箱查找。存的时候已经统一小写，这里再兜一次是为了兼容老配置里的大小写混写。
+ * 注册要拿它挡重复：不然同一台邮箱能反复注册小号来领注册赠送的积分。
+ */
+export function findUserByEmail(email) {
+  const target = String(email ?? '').trim().toLowerCase()
+  if (!target) return null
+  return getConfig().users.find((user) => user.email && user.email === target) ?? null
+}
+
 /** openid 是微信登录的唯一主键：同一个人反复扫码必须落到同一个账号。 */
 export function findUserByOpenId(openid) {
   const target = String(openid ?? '').trim()
@@ -530,6 +665,9 @@ export function toPublicUser(user) {
     username: user.username,
     displayName: user.wechatNickname || user.displayName || user.username,
     avatar: user.wechatAvatar || '',
+    // 邮箱回给本人是合理的（用户中心要显示"绑定的是哪个邮箱"），
+    // 但它只在本人的响应里出现，不会出现在任何列表接口中。
+    email: user.email || '',
   }
 }
 
@@ -539,6 +677,8 @@ export function toAdminUser(user) {
     id: user.id,
     username: user.username,
     displayName: user.displayName,
+    email: user.email || '',
+    emailVerified: Boolean(user.emailVerifiedAt),
     enabled: user.enabled,
     note: user.note,
     createdVia: user.createdVia,
@@ -556,12 +696,17 @@ export function toAdminUser(user) {
 }
 
 /**
- * 邀请码当前是否还能用。
+ * 注册当前是否开放，以及为什么不开。
  * 返回具体原因而不是布尔值：注册页要把"名额用完了"和"过期了"分开告诉用户，
  * 否则他只会反复重试同一个码。
+ *
+ * 注意：这里**不检查邮箱发信有没有配好**——发信坏了是 503（服务器的问题），
+ * 不是 403（你没资格注册）。两件事在注册页上要给用户完全不同的提示。
  */
 export function inviteStatus(site, now = Date.now()) {
   if (!site.registrationEnabled) return { ok: false, reason: 'disabled' }
+  // 不要求邀请码时，直接放行；主关卡是邮箱验证码。
+  if (!site.requireInviteCode) return { ok: true, reason: '' }
   if (!site.inviteCode) return { ok: false, reason: 'disabled' }
   if (site.inviteExpiresAt && now > site.inviteExpiresAt) return { ok: false, reason: 'expired' }
   if (site.inviteMaxUses && site.inviteUsedCount >= site.inviteMaxUses) return { ok: false, reason: 'exhausted' }

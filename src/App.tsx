@@ -193,6 +193,8 @@ export default function App() {
         title={backend.site.title}
         accessMode={backend.accessMode}
         registrationOpen={backend.registrationOpen}
+        registration={backend.registration}
+        credits={backend.credits}
         onUnlocked={() => window.location.reload()}
       />
     )

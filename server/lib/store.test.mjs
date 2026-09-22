@@ -171,6 +171,43 @@ describe('updateConfig', () => {
   })
 })
 
+describe('积分设置清洗', () => {
+  it('套餐价格填成纯数字时不会静默丢失', () => {
+    initWith(null)
+    updateConfig((config) => {
+      config.site.credits = {
+        enabled: true,
+        costPerImage: 1,
+        signupBonus: 50,
+        packs: [
+          { name: '100 积分', price: 9.9, credits: 100 },
+          { name: '500 积分', price: '¥39.9', credits: 500 },
+          { name: '白送', price: null, credits: 1000 },
+        ],
+      }
+      return config
+    })
+    const packs = getConfig().site.credits.packs
+    // 数字 9.9 要留住（曾经被 normalizeString 吃掉变成空串）；字符串原样保留；非字符串非数字才留空。
+    expect(packs.map((pack) => pack.price)).toEqual(['9.9', '¥39.9', ''])
+  })
+
+  it('面额非正的套餐会被丢掉，避免出现 0 积分的商品', () => {
+    initWith(null)
+    updateConfig((config) => {
+      config.site.credits = {
+        enabled: true,
+        packs: [
+          { name: '正常', price: '1', credits: 10 },
+          { name: '零面额', price: '0', credits: 0 },
+        ],
+      }
+      return config
+    })
+    expect(getConfig().site.credits.packs.map((pack) => pack.name)).toEqual(['正常'])
+  })
+})
+
 describe('邀请码', () => {
   it('生成 xxxxx-xxxxx 形式，且不含容易看错的字符', () => {
     for (let i = 0; i < 200; i += 1) {
@@ -199,10 +236,20 @@ describe('邀请码', () => {
     expect(config.site.registrationEnabled).toBe(false)
   })
 
-  it('没有邀请码时开关也被强制关掉，避免留一个半开的状态', () => {
+  it('默认不要求邀请码：邮箱验证码就是主关卡', () => {
     const config = initWith({
       version: 2,
       site: { accessMode: 'accounts', registrationEnabled: true, inviteCode: '' },
+      users: [{ id: 'u-1', username: 'alice', passwordHash: 'h' }],
+      channels: [],
+    })
+    expect(config.site).toMatchObject({ registrationEnabled: true, requireInviteCode: false })
+  })
+
+  it('要求邀请码却没配码时，开关被强制关掉，避免留一个半开的状态', () => {
+    const config = initWith({
+      version: 2,
+      site: { accessMode: 'accounts', registrationEnabled: true, requireInviteCode: true, inviteCode: '' },
       users: [{ id: 'u-1', username: 'alice', passwordHash: 'h' }],
       channels: [],
     })
@@ -220,7 +267,14 @@ describe('邀请码', () => {
   })
 
   it('inviteStatus 区分关闭、过期与名额用完，好让注册页说清具体原因', () => {
-    const base = { registrationEnabled: true, inviteCode: 'abcde-fghij', inviteMaxUses: 0, inviteUsedCount: 0, inviteExpiresAt: 0 }
+    const base = {
+      registrationEnabled: true,
+      requireInviteCode: true,
+      inviteCode: 'abcde-fghij',
+      inviteMaxUses: 0,
+      inviteUsedCount: 0,
+      inviteExpiresAt: 0,
+    }
     expect(inviteStatus(base)).toEqual({ ok: true, reason: '' })
     expect(inviteStatus({ ...base, registrationEnabled: false }).reason).toBe('disabled')
     expect(inviteStatus({ ...base, inviteCode: '' }).reason).toBe('disabled')
@@ -228,6 +282,12 @@ describe('邀请码', () => {
     expect(inviteStatus({ ...base, inviteExpiresAt: 5000 }, 2000).ok).toBe(true)
     expect(inviteStatus({ ...base, inviteMaxUses: 3, inviteUsedCount: 3 }).reason).toBe('exhausted')
     expect(inviteStatus({ ...base, inviteMaxUses: 3, inviteUsedCount: 2 }).ok).toBe(true)
+  })
+
+  it('不要求邀请码时，哪怕没配码也放行', () => {
+    const base = { registrationEnabled: true, requireInviteCode: false, inviteCode: '' }
+    expect(inviteStatus(base)).toEqual({ ok: true, reason: '' })
+    expect(inviteStatus({ ...base, registrationEnabled: false }).reason).toBe('disabled')
   })
 
   it('createdVia 只认 invite，其余一律算管理员创建', () => {
