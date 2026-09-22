@@ -1,0 +1,197 @@
+// 生成结果页。对应设计稿 6：大图展示 + 底部缩略图条 + 右侧操作栏。
+import { useMemo, useState } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { useStore, submitTask, reuseConfig, removeTask } from '../../store'
+import AppShell from './AppShell'
+import { useFullImage, useThumbnail } from './useTaskImage'
+import {
+  IconArrowLeft, IconDownload, IconHeart, IconRefresh, IconCopy,
+  IconTrash, IconImage, IconSparkle,
+} from '../icons'
+
+function Thumb({ imageId, active, onClick }: { imageId: string, active: boolean, onClick: () => void }) {
+  const src = useThumbnail(imageId)
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`h-16 w-16 shrink-0 overflow-hidden rounded-xl border-2 transition ${active ? 'border-[#7c6cf6] shadow-md shadow-[#7c6cf6]/20' : 'border-transparent opacity-70 hover:opacity-100'}`}
+    >
+      {src
+        ? <img src={src} alt="" className="h-full w-full object-cover" />
+        : <span className="flex h-full w-full items-center justify-center bg-white text-[#d8d4ec]"><IconImage className="h-5 w-5" /></span>}
+    </button>
+  )
+}
+
+export default function ResultPage() {
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const tasks = useStore((s) => s.tasks)
+  const showToast = useStore((s) => s.showToast)
+  const setConfirmDialog = useStore((s) => s.setConfirmDialog)
+  const openFavoritePicker = useStore((s) => s.openFavoritePicker)
+
+  // 没指定 task 就看最新的一张——刚点完"立即生成"跳过来就是这条路
+  const task = useMemo(() => {
+    const id = searchParams.get('task')
+    if (id) return tasks.find((item) => item.id === id) ?? null
+    return tasks[0] ?? null
+  }, [tasks, searchParams])
+
+  const [activeImageId, setActiveImageId] = useState<string | null>(null)
+  const imageId = activeImageId && task?.outputImages.includes(activeImageId)
+    ? activeImageId
+    : task?.outputImages[0] ?? null
+  const fullSrc = useFullImage(imageId)
+
+  if (!task) {
+    return (
+      <AppShell title="生成结果">
+        <div className="flex flex-col items-center rounded-3xl border border-[#eceaf6] bg-white py-24 text-center">
+          <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[#efedfd] text-[#7c6cf6]">
+            <IconSparkle className="h-7 w-7" />
+          </span>
+          <p className="mt-5 text-[15px] font-semibold">还没有作品</p>
+          <p className="mt-1.5 text-sm text-[#8a86ac]">去创作你的第一张图吧</p>
+          <Link to="/studio" className="mt-6 rounded-full bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] px-8 py-3 text-sm font-semibold text-white shadow-lg shadow-[#7c6cf6]/30 transition hover:from-[#6b5ce7] hover:to-[#9678f5]">
+            立即创作
+          </Link>
+        </div>
+      </AppShell>
+    )
+  }
+
+  const running = task.status === 'running'
+
+  const download = () => {
+    if (!fullSrc) return
+    const link = document.createElement('a')
+    link.href = fullSrc
+    link.download = `绘想-${task.id}.png`
+    link.click()
+  }
+
+  const regenerate = async () => {
+    await reuseConfig(task)
+    void submitTask()
+    // 清掉 task 参数：新任务进来后自动显示最新那张
+    navigate('/studio/result', { replace: true })
+  }
+
+  const copyPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(task.prompt)
+      showToast('提示词已复制', 'success')
+    } catch {
+      showToast('复制失败，请手动选择复制', 'error')
+    }
+  }
+
+  const confirmDelete = () => {
+    setConfirmDialog({
+      title: '删除这个作品？',
+      message: '删除后无法恢复，确定要删除吗？',
+      confirmText: '删除',
+      cancelText: '取消',
+      action: () => {
+        void removeTask(task)
+        navigate('/studio', { replace: true })
+      },
+    })
+  }
+
+  const ACTIONS = [
+    { icon: IconDownload, label: '下载', onClick: download, disabled: !fullSrc },
+    { icon: IconHeart, label: '收藏', onClick: () => openFavoritePicker([task.id]) },
+    { icon: IconRefresh, label: '再次生成', onClick: () => void regenerate() },
+    { icon: IconCopy, label: '复制提示词', onClick: () => void copyPrompt() },
+    { icon: IconTrash, label: '删除', onClick: confirmDelete, danger: true },
+  ]
+
+  return (
+    <AppShell title="生成结果" wide>
+      <Link to="/studio" className="mb-4 inline-flex items-center gap-1.5 text-[13px] font-medium text-[#8a86ac] transition hover:text-[#6b5ce7]">
+        <IconArrowLeft className="h-4 w-4" />
+        继续创作
+      </Link>
+
+      <div className="flex gap-5">
+        {/* 主图区 */}
+        <div className="min-w-0 flex-1">
+          <div className="overflow-hidden rounded-3xl border border-[#eceaf6] bg-white shadow-sm">
+            <div className="flex items-center justify-between gap-3 border-b border-[#f1effa] px-5 py-3.5">
+              <p className="truncate text-sm font-medium" title={task.prompt}>{task.prompt}</p>
+              <div className="flex shrink-0 items-center gap-2">
+                {task.isFavorite && <IconHeart className="h-4 w-4 text-[#f472b6]" filled />}
+                <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                  running ? 'bg-[#e3f0ff] text-[#4f7ff0]' : task.status === 'done' ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-500'
+                }`}>
+                  {running ? '生成中' : task.status === 'done' ? '已完成' : '失败'}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex min-h-[420px] items-center justify-center bg-[#faf9fe] p-5">
+              {running ? (
+                <div className="flex flex-col items-center text-center">
+                  <span className="relative flex h-16 w-16 items-center justify-center">
+                    <span className="absolute inset-0 animate-ping rounded-full bg-[#7c6cf6]/20" />
+                    <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-white shadow-lg shadow-[#7c6cf6]/30">
+                      <IconSparkle className="h-6 w-6 animate-pulse" />
+                    </span>
+                  </span>
+                  <p className="mt-5 text-sm font-semibold">正在绘制你的想象…</p>
+                  <p className="mt-1.5 max-w-sm truncate text-xs text-[#a5a1c4]">{task.prompt}</p>
+                </div>
+              ) : task.status === 'error' ? (
+                <div className="max-w-md text-center">
+                  <p className="text-sm font-semibold text-red-500">生成失败</p>
+                  <p className="mt-2 text-xs leading-5 text-[#8a86ac]">{task.error || '未知错误'}</p>
+                  <button
+                    type="button"
+                    onClick={() => void regenerate()}
+                    className="mt-5 rounded-full bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-[#7c6cf6]/25"
+                  >
+                    重新生成
+                  </button>
+                </div>
+              ) : fullSrc ? (
+                <img src={fullSrc} alt={task.prompt} className="max-h-[62vh] rounded-2xl object-contain shadow-lg" />
+              ) : (
+                <span className="text-[#d8d4ec]"><IconImage className="h-12 w-12" /></span>
+              )}
+            </div>
+
+            {/* 缩略图条 */}
+            {task.outputImages.length > 1 && (
+              <div className="flex gap-2.5 overflow-x-auto border-t border-[#f1effa] px-5 py-3.5">
+                {task.outputImages.map((id) => (
+                  <Thumb key={id} imageId={id} active={id === imageId} onClick={() => setActiveImageId(id)} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 右侧操作栏 */}
+        <div className="flex w-[76px] shrink-0 flex-col gap-2">
+          {ACTIONS.map((action) => (
+            <button
+              key={action.label}
+              type="button"
+              onClick={action.onClick}
+              disabled={'disabled' in action && Boolean(action.disabled)}
+              className={`flex flex-col items-center gap-1.5 rounded-2xl border border-[#eceaf6] bg-white py-3.5 text-[11px] font-medium shadow-sm transition hover:-translate-y-0.5 hover:shadow disabled:cursor-not-allowed disabled:opacity-40 ${
+                'danger' in action && action.danger ? 'text-red-400 hover:border-red-200 hover:text-red-500' : 'text-[#6f6a94] hover:border-[#cdc7ee] hover:text-[#6b5ce7]'
+              }`}
+            >
+              <action.icon className="h-5 w-5" />
+              {action.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </AppShell>
+  )
+}

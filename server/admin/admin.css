@@ -1,60 +1,62 @@
-/* 后台视觉语言：浅色现代（light modern）。
-   白底卡片 + 极浅描边 + 柔和阴影，蓝作为唯一强调色。
-   层级靠留白和字号拉开，不靠深色块——这是"后台"而不是"控制台"，
-   管理员一天可能只来一次，可读性比气氛更重要。
+/* 后台视觉语言：暗色数据仪表盘（dark dashboard）。
+   深紫黑底 + 发光统计卡 + 紫罗兰强调色，与「绘想」前台的梦幻紫同源。
+   层级靠表面明度和留白拉开；状态色在暗底上用提亮 + 半透明底保证可读。
    所有类名与 admin.js 一一对应，改样式时不必动逻辑。 */
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 
-  --canvas: #f6f7f9;
-  --surface: #ffffff;
-  --surface-2: #fafbfc;
-  --surface-3: #f3f4f6;
-  --surface-4: #e9ebef;
-  --line: #e6e8ee;
-  --line-soft: #eff1f5;
+  --canvas: #14121e;
+  --surface: #1c1a2a;
+  --surface-2: #221f33;
+  --surface-3: #2a2740;
+  --surface-4: #343052;
+  --line: #2d2a44;
+  --line-soft: #262336;
 
-  --ink: #14181f;
-  --ink-dim: #5a6472;
-  --ink-faint: #8d95a3;
+  --ink: #eceaf7;
+  --ink-dim: #a5a1c4;
+  --ink-faint: #6f6a94;
 
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-soft: #eff5ff;
-  --accent-line: #c3d8fd;
-  --accent-ring: rgb(37 99 235 / 0.14);
+  --accent: #8b7cf8;
+  --accent-hover: #9d8ffb;
+  --accent-soft: rgb(139 124 248 / 0.14);
+  --accent-line: rgb(139 124 248 / 0.38);
+  --accent-ring: rgb(139 124 248 / 0.22);
   --accent-ink: #ffffff;
 
-  --violet: #6d56d8;
-  --violet-soft: #f2f0fe;
-  --ok: #0f9d63;
-  --ok-line: #b8e6d0;
-  --ok-soft: #eefaf3;
-  --warn: #a76b06;
-  --warn-line: #f2ddb0;
-  --warn-soft: #fff9ec;
-  --danger: #d13b2e;
-  --danger-line: #f6cfca;
-  --danger-soft: #fef3f2;
+  --violet: #a78bfa;
+  --violet-soft: rgb(167 139 250 / 0.14);
+  --ok: #34d399;
+  --ok-line: rgb(52 211 153 / 0.38);
+  --ok-soft: rgb(52 211 153 / 0.12);
+  --warn: #fbbf24;
+  --warn-line: rgb(251 191 36 / 0.38);
+  --warn-soft: rgb(251 191 36 / 0.12);
+  --danger: #f87171;
+  --danger-line: rgb(248 113 113 / 0.38);
+  --danger-soft: rgb(248 113 113 / 0.12);
 
   --r-sm: 8px;
   --r-md: 11px;
   --r-lg: 15px;
 
-  --shadow-xs: 0 1px 2px rgb(20 24 31 / 0.05);
-  --shadow: 0 4px 14px rgb(20 24 31 / 0.07);
-  --shadow-lift: 0 18px 44px rgb(20 24 31 / 0.16);
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow: 0 4px 16px rgb(0 0 0 / 0.35);
+  --shadow-lift: 0 18px 44px rgb(0 0 0 / 0.5);
 
-  /* 下拉箭头用中性灰，浅色下比深色徽记更干净。 */
-  --caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%238d95a3' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' d='M1.5 1.75 6 6.25l4.5-4.5'/%3E%3C/svg%3E");
+  /* 下拉箭头在暗底上用亮灰。 */
+  --caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%23a5a1c4' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' d='M1.5 1.75 6 6.25l4.5-4.5'/%3E%3C/svg%3E");
 }
 
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  background: var(--canvas);
+  background:
+    radial-gradient(720px 420px at 88% -8%, rgb(139 124 248 / 0.09), transparent 62%),
+    radial-gradient(560px 380px at -6% 32%, rgb(96 165 250 / 0.06), transparent 60%),
+    var(--canvas);
   color: var(--ink);
   font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -158,7 +160,7 @@ p { margin: 0; }
   font-variant-numeric: tabular-nums;
   color: var(--ink-faint);
 }
-.nav-item[aria-current=true] .count { background: #fff; color: var(--accent); }
+.nav-item[aria-current=true] .count { background: var(--accent); color: #fff; }
 
 .rail-foot { margin-top: auto; display: grid; gap: 3px; padding-top: 12px; }
 /* 折叠导航只在窄屏出现；宽屏下按钮隐藏、菜单常展开。 */
@@ -293,8 +295,8 @@ textarea.short { min-height: 108px; }
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgb(20 24 31 / 0.2);
+  background: var(--ink);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
   transition: transform 0.16s;
 }
 .check input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
@@ -341,7 +343,7 @@ button.ghost { background: transparent; border-color: transparent; color: var(--
 button.ghost:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); border-color: transparent; }
 
 button.danger { color: var(--danger); border-color: var(--danger-line); background: var(--danger-soft); }
-button.danger:hover:not(:disabled) { background: #fce9e7; border-color: var(--danger); }
+button.danger:hover:not(:disabled) { background: rgb(248 113 113 / 0.22); border-color: var(--danger); }
 /* 只要文字不要块的行内删除，用在卡片尾部避免一片红块抢视线。 */
 button.danger.plain { background: transparent; border-color: transparent; }
 button.danger.plain:hover:not(:disabled) { background: var(--danger-soft); border-color: transparent; }
@@ -715,6 +717,11 @@ form > .btn-row { margin-top: 18px; }
   border-radius: var(--r-md);
   background: var(--surface-2);
 }
+/* 概览四张卡依次染上紫/绿/黄/蓝的微光，暗色仪表盘的关键一眼识别。 */
+.stats > .stat:nth-child(4n+1) { border-color: rgb(139 124 248 / 0.3); background: linear-gradient(160deg, rgb(139 124 248 / 0.13), var(--surface-2) 58%); }
+.stats > .stat:nth-child(4n+2) { border-color: rgb(52 211 153 / 0.26); background: linear-gradient(160deg, rgb(52 211 153 / 0.1), var(--surface-2) 58%); }
+.stats > .stat:nth-child(4n+3) { border-color: rgb(251 191 36 / 0.26); background: linear-gradient(160deg, rgb(251 191 36 / 0.09), var(--surface-2) 58%); }
+.stats > .stat:nth-child(4n) { border-color: rgb(96 165 250 / 0.26); background: linear-gradient(160deg, rgb(96 165 250 / 0.1), var(--surface-2) 58%); }
 .stat strong {
   display: block;
   font-size: 22px;
@@ -743,7 +750,7 @@ form > .btn-row { margin-top: 18px; }
   position: relative;
   min-height: 2px;
   border-radius: 3px 3px 0 0;
-  background: var(--accent-soft);
+  background: linear-gradient(180deg, rgb(139 124 248 / 0.75), rgb(139 124 248 / 0.25));
   border: 1px solid var(--accent-line);
   border-bottom: 0;
 }
@@ -804,7 +811,7 @@ form > .btn-row { margin-top: 18px; }
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgb(20 24 31 / 0.34);
+  background: rgb(10 8 18 / 0.6);
   backdrop-filter: blur(3px);
   animation: modal-in 0.14s ease-out;
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Navigate, Outlet } from 'react-router-dom'
 import { initStore, restoreExplicitPresetConfig, useStore } from './store'
 import { buildSettingsFromUrlParams, clearUrlSettingParams, getExplicitUrlSettingsIds, hasUrlSettingParams } from './lib/urlSettings'
 import { createDefaultOpenAIProfile, hasDefaultPresetConfig, isAgentTextApiProfile, normalizeSettings } from './lib/apiProfiles'
@@ -8,11 +9,6 @@ import { backendAgentSettings, backendBootstrapToPresetConfig, loadBackendBootst
 import { syncWorkspaceId } from './lib/workspace'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import type { AppSettings } from './types'
-import Header from './components/Header'
-import SearchBar from './components/SearchBar'
-import TaskGrid from './components/TaskGrid'
-import AgentWorkspace from './components/AgentWorkspace'
-import InputBar from './components/InputBar'
 import DetailModal from './components/DetailModal'
 import Lightbox from './components/Lightbox'
 import SettingsModal from './components/SettingsModal'
@@ -21,18 +17,13 @@ import Toast from './components/Toast'
 import MaskEditorModal from './components/MaskEditorModal'
 import ImageContextMenu from './components/ImageContextMenu'
 import SupportPromptModal from './components/SupportPromptModal'
-import BackendGate from './components/BackendGate'
-import WechatGate from './components/WechatGate'
 import RedeemCardModal from './components/RedeemCardModal'
-import { FavoriteCollectionPickerModal, FavoriteCollectionsView, ManageCollectionsModal } from './components/FavoriteCollections'
+import { FavoriteCollectionPickerModal, ManageCollectionsModal } from './components/FavoriteCollections'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
 
 let defaultConfigImportStarted = false
 
 export default function App() {
-  const appMode = useStore((s) => s.appMode)
-  const filterFavorite = useStore((s) => s.filterFavorite)
-  const activeFavoriteCollectionId = useStore((s) => s.activeFavoriteCollectionId)
   // null 表示尚未确定是否为后端托管模式，此期间不渲染主界面，避免闪现未锁定的设置。
   const [backend, setBackend] = useState<BackendBootstrap | null | undefined>(undefined)
   useDockerApiUrlMigrationNotice()
@@ -176,45 +167,14 @@ export default function App() {
 
   if (backend === undefined) return null
 
+  // 登录门禁：新版登录/注册页在 /login、/register，未登录直接跳转过去。
   if (backend && backend.accessMode !== 'open' && !backend.authenticated) {
-    // 微信登录走自己那套门禁：它要的是一个二维码和一段轮询，跟口令表单没有共同点。
-    if (backend.accessMode === 'wechat') {
-      return (
-        <WechatGate
-          title={backend.site.title}
-          hasQrcodeImage={backend.wechat.hasQrcodeImage}
-          onUnlocked={() => window.location.reload()}
-        />
-      )
-    }
-
-    return (
-      <BackendGate
-        title={backend.site.title}
-        accessMode={backend.accessMode}
-        registrationOpen={backend.registrationOpen}
-        registration={backend.registration}
-        credits={backend.credits}
-        userCount={backend.userCount}
-        onUnlocked={() => window.location.reload()}
-      />
-    )
+    return <Navigate to="/login" replace />
   }
 
   return (
     <>
-      <Header />
-      {appMode === 'agent' ? (
-        <AgentWorkspace />
-      ) : (
-        <main data-home-main data-drag-select-surface className="pb-48">
-          <div className="safe-area-x max-w-7xl mx-auto">
-            <SearchBar />
-            {filterFavorite && !activeFavoriteCollectionId ? <FavoriteCollectionsView /> : <TaskGrid />}
-          </div>
-        </main>
-      )}
-      <InputBar />
+      <Outlet />
       <DetailModal />
       <Lightbox />
       <SettingsModal />

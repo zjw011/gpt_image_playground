@@ -23,8 +23,10 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.18.4",
     "remark-gfm": "^4.0.1",
     "streamdown": "^2.5.0",
+    "three": "^0.171.0",
     "zustand": "^5.0.5"
   },
   "overrides": {
@@ -34,6 +36,7 @@
   "devDependencies": {
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
+    "@types/three": "^0.171.0",
     "@vitejs/plugin-react": "^4.4.1",
     "autoprefixer": "^10.4.21",
     "jsdom": "^29.1.1",
