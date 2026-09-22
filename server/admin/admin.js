@@ -17,6 +17,8 @@ const NAV = [
   { id: 'usage', label: '用量与健康' },
   { id: 'agent', label: 'Agent 模式' },
   { id: 'users', label: '用户' },
+  { id: 'credits', label: '积分与卡密' },
+  { id: 'wechat', label: '微信登录' },
   { id: 'access', label: '访问与安全' },
   { id: 'providers', label: '自定义服务商' },
 ]
@@ -82,7 +84,42 @@ const ACCESS_MODES = [
     title: '多用户账号',
     detail: '每人一套用户名和口令，各自的生图记录、收藏与设置完全隔离，互相看不到对方的作品。',
   },
+  {
+    id: 'wechat',
+    title: '微信扫码登录',
+    detail: '扫码关注公众号即自动建号登录，不用发账号也不用记口令。每个微信号一份独立记录，适合对外公开运营。',
+  },
 ]
+
+/** 微信登录方式的展示映射。两种方式的差别是"需不需要用户回一条消息"。 */
+const WECHAT_LOGIN_MODES = [
+  {
+    id: 'code',
+    title: '验证码（推荐）',
+    detail: '网页显示公众号二维码和一串 6 位数字，用户扫码关注后在公众号里回复这串数字即可登录。未认证订阅号也能用，不需要 IP 白名单。',
+  },
+  {
+    id: 'qrcode',
+    title: '带参数二维码',
+    detail: '生成一张临时二维码，扫码即登录，用户不用回消息。但「生成带参数的二维码」接口只有已认证的公众号才能调，调用失败会自动退回验证码方式。',
+  },
+]
+
+/** 卡密状态的展示映射。 */
+const CARD_STATUS_LABELS = {
+  unused: { tone: 'accent', text: '未使用' },
+  used: { tone: 'live', text: '已兑换' },
+  void: { tone: 'idle', text: '已作废' },
+}
+
+/** 积分流水的类型映射。文案要说清"分从哪来、到哪去"。 */
+const LEDGER_TYPE_LABELS = {
+  signup: { tone: 'accent', text: '注册赠送' },
+  redeem: { tone: 'live', text: '卡密兑换' },
+  spend: { tone: 'idle', text: '生图扣费' },
+  refund: { tone: 'warn', text: '失败退回' },
+  admin: { tone: 'warn', text: '管理员调账' },
+}
 
 let state = null
 let usage = null
@@ -105,6 +142,18 @@ let auditRunning = false
 let auditProgress = ''
 let toastTimer = 0
 
+// 积分页的数据。/api/admin/credits 与 /api/admin/cards 分开拉，
+// 因为卡密列表要按状态/批次过滤，重拉一次不该把整份流水也带上。
+let creditsPanel = null
+let cardsData = null
+// 卡密列表的筛选条件，切页回来要保持住。
+let cardFilter = { status: '', batch: '', keyword: '' }
+// 刚生成的一批卡密：只在这一次响应里回传，之后要导出就得走导出接口。
+let freshCards = null
+// 微信连通性测试的结果；null 表示没测过。
+let wechatProbe = null
+let wechatTesting = false
+
 /** 相对时间。后台看的是"多久之前"，绝对时间戳还得自己算差值。 */
 function ago(at) {
   if (!at) return '从未'
@@ -117,6 +166,20 @@ function ago(at) {
 
 function pct(value) {
   return `${Math.round(value * 100)}%`
+}
+
+/** 千分位。积分动辄五位数，不加分隔符读起来要一位一位数。 */
+function num(value) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n.toLocaleString('zh-CN') : '0'
+}
+
+/** 日期时间。后台表格里的时间要能直接抄下来对账，不能用"3 小时前"。 */
+function stamp(at) {
+  if (!at) return '—'
+  return new Date(at).toLocaleString('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  })
 }
 
 function esc(value) {
@@ -175,6 +238,71 @@ function confirmDialog({ title, message, confirmText = '确认', tone = 'danger'
   })
 }
 
+/**
+ * 带一个输入框的确认弹窗。用于"调整余额"这类需要用户填一个值的操作。
+ * 返回用户填的字符串，取消返回 null。
+ */
+function promptDialog({ title, message = '', label = '数值', value = '', type = 'text', confirmText = '确认', tone = 'primary' }) {
+  return new Promise((resolve) => {
+    modalEl.innerHTML = `
+      <div class="modal">
+        <div class="modal-box" data-tone="${esc(tone)}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+          <h2>${esc(title)}</h2>
+          ${message ? `<p>${esc(message)}</p>` : ''}
+          <label>
+            <span>${esc(label)}</span>
+            <input name="value" type="${esc(type)}" value="${esc(value)}" autocomplete="off" />
+          </label>
+          <div class="btn-row">
+            <span class="spacer"></span>
+            <button type="button" data-act="cancel">取消</button>
+            <button class="primary confirm" type="button" data-act="confirm">${esc(confirmText)}</button>
+          </div>
+        </div>
+      </div>
+    `
+
+    const input = modalEl.querySelector('input[name=value]')
+    const close = (result) => {
+      document.removeEventListener('keydown', onKey)
+      modalEl.innerHTML = ''
+      resolve(result)
+    }
+    const submit = () => close(input.value.trim())
+    const onKey = (event) => {
+      if (event.key === 'Escape') close(null)
+      if (event.key === 'Enter') submit()
+    }
+
+    document.addEventListener('keydown', onKey)
+    modalEl.querySelector('[data-act=cancel]').addEventListener('click', () => close(null))
+    modalEl.querySelector('[data-act=confirm]').addEventListener('click', submit)
+    modalEl.querySelector('.modal').addEventListener('click', (event) => {
+      if (event.target === event.currentTarget) close(null)
+    })
+    input.focus()
+    input.select()
+  })
+}
+
+/**
+ * 复制到剪贴板，失败时降级成让用户手动选中。
+ * 非 HTTPS 下 clipboard API 直接不存在，后台常常跑在内网 http 上，这条降级路径会真的走到。
+ */
+async function copyText(text, fallbackEl) {
+  try {
+    await navigator.clipboard.writeText(text)
+    showToast('已复制', 'good')
+  } catch {
+    if (fallbackEl) {
+      fallbackEl.setAttribute('style', `${fallbackEl.getAttribute('style') ?? ''};user-select:all`)
+      showToast('浏览器不允许自动复制，请手动选中', 'bad')
+      return
+    }
+    showToast('浏览器不允许自动复制，请手动选中', 'bad')
+  }
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     method: options.method ?? 'GET',
@@ -215,6 +343,50 @@ async function fetchOverview() {
 async function loadOverview() {
   await fetchOverview()
   render()
+}
+
+/**
+ * 积分页的数据。两个接口各管一块，失败时互不拖累：
+ * 余额与流水挂了，卡密列表照常显示，管理员至少还能发卡。
+ */
+async function loadCreditsPanel() {
+  const results = await Promise.allSettled([
+    api('/api/admin/credits'),
+    api(`/api/admin/cards?${new URLSearchParams({ ...cardFilter, limit: '100' })}`),
+  ])
+
+  if (results[0].status === 'fulfilled') creditsPanel = results[0].value
+  else {
+    creditsPanel = null
+    showToast(results[0].reason.message, 'bad')
+  }
+
+  if (results[1].status === 'fulfilled') cardsData = results[1].value
+  else {
+    cardsData = null
+    showToast(results[1].reason.message, 'bad')
+  }
+
+  render()
+}
+
+/** 只重拉卡密列表，用在切筛选条件时——不必连积分流水一起拉。 */
+async function loadCards(options = {}) {
+  try {
+    cardsData = await api(`/api/admin/cards?${new URLSearchParams({ ...cardFilter, limit: '100' })}`)
+  } catch (err) {
+    showToast(err.message, 'bad')
+  }
+  render()
+  // 重渲染会把整页 innerHTML 换掉，正在敲的搜索框会失焦。
+  // 边打字边搜的体验全靠这一步补回来，否则每输一个字光标就飞走。
+  if (options.keepKeywordFocus) {
+    const input = app.querySelector('#card-keyword')
+    if (input) {
+      input.focus()
+      input.setSelectionRange(input.value.length, input.value.length)
+    }
+  }
 }
 
 /** 渠道顺序落库。拖拽和 ↑↓ 都走这里。 */
@@ -561,20 +733,26 @@ function personRow(user) {
   const seen = user.lastSeenAt
     ? `最近登录 ${new Date(user.lastSeenAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
     : '还没登录过'
+  const creditsOn = state.site.credits?.enabled === true
   return `
     <div class="person" data-id="${esc(user.id)}" data-open="${open}" data-enabled="${user.enabled}">
       <div class="person-main">
-        <span class="avatar">${esc(label.slice(0, 1))}</span>
+        <span class="avatar">${user.wechatAvatar
+          ? `<img src="${esc(user.wechatAvatar)}" alt="" referrerpolicy="no-referrer" />`
+          : esc(label.slice(0, 1))}</span>
         <span class="person-id">
           <strong>${esc(label)}</strong>
           <span>${esc(user.username)} · ${esc(seen)}${user.note ? ` · ${esc(user.note)}` : ''}</span>
         </span>
         <span class="person-side">
+          ${user.wechat ? '<span class="tag accent">微信</span>' : ''}
           ${user.createdVia === 'invite' ? '<span class="tag">自助注册</span>' : ''}
+          ${creditsOn ? `<span class="tag ${user.balance > 0 ? 'live' : 'idle'}">${num(user.balance)} 积分</span>` : ''}
           ${user.enabled
             ? '<span class="tag live"><span class="dot"></span>可登录</span>'
             : '<span class="tag idle">已停用</span>'}
           ${user.hasPassword ? '' : '<span class="tag alert">未设口令</span>'}
+          ${creditsOn ? `<button class="ghost" type="button" data-act="set-balance" data-id="${esc(user.id)}" data-name="${esc(label)}" data-balance="${Number(user.balance) || 0}" title="调整这个用户的积分余额">调分</button>` : ''}
           <button class="ghost" data-act="toggle-user" data-id="${esc(user.id)}">${open ? '收起' : '编辑'}</button>
         </span>
       </div>
@@ -990,13 +1168,20 @@ function accessModeCard(mode) {
   const selected = state.site.accessMode === mode.id
   const blocked = (mode.id === 'passcode' && !state.guestPasswordSet)
     || (mode.id === 'accounts' && !(state.users ?? []).some((user) => user.enabled && user.hasPassword))
+    // 微信登录要三样凭据齐全才算"配好了"。缺一样就点了保存也只会得到一个全员登不进来的站点。
+    || (mode.id === 'wechat' && !state.wechat?.configured)
+  const blockedHint = {
+    passcode: '需要先在下方设置访客口令。',
+    accounts: '需要先在「用户」页创建至少一个启用的账号。',
+    wechat: '需要先在「微信登录」页填好 AppID、AppSecret 与 Token。',
+  }[mode.id]
   return `
     <label class="mode" data-selected="${selected}">
       <input type="radio" name="accessMode" value="${mode.id}"${selected ? ' checked' : ''} />
       <span>
         <strong>${esc(mode.title)}</strong>
         <small>${esc(mode.detail)}</small>
-        ${blocked ? `<small class="warn">${mode.id === 'passcode' ? '需要先在下方设置访客口令。' : '需要先在「用户」页创建至少一个启用的账号。'}</small>` : ''}
+        ${blocked && blockedHint ? `<small class="warn">${esc(blockedHint)}</small>` : ''}
       </span>
     </label>
   `
@@ -1089,6 +1274,498 @@ function renderProvidersView() {
   `
 }
 
+// ===== 积分与卡密 =====
+
+/** 套餐行。名称/价格/积分三列，纯展示用，但要让管理员能一眼改完一整批。 */
+function packRow(pack = { name: '', price: '', credits: '' }) {
+  return `
+    <div class="pack-row" data-pack>
+      <input name="packName" value="${esc(pack.name)}" placeholder="名称（如 月卡）" />
+      <input name="packPrice" value="${esc(pack.price)}" placeholder="价格（如 ¥30）" />
+      <input name="packCredits" type="number" min="0" step="1" value="${esc(pack.credits)}" placeholder="积分" />
+      <button class="ghost" type="button" data-act="remove-pack" title="删除这一行">✕</button>
+    </div>
+  `
+}
+
+/** 渠道倍率行。100% 是原价，200% 表示这条渠道出的图算两倍积分。 */
+function channelRateRow(channel, rates) {
+  const value = Number(rates?.[channel.id] ?? 100)
+  return `
+    <label>
+      <span>${esc(channel.name)}</span>
+      <input name="rate:${esc(channel.id)}" type="number" min="1" max="1000" step="1" value="${Number.isFinite(value) ? value : 100}" />
+    </label>
+  `
+}
+
+/** 刚生成的一批卡密：只在生成那一次回传明文，之后要拿就得走导出接口。 */
+function freshCardsPanel() {
+  if (!freshCards) return ''
+  const codes = freshCards.codes ?? []
+  return `
+    <div class="credential">
+      <strong>已生成 ${codes.length} 张卡密，每张 ${num(freshCards.credits)} 积分</strong>
+      <p>卡密只在这一次响应里返回明文，离开这个页面就查不到了（但随时可以导出，列表里也看得到）。批次：${esc(freshCards.batchId)}</p>
+      <textarea class="short" id="fresh-codes" readonly spellcheck="false" style="margin-top:12px;min-height:140px">${esc(codes.join('\n'))}</textarea>
+      <div class="btn-row" style="margin-top:14px">
+        <button class="primary" type="button" data-act="copy-fresh">复制全部</button>
+        <button type="button" data-act="export-batch" data-batch="${esc(freshCards.batchId)}">下载为 txt</button>
+        <button class="ghost" type="button" data-act="dismiss-fresh">我记下了</button>
+      </div>
+    </div>
+  `
+}
+
+/** 用户 id → 显示名。卡密表里记录的是 id，直接展示对管理员没意义。 */
+function userNameOf(id) {
+  if (!id) return '—'
+  const user = (state.users ?? []).find((item) => item.id === id)
+  return user ? (user.displayName || user.username) : '（已删除的用户）'
+}
+
+function renderCreditsView() {
+  const site = state.site
+  const settings = creditsPanel?.settings ?? site.credits ?? {}
+  const enabled = settings.enabled === true
+  const overview = creditsPanel?.overview ?? state.credits ?? {}
+  const cardStats = cardsData?.overview ?? state.credits?.cards ?? {}
+  const accounts = (creditsPanel?.users ?? []).filter((item) => item.exists)
+  const wechatMode = site.accessMode === 'wechat'
+
+  return `
+    <div class="page-head">
+      <h1>积分与卡密</h1>
+      <p>积分制把"谁能出图"变成"谁还有分"。用户不能自助充值——他先从你这里买到卡密，再在网页上兑换成积分；每成功出一张图扣一次分，失败的尝试一分不扣。</p>
+    </div>
+
+    ${!enabled
+      ? `<div class="alert" data-tone="warn">
+          <div class="alert-body">
+            <strong>积分制还没开启</strong>
+            <p>现在所有人不花积分就能出图。在下面的「计费设置」里勾上「启用积分制」并保存，前端才会出现余额和充值入口。</p>
+          </div>
+        </div>`
+      : ''}
+    ${enabled && !wechatMode
+      ? `<div class="alert" data-tone="warn">
+          <div class="alert-body">
+            <strong>当前访问方式扣不了分</strong>
+            <p>积分要挂在一个"人"身上才有意义，而现在的前端没有账号。把「访问与安全」里的访问方式改成「微信扫码登录」或「多用户账号」，扣费才会生效。</p>
+          </div>
+          <button class="primary" type="button" data-view="access">去设置</button>
+        </div>`
+      : ''}
+
+    <div class="panel">
+      <h2>今日
+        <span class="spacer" style="flex:1"></span>
+        <button class="ghost" type="button" data-act="clear-credit-stats">清空统计</button>
+      </h2>
+      <p class="hint">所有数字都是积分，不是人民币。日期口径按服务器本地时区。「清空统计」只清聚合数字与流水，余额和卡密一分不动。</p>
+      <div class="stats">
+        <div class="stat"><strong class="bad">${num(overview.todaySpend ?? 0)}</strong><span>今日消耗</span></div>
+        <div class="stat"><strong class="accent">${num(overview.todayRecharge ?? 0)}</strong><span>今日到账</span></div>
+        <div class="stat"><strong>${num(overview.todayImages ?? 0)}</strong><span>今日出图（张）</span></div>
+        <div class="stat"><strong>${num(overview.todayRedeemCount ?? 0)}</strong><span>今日兑换（张卡）</span></div>
+        <div class="stat"><strong>${num(overview.balances ?? 0)}</strong><span>未消耗总额</span></div>
+        <div class="stat"><strong>${num(overview.holders ?? 0)}</strong><span>有余额的用户</span></div>
+      </div>
+      <div class="stats">
+        <div class="stat"><strong class="warn">${num(cardStats.unused ?? 0)}</strong><span>未使用的卡密</span></div>
+        <div class="stat"><strong class="ok">${num(cardStats.used ?? 0)}</strong><span>已兑换的卡密</span></div>
+        <div class="stat"><strong>${num(cardStats.void ?? 0)}</strong><span>已作废</span></div>
+        <div class="stat"><strong>${num(cardStats.unusedCredits ?? 0)}</strong><span>未兑换的余额总额</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>计费设置</h2>
+      <p class="hint">「每张图消耗积分」是基准价，实际扣费还要乘上各条渠道的倍率——贵的渠道出的图扣得多，便宜的就少。</p>
+      <form id="credits-form" style="margin-top:14px">
+        <label class="check"><input type="checkbox" name="enabled"${enabled ? ' checked' : ''} /><span>启用积分制 <em>关掉后前端不显示余额，也不再扣费</em></span></label>
+        <div class="row thirds">
+          <label><span>每张图消耗积分</span><input name="costPerImage" type="number" min="0" max="100000" value="${Number(settings.costPerImage ?? 1)}" /></label>
+          <label><span>新用户注册赠送</span><input name="signupBonus" type="number" min="0" max="1000000" value="${Number(settings.signupBonus ?? 0)}" /></label>
+          <label><span>卡密购买链接</span><input name="purchaseUrl" value="${esc(settings.purchaseUrl ?? '')}" placeholder="https://你的发卡网/商品页" /></label>
+        </div>
+        <p class="hint" style="margin:-4px 0 18px">购买链接会出现在前端的充值弹窗里。用户点它去你指定的地方买卡密，换不换得到分只由卡密决定，与你卖多少钱无关。</p>
+
+        <fieldset class="group">
+          <legend>渠道倍率（百分比，100 = 原价）</legend>
+          ${state.channels.length
+            ? `<div class="row thirds">${state.channels.map((channel) => channelRateRow(channel, settings.channelRates)).join('')}</div>`
+            : '<p class="hint">还没有渠道。倍率要在有渠道之后才有意义。</p>'}
+        </fieldset>
+
+        <fieldset class="group">
+          <legend>充值套餐（只在前端展示，可不填）</legend>
+          ${settings.packs?.length ? '' : '<p class="hint" style="margin-bottom:10px">套餐只是价目表，用来告诉用户"买多少分大概多少钱"。真正的兑换仍然靠卡密。</p>'}
+          <div class="pack-rows" id="pack-rows">${(settings.packs ?? []).map(packRow).join('')}</div>
+          <div class="btn-row" style="margin-top:10px">
+            <button class="ghost" type="button" data-act="add-pack">+ 加一个套餐</button>
+          </div>
+        </fieldset>
+
+        <div class="btn-row">
+          <button class="primary" type="submit">保存</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h2>生成卡密</h2>
+      <p class="hint">生成后把卡密发到你的发卡网（或直接发给客户）。一码一用，兑换时立即绑定到那个账号上。</p>
+      <form id="card-gen-form" style="margin-top:14px">
+        <div class="row thirds">
+          <label><span>每张面额（积分）</span><input name="credits" type="number" min="1" max="1000000" step="1" value="100" required /></label>
+          <label><span>生成数量</span><input name="count" type="number" min="1" max="2000" step="1" value="10" required /></label>
+          <label><span>备注（只有你能看到）</span><input name="note" placeholder="如：某宝渠道 3 月批次" /></label>
+        </div>
+        <div class="btn-row"><button class="primary" type="submit">生成</button></div>
+      </form>
+    </div>
+
+    ${freshCardsPanel()}
+
+    ${batchesPanel()}
+    ${cardsPanel()}
+    ${redeemPanel()}
+    ${balancePanel(accounts)}
+  `
+}
+
+/** 批次表。同一批卡一起作废/一起导出，比在几百行里挑码要实际得多。 */
+function batchesPanel() {
+  const batches = cardsData?.batches ?? []
+  if (!batches.length) return ''
+  return `
+    <div class="panel">
+      <h2>批次</h2>
+      <p class="hint">按生成批次管理。导出时只用选批次就能拿到整批码。</p>
+      <div class="table-wrap scroll-x">
+        <table class="grid">
+          <thead><tr><th>批次号</th><th class="num">面额</th><th class="num">总数</th><th class="num">未使用</th><th class="num">已兑换</th><th class="num">作废</th><th>生成时间</th><th>备注</th><th></th></tr></thead>
+          <tbody>
+            ${batches.map((batch) => `
+              <tr>
+                <td class="code">${esc(batch.id)}</td>
+                <td class="num">${num(batch.credits)}</td>
+                <td class="num">${num(batch.total)}</td>
+                <td class="num">${num(batch.unused)}</td>
+                <td class="num">${num(batch.used)}</td>
+                <td class="num">${batch.voided ? `<span class="bad">${num(batch.voided)}</span>` : '0'}</td>
+                <td class="muted">${esc(stamp(batch.createdAt))}</td>
+                <td class="muted">${esc(batch.note ?? '')}</td>
+                <td>
+                  <div class="actions">
+                    <button type="button" data-act="filter-batch" data-batch="${esc(batch.id)}">只看这批</button>
+                    <button type="button" data-act="export-batch" data-batch="${esc(batch.id)}">导出未用</button>
+                    <button class="danger plain" type="button" data-act="void-batch" data-batch="${esc(batch.id)}" data-unused="${batch.unused}"${batch.unused ? '' : ' disabled'}>作废未用</button>
+                    <button class="danger plain" type="button" data-act="delete-batch" data-batch="${esc(batch.id)}" data-total="${batch.total}"${batch.used ? ' disabled' : ''}>删除整批</button>
+                  </div>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `
+}
+
+/** 卡密明细。筛选条件放在顶栏，切条件只重拉列表。 */
+function cardsPanel() {
+  if (!cardsData) return '<div class="panel"><h2>卡密明细</h2><div class="empty" style="margin-top:14px">正在加载…</div></div>'
+  const rows = cardsData.cards ?? []
+  const statuses = [
+    { id: '', label: '全部' },
+    { id: 'unused', label: '未使用' },
+    { id: 'used', label: '已兑换' },
+    { id: 'void', label: '已作废' },
+  ]
+  return `
+    <div class="panel">
+      <h2>卡密明细 <span class="tag">${num(cardsData.total)} 条符合条件</span></h2>
+      <div class="range-row" style="margin-top:14px">
+        <div class="range">
+          ${statuses.map((item) => `
+            <button class="range-item" type="button" data-act="card-status" data-status="${item.id}" aria-current="${cardFilter.status === item.id}">${esc(item.label)}</button>
+          `).join('')}
+        </div>
+        <input id="card-keyword" type="text" placeholder="搜索卡密…" value="${esc(cardFilter.keyword)}" style="max-width:220px" />
+        ${cardFilter.batch ? `<span class="tag accent">批次 ${esc(cardFilter.batch)}<button class="link" type="button" data-act="card-status" data-status-reset="1" style="margin-left:6px">清除</button></span>` : ''}
+        <button class="ghost" type="button" data-act="export-filtered">导出当前筛选</button>
+      </div>
+      ${rows.length ? `
+        <div class="table-wrap scroll-x">
+          <table class="grid">
+            <thead><tr><th>卡密</th><th class="num">积分</th><th>状态</th><th>备注</th><th>兑换人</th><th>兑换时间</th><th></th></tr></thead>
+            <tbody>
+              ${rows.map((card) => {
+                const label = CARD_STATUS_LABELS[card.status] ?? CARD_STATUS_LABELS.unused
+                return `
+                  <tr>
+                    <td class="code">${esc(card.code)}</td>
+                    <td class="num">${num(card.credits)}</td>
+                    <td><span class="tag ${label.tone}">${label.text}</span></td>
+                    <td class="muted">${esc(card.note ?? '')}</td>
+                    <td class="muted">${card.status === 'used' ? esc(userNameOf(card.usedBy)) : '—'}</td>
+                    <td class="muted">${card.status === 'used' ? esc(stamp(card.usedAt)) : '—'}</td>
+                    <td>
+                      <div class="actions">
+                        ${card.status === 'unused' ? `<button class="danger plain" type="button" data-act="void-card" data-code="${esc(card.code)}">作废</button>` : ''}
+                        ${card.status === 'void' ? `<button type="button" data-act="restore-card" data-code="${esc(card.code)}">恢复</button>` : ''}
+                        ${card.status === 'used' ? '<span class="muted">已兑换不可删</span>' : `<button class="danger plain" type="button" data-act="delete-card" data-code="${esc(card.code)}">删除</button>`}
+                      </div>
+                    </td>
+                  </tr>
+                `
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+        ${cardsData.total > rows.length ? `<p class="hint" style="margin-top:12px">只显示最新 ${rows.length} 条，共 ${num(cardsData.total)} 条。用上面的筛选缩小范围，或直接导出。</p>` : ''}
+      ` : '<div class="empty" style="margin-top:14px">没有符合条件的卡密。</div>'}
+    </div>
+  `
+}
+
+function redeemPanel() {
+  const rows = cardsData?.recentRedeems ?? []
+  if (!rows.length) return ''
+  return `
+    <div class="panel">
+      <h2>最近的兑换</h2>
+      <p class="hint">卡密换到哪个账号上一目了然，遇到"我明明买了"的纠纷先看这里。</p>
+      <div class="table-wrap scroll-x">
+        <table class="grid">
+          <thead><tr><th>时间</th><th>卡密</th><th class="num">积分</th><th>兑换人</th><th>批次</th></tr></thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td class="muted">${esc(stamp(row.usedAt))}</td>
+                <td class="code">${esc(row.code)}</td>
+                <td class="num">${num(row.credits)}</td>
+                <td>${esc(row.userName)}</td>
+                <td class="muted">${esc(row.batch)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `
+}
+
+/** 用户余额表。余额是用户资产，所以只提供"设为某个数"而不是加法，做错了能一眼看出来。 */
+function balancePanel(accounts) {
+  const ledger = creditsPanel?.ledger ?? []
+  return `
+    <div class="panel">
+      <h2>用户余额</h2>
+      <p class="hint">调整余额会写一条流水，备注里记明是管理员操作。这里填的是调整后的余额，不是增量。</p>
+      ${accounts.length ? `
+        <div class="table-wrap scroll-x">
+          <table class="grid">
+            <thead><tr><th>用户</th><th class="num">当前余额</th><th class="num">累计到账</th><th class="num">累计消耗</th><th>最近变动</th><th></th></tr></thead>
+            <tbody>
+              ${accounts.map((item) => `
+                <tr>
+                  <td>${esc(item.name)}</td>
+                  <td class="num"><strong>${num(item.balance)}</strong></td>
+                  <td class="num">${num(item.totalIn)}</td>
+                  <td class="num">${num(item.totalOut)}</td>
+                  <td class="muted">${esc(item.updatedAt ? ago(item.updatedAt) : '—')}</td>
+                  <td>
+                    <div class="actions">
+                      <button type="button" data-act="set-balance" data-id="${esc(item.id)}" data-name="${esc(item.name)}" data-balance="${item.balance}">调整</button>
+                    </div>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : '<div class="empty" style="margin-top:14px">还没有人持有积分。</div>'}
+
+      ${ledger.length ? `
+        <fieldset class="group" style="margin-top:20px">
+          <legend>最近流水</legend>
+          <div class="table-wrap scroll-x">
+            <table class="grid">
+              <thead><tr><th>时间</th><th>用户</th><th>类型</th><th class="num">变动</th><th class="num">变动后余额</th><th>说明</th></tr></thead>
+              <tbody>
+                ${ledger.slice(0, 60).map((entry) => {
+                  const label = LEDGER_TYPE_LABELS[entry.type] ?? LEDGER_TYPE_LABELS.admin
+                  const signed = entry.type === 'spend' ? -entry.amount : entry.amount
+                  return `
+                    <tr>
+                      <td class="muted">${esc(stamp(entry.at))}</td>
+                      <td>${esc(entry.userName)}</td>
+                      <td><span class="tag ${label.tone}">${label.text}</span></td>
+                      <td class="num ${signed < 0 ? 'bad' : ''}">${signed > 0 ? '+' : ''}${num(signed)}</td>
+                      <td class="num">${num(entry.balanceAfter)}</td>
+                      <td class="muted">${esc(entry.note ?? entry.ref ?? '')}</td>
+                    </tr>
+                  `
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </fieldset>
+      ` : ''}
+    </div>
+  `
+}
+
+// ===== 微信登录 =====
+
+function renderWechatView() {
+  const wechat = state.wechat ?? {}
+  const callbackUrl = `${window.location.origin}${wechat.callbackPath ?? '/api/wechat/callback'}`
+  const ready = Boolean(wechat.appId && wechat.hasAppSecret && wechat.hasToken)
+  const qrPreview = wechat.hasQrcodeImage
+    // 带上 updatedAt 做缓存击穿，不然换图之后浏览器还在放旧的那张。
+    ? `<img src="/api/wechat/qr-image?v=${Number(state.updatedAt) || 0}" alt="公众号二维码" />`
+    : '<span>还没有上传<br />公众号二维码</span>'
+
+  return `
+    <div class="page-head">
+      <h1>微信登录</h1>
+      <p>把公众号变成你的登录入口：用户扫码关注后自动建号，不用发账号、不用记口令。用户在建号时会一次性拿到注册赠送的积分。</p>
+    </div>
+
+    ${!wechat.enabled
+      ? `<div class="alert" data-tone="warn">
+          <div class="alert-body">
+            <strong>微信登录还没生效</strong>
+            <p>${ready
+              ? '参数都齐了，但「启用微信登录」没勾上——勾上并保存，再去「访问与安全」把访问方式切到「微信扫码登录」。'
+              : '需要先填好 AppID、AppSecret 和 Token 三项，缺一不可。填完保存后勾上「启用微信登录」。'}</p>
+          </div>
+          <button class="primary" type="button" data-view="access">去设置访问方式</button>
+        </div>`
+      : ''}
+
+    <div class="panel">
+      <h2>公众号类型</h2>
+      <p class="hint">不同类型能调的接口差别很大，先确认你是哪一种，再选登录方式。</p>
+      <div class="stats">
+        <div class="stat"><strong class="accent">验证码</strong><span>任何类型都能用</span></div>
+        <div class="stat"><strong class="warn">带参数二维码</strong><span>仅限已认证公众号</span></div>
+        <div class="stat"><strong class="warn">昵称头像</strong><span>仅限已认证服务号</span></div>
+      </div>
+      <p class="hint" style="margin-top:14px">本方案对<b>未认证订阅号</b>同样可用：验证码方式只需要"用户能给你发消息"这一件事，不碰任何需要认证的接口，也不需要配置 IP 白名单。拉取昵称头像失败时会退成「微信用户 1234」这样的占位名，不影响登录。</p>
+    </div>
+
+    <div class="panel">
+      <h2>登录设置</h2>
+      <form id="wechat-form" style="margin-top:14px">
+        <label class="check"><input type="checkbox" name="enabled"${wechat.enabled ? ' checked' : ''} /><span>启用微信登录 <em>关掉后登录页直接报"本站未启用微信登录"</em></span></label>
+
+        <fieldset class="group">
+          <legend>登录方式</legend>
+          <div class="modes two">${WECHAT_LOGIN_MODES.map((mode) => `
+            <label class="mode" data-selected="${(wechat.loginMode ?? 'code') === mode.id}">
+              <input type="radio" name="loginMode" value="${mode.id}"${(wechat.loginMode ?? 'code') === mode.id ? ' checked' : ''} />
+              <span>
+                <strong>${esc(mode.title)}</strong>
+                <small>${esc(mode.detail)}</small>
+              </span>
+            </label>
+          `).join('')}</div>
+        </fieldset>
+
+        <fieldset class="group">
+          <legend>公众号凭据</legend>
+          <div class="row">
+            <label><span>AppID</span><input name="appId" value="${esc(wechat.appId ?? '')}" placeholder="wx1234567890abcdef" /></label>
+            <label><span>Token（服务器配置里那个）</span>
+              <input name="token" placeholder="${wechat.hasToken ? `当前 ${esc(wechat.tokenMask)}，留空表示不修改` : '自己随便定一个，填进公众号后台'}" autocomplete="off" />
+            </label>
+          </div>
+          <div class="row">
+            <label><span>AppSecret</span>
+              <input name="appSecret" type="password" autocomplete="off" placeholder="${wechat.hasAppSecret ? `当前 ${esc(wechat.appSecretMask)}，留空表示不修改` : '公众号后台「基本配置」里获取'}" />
+            </label>
+            <label><span>EncodingAESKey（安全模式必填）</span>
+              <input name="encodingAesKey" autocomplete="off" placeholder="${wechat.hasEncodingAesKey ? `当前 ${esc(wechat.encodingAesKeyMask)}，留空表示不修改` : '43 位字符，明文/兼容模式可留空'}" />
+            </label>
+          </div>
+          <p class="hint" style="margin:-4px 0 16px">
+            AppSecret 只在公众号后台显示一次，忘了只能重置。如果后台的「消息加解密方式」是<b>安全模式</b>（新版默认），
+            必须把 43 位的 EncodingAESKey 一起填进来，否则收到的推送解不开。
+          </p>
+          <label class="check"><input type="checkbox" name="fetchProfile"${wechat.fetchProfile !== false ? ' checked' : ''} /><span>尝试拉取用户昵称与头像 <em>未认证订阅号会失败，会自动退回占位昵称，不影响登录</em></span></label>
+          <label><span>关注后的回复文案</span>
+            <textarea name="replyText" class="short" style="min-height:76px;font-family:inherit;font-size:13px" placeholder="留空使用默认：欢迎关注！请把电脑网页上显示的 6 位数字发给我，即可完成登录。">${esc(wechat.replyText ?? '')}</textarea>
+          </label>
+        </fieldset>
+
+        <div class="btn-row">
+          <button class="primary" type="submit">保存</button>
+          <button type="button" id="wechat-test"${wechatTesting ? ' disabled' : ''}>${wechatTesting ? '正在测试…' : '测试凭据'}</button>
+        </div>
+        <p class="probe ${wechatProbe ? (wechatProbe.ok ? 'ok' : 'bad') : ''}" id="wechat-probe">${wechatProbe
+          ? `${wechatProbe.ok ? '✓' : '✗'} ${esc(wechatProbe.message)}`
+          : ''}</p>
+        <p class="hint" style="margin-top:10px">「测试凭据」会去换一次 access_token。它同时验证三件事：AppID、AppSecret 是否正确，以及服务器的公网 IP 是否加进了公众号后台的 IP 白名单。<b>验证码方式其实不需要 access_token</b>，所以这一步失败也不代表登录用不了。</p>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h2>公众号二维码</h2>
+      <p class="hint">验证码方式下，网页要把这张图显示给用户扫。用公众号后台「设置与开发 → 公众号设置 → 账号详情」里那张二维码，或自己用微信生成都行。</p>
+      <div class="qr-row" style="margin-top:16px">
+        <div class="qr-box" id="qr-preview">${qrPreview}</div>
+        <div>
+          <label><span>上传图片（PNG / JPG，建议正方形）</span>
+            <input type="file" id="qr-upload" accept="image/png,image/jpeg,image/webp,image/gif" />
+          </label>
+          <p class="hint" style="margin:-4px 0 14px">图片会以 base64 存进配置文件，建议压到 200KB 以内。存的是内联图，换服务器不用重新上传。</p>
+          <div class="btn-row">
+            ${wechat.hasQrcodeImage ? '<button class="danger plain" type="button" id="qr-clear">清除二维码</button>' : ''}
+            <button class="ghost" type="button" id="qr-view"${wechat.hasQrcodeImage ? '' : ' disabled'}>在新窗口查看</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>公众号后台要填什么</h2>
+      <p class="hint">下面是这个后台算好的地址，原样复制到公众号后台即可。改动这里的配置不会自动同步过去，两边必须一致。</p>
+
+      <label style="margin-top:16px"><span>服务器配置 → URL</span></label>
+      <div class="copy-field">
+        <code id="callback-url">${esc(callbackUrl)}</code>
+        <button type="button" data-act="copy-callback">复制</button>
+      </div>
+
+      <div class="row" style="margin-top:16px">
+        <label><span>服务器配置 → Token</span>
+          <input value="${wechat.hasToken ? '已配置（就是上面填的那个）' : '还没配置'}" readonly />
+        </label>
+        <label><span>服务器配置 → EncodingAESKey</span>
+          <input value="${wechat.hasEncodingAesKey ? '已配置（43 位）' : '未配置'}" readonly />
+        </label>
+      </div>
+
+      <fieldset class="group">
+        <legend>配置步骤</legend>
+        <ol class="steps">
+          <li>登录 <strong>mp.weixin.qq.com</strong>，进入「设置与开发 → 基本配置」。</li>
+          <li>在「服务器配置」里把 <strong>URL</strong> 填成上面的地址，<strong>Token</strong> 填成本页填过的那个值，<strong>EncodingAESKey</strong> 若为安全模式则点「随机生成」后把结果复制回本页。</li>
+          <li>「消息加解密方式」建议选<strong>安全模式</strong>（默认），选完把 EncodingAESKey 一并填回本页并保存。</li>
+          <li>点「提交」。微信会立刻请求上面那个 URL 做校验——这一步要求这个服务已经部署在<strong>公网 80 / 443</strong> 上，且能被动访问。</li>
+          <li>提交成功后点「启用」。之后把「IP 白名单」加上服务器的公网出口 IP（「基本配置」页会显示这个 IP）。</li>
+          <li>回到前端打开登录页，扫一下二维码，在公众号里回复网页上的 6 位数字试试。</li>
+        </ol>
+      </fieldset>
+    </div>
+  `
+}
+
 // ===== 骨架 =====
 
 function render() {
@@ -1097,10 +1774,14 @@ function render() {
   const counts = {
     channels: state.channels.length,
     users: (state.users ?? []).length,
+    // 用未使用的卡密张数当角标：管理员最关心"还有多少货没卖出去"。
+    credits: (state.credits?.cards?.unused ?? 0) || null,
   }
   const body = view === 'users' ? renderUsersView()
     : view === 'usage' ? renderUsageView()
     : view === 'agent' ? renderAgentView()
+    : view === 'credits' ? renderCreditsView()
+    : view === 'wechat' ? renderWechatView()
     : view === 'access' ? renderAccessView()
     : view === 'providers' ? renderProvidersView()
     : view === 'channels' ? renderChannelsView()
@@ -1160,6 +1841,8 @@ function bindEvents() {
       freshCredential = null
       if (view === 'usage') return void loadUsage()
       if (view === 'overview') return void loadOverview()
+      // 积分页要两份数据，多拉一次接口但换来"数字和明细在同一次渲染里对齐"。
+      if (view === 'credits') return void loadCreditsPanel()
       render()
     })
   }
@@ -1209,6 +1892,8 @@ function bindEvents() {
   bindUserEvents()
   bindAccessEvents()
   bindUsageEvents()
+  bindCreditsEvents()
+  bindWechatEvents()
 
   app.querySelector('#providers-form')?.addEventListener('submit', async (event) => {
     event.preventDefault()
@@ -1772,6 +2457,356 @@ function bindAccessEvents() {
     } catch (err) {
       showToast(err.message, 'bad')
     }
+  })
+}
+
+// ===== 积分与卡密的事件 =====
+
+/** 同源下载。用 <a download> 而不是 window.open：后者会被弹窗拦截器挡掉。 */
+function downloadFile(url) {
+  const link = document.createElement('a')
+  link.href = url
+  link.download = ''
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
+function bindCreditsEvents() {
+  // ---- 计费设置 ----
+  const packRows = app.querySelector('#pack-rows')
+  packRows?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-act=remove-pack]')
+    if (button) button.closest('[data-pack]').remove()
+  })
+
+  app.querySelector('[data-act=add-pack]')?.addEventListener('click', () => {
+    packRows.insertAdjacentHTML('beforeend', packRow())
+  })
+
+  app.querySelector('#credits-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const data = new FormData(event.target)
+
+    // 套餐与倍率不在 FormData 的自然形状里（一个是动态行、一个是按渠道 id 命名的），
+    // 所以这两块直接从 DOM 读，比强行给每行编个名字再解包更清楚。
+    const packs = [...event.target.querySelectorAll('[data-pack]')]
+      .map((row) => ({
+        name: row.querySelector('[name=packName]').value.trim(),
+        price: row.querySelector('[name=packPrice]').value.trim(),
+        credits: Number(row.querySelector('[name=packCredits]').value) || 0,
+      }))
+      // 面额为 0 的行在服务端会被丢掉，这里先丢免得用户以为存上了。
+      .filter((pack) => pack.credits > 0)
+
+    const channelRates = {}
+    for (const input of event.target.querySelectorAll('input[name^="rate:"]')) {
+      const id = input.name.slice('rate:'.length)
+      const value = Number(input.value)
+      if (id && Number.isFinite(value) && value > 0) channelRates[id] = Math.trunc(value)
+    }
+
+    try {
+      await api('/api/admin/credits', {
+        method: 'PUT',
+        body: {
+          credits: {
+            enabled: data.get('enabled') === 'on',
+            costPerImage: Number(data.get('costPerImage')) || 0,
+            signupBonus: Number(data.get('signupBonus')) || 0,
+            purchaseUrl: String(data.get('purchaseUrl') ?? '').trim(),
+            packs,
+            channelRates,
+          },
+        },
+      })
+      await loadCreditsPanel()
+      showToast('计费设置已保存', 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
+  })
+
+  // ---- 生成卡密 ----
+  app.querySelector('#card-gen-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const data = new FormData(event.target)
+    try {
+      const result = await api('/api/admin/cards', {
+        method: 'POST',
+        body: {
+          credits: Number(data.get('credits')),
+          count: Number(data.get('count')),
+          note: String(data.get('note') ?? ''),
+        },
+      })
+      freshCards = result
+      // 生成后立刻跳到积分页的顶部：明文卡密就在那里等着被抄走。
+      await loadCreditsPanel()
+      showToast(`已生成 ${result.count} 张卡密`, 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
+  })
+
+  app.querySelector('[data-act=copy-fresh]')?.addEventListener('click', (event) => {
+    const textarea = app.querySelector('#fresh-codes')
+    void copyText(textarea.value, textarea)
+  })
+
+  app.querySelector('[data-act=dismiss-fresh]')?.addEventListener('click', () => {
+    freshCards = null
+    render()
+  })
+
+  // ---- 卡密筛选 ----
+  for (const button of app.querySelectorAll('[data-act=card-status]')) {
+    button.addEventListener('click', () => {
+      // 「清除批次」与状态切换共用一个处理器：两者都是对筛选条件的改动。
+      if (button.dataset.statusReset) cardFilter.batch = ''
+      else {
+        cardFilter.status = button.dataset.status
+        cardFilter.batch = ''
+      }
+      void loadCards()
+    })
+  }
+
+  const keywordInput = app.querySelector('#card-keyword')
+  if (keywordInput) {
+    let timer = 0
+    keywordInput.addEventListener('input', () => {
+      // 防抖：每敲一个字就打一次接口，几百张卡也经不起这么问。
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        cardFilter.keyword = keywordInput.value.trim()
+        void loadCards({ keepKeywordFocus: true })
+      }, 350)
+    })
+  }
+
+  // ---- 卡密操作 ----
+  for (const button of app.querySelectorAll('[data-act=void-card],[data-act=restore-card],[data-act=delete-card]')) {
+    button.addEventListener('click', async () => {
+      const code = button.dataset.code
+      const action = button.dataset.act
+      if (action === 'delete-card') {
+        if (!await confirmDialog({
+          title: '删除这张卡密？',
+          message: `${code} 会被彻底抹掉，卡密库容量是有限的，删掉能腾出位置。已兑换的卡不允许删除。`,
+          confirmText: '删除',
+        })) return
+        try {
+          const result = await api('/api/admin/cards/delete', { method: 'POST', body: { codes: [code] } })
+          await loadCards()
+          showToast(result.skipped ? '这张卡已兑换，不能删除' : '卡密已删除', result.skipped ? 'bad' : 'good')
+        } catch (err) {
+          showToast(err.message, 'bad')
+        }
+        return
+      }
+
+      try {
+        await api(`/api/admin/cards/${action === 'void-card' ? 'void' : 'restore'}`, {
+          method: 'POST',
+          body: { codes: [code] },
+        })
+        await loadCards()
+        showToast(action === 'void-card' ? '卡密已作废，兑换时会提示无效' : '卡密已恢复可用', 'good')
+      } catch (err) {
+        showToast(err.message, 'bad')
+      }
+    })
+  }
+
+  // ---- 批次操作 ----
+  for (const button of app.querySelectorAll('[data-act=void-batch],[data-act=delete-batch],[data-act=filter-batch],[data-act=export-batch]')) {
+    button.addEventListener('click', async () => {
+      const batch = button.dataset.batch
+      const action = button.dataset.act
+
+      if (action === 'filter-batch') {
+        cardFilter.batch = batch
+        cardFilter.status = ''
+        return void loadCards()
+      }
+      if (action === 'export-batch') {
+        return downloadFile(`/api/admin/cards/export?batch=${encodeURIComponent(batch)}&status=unused&with-credits=1`)
+      }
+
+      const isDelete = action === 'delete-batch'
+      const count = isDelete ? Number(button.dataset.total) : Number(button.dataset.unused)
+      if (!await confirmDialog({
+        title: isDelete ? '删除整批卡密？' : `作废这 ${count} 张未使用的卡密？`,
+        message: isDelete
+          ? `这一批共 ${count} 张会从卡密库里移除（已兑换的会被保留，它们是对账凭证）。`
+          : '作废后这些卡在兑换时会提示"已作废"，但你随时可以把单张恢复回来。',
+        confirmText: isDelete ? '删除整批' : '作废',
+      })) return
+
+      try {
+        const result = await api(isDelete ? '/api/admin/cards/delete' : '/api/admin/cards/void', {
+          method: 'POST',
+          body: { batch },
+        })
+        await loadCards()
+        if (isDelete && result.skipped) showToast(`已删除 ${result.removed} 张，保留 ${result.skipped} 张已兑换的`, 'good')
+        else showToast(isDelete ? '整批已删除' : `已作废 ${result.changed ?? count} 张`, 'good')
+      } catch (err) {
+        showToast(err.message, 'bad')
+      }
+    })
+  }
+
+  // ---- 导出与余额调整 ----
+  app.querySelector('[data-act=export-filtered]')?.addEventListener('click', () => {
+    const query = new URLSearchParams({ 'with-credits': '1' })
+    if (cardFilter.status) query.set('status', cardFilter.status)
+    if (cardFilter.batch) query.set('batch', cardFilter.batch)
+    downloadFile(`/api/admin/cards/export?${query}`)
+  })
+
+  for (const button of app.querySelectorAll('[data-act=set-balance]')) {
+    button.addEventListener('click', async () => {
+      const id = button.dataset.id
+      const name = button.dataset.name
+      const current = Number(button.dataset.balance) || 0
+      const value = await promptDialog({
+        title: `调整「${name}」的积分`,
+        message: `现在是 ${num(current)} 分。填调整后的余额，会记一条"管理员调账"流水。`,
+        label: '调整后的余额',
+        value: String(current),
+        type: 'number',
+        confirmText: '保存',
+      })
+      if (value == null || value === '') return
+
+      const next = Number(value)
+      if (!Number.isFinite(next) || next < 0) return showToast('请填一个不小于 0 的数字', 'bad')
+      try {
+        await api(`/api/admin/credits/users/${encodeURIComponent(id)}`, { method: 'PUT', body: { balance: next } })
+        // 这个按钮在「用户」和「积分与卡密」两页都会出现，各自要用自己的数据源刷新。
+        if (view === 'credits') await loadCreditsPanel()
+        else await refresh()
+        showToast(`余额已调整为 ${num(next)}`, 'good')
+      } catch (err) {
+        showToast(err.message, 'bad')
+      }
+    })
+  }
+
+  app.querySelector('[data-act=clear-credit-stats]')?.addEventListener('click', async () => {
+    if (!await confirmDialog({
+      title: '清空积分统计？',
+      message: '只会清掉"今日/按天"的聚合数字和明细流水，用户的余额一分不动，卡密记录也保留。',
+      confirmText: '清空统计',
+    })) return
+    try {
+      await api('/api/admin/credits/stats', { method: 'DELETE' })
+      await loadCreditsPanel()
+      showToast('统计已清空，余额未受影响', 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
+  })
+}
+
+// ===== 微信登录的事件 =====
+
+/** 上传的二维码转成内联 data URL。存内联图是为了换服务器时不用重新上传。 */
+function readImageAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(new Error('读取图片失败'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function bindWechatEvents() {
+  app.querySelector('#wechat-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const data = new FormData(event.target)
+    const body = {
+      enabled: data.get('enabled') === 'on',
+      loginMode: String(data.get('loginMode') ?? 'code'),
+      appId: String(data.get('appId') ?? '').trim(),
+      fetchProfile: data.get('fetchProfile') === 'on',
+      replyText: String(data.get('replyText') ?? ''),
+    }
+
+    // 三个凭据都遵循"留空 = 不修改"：后台每次保存都重填一遍 AppSecret 太反人类。
+    for (const key of ['appSecret', 'token', 'encodingAesKey']) {
+      const value = String(data.get(key) ?? '').trim()
+      if (value) body[key] = value
+    }
+
+    if (body.encodingAesKey && body.encodingAesKey.length !== 43) {
+      return showToast('EncodingAESKey 必须是 43 位字符，请从公众号后台原样复制', 'bad')
+    }
+
+    try {
+      await api('/api/admin/wechat', { method: 'PUT', body })
+      await refresh()
+      showToast('微信设置已保存', 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
+  })
+
+  app.querySelector('#wechat-test')?.addEventListener('click', async () => {
+    wechatTesting = true
+    wechatProbe = null
+    render()
+    try {
+      wechatProbe = await api('/api/admin/wechat/test', { method: 'POST' })
+    } catch (err) {
+      wechatProbe = { ok: false, message: err.message }
+    } finally {
+      wechatTesting = false
+    }
+    render()
+  })
+
+  app.querySelector('#qr-upload')?.addEventListener('change', async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      const dataUrl = await readImageAsDataUrl(file)
+      // 服务端按 40 万字符截断，超了会被悄悄切掉半张图，所以这里先拦下来。
+      if (dataUrl.length > 400_000) {
+        return showToast(`图片太大了（约 ${Math.round(file.size / 1024)}KB），请压到 200KB 以内再上传`, 'bad')
+      }
+      await api('/api/admin/wechat', { method: 'PUT', body: { qrcodeImage: dataUrl } })
+      await refresh()
+      showToast('二维码已上传', 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
+  })
+
+  app.querySelector('#qr-clear')?.addEventListener('click', async () => {
+    if (!await confirmDialog({
+      title: '清除公众号二维码？',
+      message: '登录页将不再显示二维码。已经关注过公众号的用户仍然可以用验证码登录，新用户则无从下手。',
+      confirmText: '清除',
+    })) return
+    try {
+      await api('/api/admin/wechat', { method: 'PUT', body: { qrcodeImage: '' } })
+      await refresh()
+      showToast('二维码已清除', 'good')
+    } catch (err) {
+      showToast(err.message, 'bad')
+    }
+  })
+
+  app.querySelector('#qr-view')?.addEventListener('click', () => {
+    window.open('/api/wechat/qr-image', '_blank', 'noopener')
+  })
+
+  app.querySelector('[data-act=copy-callback]')?.addEventListener('click', (event) => {
+    const code = app.querySelector('#callback-url')
+    void copyText(code.textContent, code)
   })
 }
 

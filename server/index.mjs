@@ -13,6 +13,8 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { handleAdminRoute } from './lib/adminRoutes.mjs'
+import { initCards } from './lib/cards.mjs'
+import { initCredits } from './lib/credits.mjs'
 import { handleGuestRoute } from './lib/guestRoutes.mjs'
 import { clearCookie, getClientIp, HttpError, parseCookies, readJsonBody, sendError, sendJson, sendText, setCookie } from './lib/http.mjs'
 import { getLockRemainingSeconds, isLocked, recordFailure, recordSuccess } from './lib/rateLimit.mjs'
@@ -53,6 +55,8 @@ const ADMIN_DIR = join(serverDir, 'admin')
 
 const config = initStore(DATA_DIR)
 initUsage(DATA_DIR)
+initCredits(DATA_DIR)
+initCards(DATA_DIR)
 
 // 首次启动可用环境变量直接落初始口令，省掉手动初始化步骤。
 if (!config.adminPasswordHash && process.env.GIP_ADMIN_PASSWORD) {
@@ -95,6 +99,18 @@ function assertSameOrigin(req) {
     throw new HttpError(403, 'Origin 头无效')
   }
 }
+
+/**
+ * 需要同源校验的访客接口白名单。
+ * 用白名单而不是"全部要求同源"，是因为 /api/wechat/callback 必须放行——
+ * 它由微信的服务器直接 POST 过来，永远不可能带上我们的 Origin。
+ */
+const SAME_ORIGIN_API_PATHS = new Set([
+  '/api/session',
+  '/api/register',
+  '/api/credits/redeem',
+  '/api/wechat/login',
+])
 
 async function handleAdminLogin(req, res) {
   const ip = getClientIp(req)
@@ -141,6 +157,8 @@ async function handleFrontLogin(req, res, credentials) {
   const current = getConfig()
   const mode = current.site.accessMode
   if (mode === 'open') return sendJson(res, 200, { ok: true, gateDisabled: true })
+  // 微信登录模式没有口令入口：身份只能由扫码产生。
+  if (mode === 'wechat') throw new HttpError(403, '本站使用微信扫码登录，请扫码进入')
 
   if (mode === 'accounts') {
     const user = findUserByUsername(credentials.username)
@@ -292,7 +310,9 @@ const server = createServer(async (req, res) => {
     }
 
     if (path.startsWith('/api/')) {
-      if (path === '/api/session' || path === '/api/register') assertSameOrigin(req)
+      // 会改状态、或会消耗资源的接口一律要求同源。
+      // /api/wechat/callback 是例外——它由微信的服务器发起，不可能带我们的 Origin。
+      if (SAME_ORIGIN_API_PATHS.has(path)) assertSameOrigin(req)
       return await handleGuestRoute(req, res, {
         path,
         search: url.search,
@@ -332,7 +352,7 @@ const server = createServer(async (req, res) => {
       res.destroy()
       return
     }
-    if (err instanceof HttpError) return sendError(res, err.status, err.message)
+    if (err instanceof HttpError) return sendError(res, err.status, err.message, err.extra)
     console.error('请求处理失败：', err)
     return sendError(res, 502, err instanceof Error ? err.message : '服务器内部错误')
   }

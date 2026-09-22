@@ -1,30 +1,51 @@
 // 访客接口 + 凭据注入中继。
 // 访客永远拿不到 baseUrl 与 apiKey：前端只知道渠道 id，请求打到 /api/relay/<id>/...，
-// 由这里补上真实地址和 Authorization 再转发。
+// 由 relay.mjs 补上真实地址和 Authorization，并在渠道之间静默做故障转移。
 
-import { HttpError, readJsonBody, sendJson } from './http.mjs'
-import { findChannel, getConfig, getEnabledChannels, inviteStatus, toPublicChannel } from './store.mjs'
-import { buildUpstreamUrl, pipeToUpstream } from './upstream.mjs'
-import { recordChannelCall } from './usage.mjs'
-
-const FAL_TARGET_URL_HEADER = 'x-fal-target-url'
-const FAL_ALLOWED_HOSTS = /(^|\.)(fal\.run|fal\.ai)$/
+import { addCredits, userCreditsView } from './credits.mjs'
+import { redeemCard } from './cards.mjs'
+import { getClientIp, HttpError, readJsonBody, sendJson } from './http.mjs'
+import { isLocked, getLockRemainingSeconds, recordFailure, recordSuccess } from './rateLimit.mjs'
+import { handleRelay } from './relay.mjs'
+import { getConfig, getEnabledChannels, inviteStatus, toPublicChannel } from './store.mjs'
+import { handleWechatCallback, pollWechatLogin, serveFixedQrcode, serveSceneQrcode, startWechatLogin } from './wechatRoutes.mjs'
 
 /** 共享工作区标识：open / passcode 模式下所有人同一个本地仓库。 */
 const SHARED_WORKSPACE_ID = 'shared'
 
+/** 需要"有身份"才算登录的模式。 */
+function requiresAccount(accessMode) {
+  return accessMode === 'accounts' || accessMode === 'wechat'
+}
+
 export function getWorkspaceId(accessMode, user) {
   // 用户 id 本身就以 u- 开头，直接用它当工作区名，不再叠前缀。
-  return accessMode === 'accounts' && user ? user.id : SHARED_WORKSPACE_ID
+  return requiresAccount(accessMode) && user ? user.id : SHARED_WORKSPACE_ID
+}
+
+/** 积分开关的公开投影。管理员没开积分制时前端完全看不到相关入口。 */
+function publicCredits(site) {
+  return {
+    enabled: site.credits.enabled,
+    costPerImage: site.credits.costPerImage,
+    purchaseUrl: site.credits.purchaseUrl,
+    packs: site.credits.packs,
+  }
 }
 
 export async function handleGuestRoute(req, res, ctx) {
   const config = getConfig()
   const accessMode = config.site.accessMode
+
+  // 微信登录相关的接口必须在门禁之外——它们就是用来穿过门禁的。
+  if (ctx.path.startsWith('/api/wechat/')) {
+    return handleWechatRoute(req, res, ctx, accessMode)
+  }
+
   const gateOpen = accessMode === 'open'
     || ctx.role === 'admin'
     || (accessMode === 'passcode' && ctx.role === 'guest')
-    || (accessMode === 'accounts' && ctx.role === 'guest' && Boolean(ctx.user))
+    || (requiresAccount(accessMode) && ctx.role === 'guest' && Boolean(ctx.user))
 
   if (ctx.path === '/api/bootstrap' && req.method === 'GET') {
     return sendJson(res, 200, {
@@ -34,10 +55,24 @@ export async function handleGuestRoute(req, res, ctx) {
       guestPasswordSet: Boolean(config.guestPasswordHash),
       userCount: config.users.filter((user) => user.enabled).length,
       authenticated: gateOpen,
-      user: ctx.user ? { id: ctx.user.id, username: ctx.user.username, displayName: ctx.user.displayName } : null,
+      user: ctx.user
+        ? {
+            id: ctx.user.id,
+            username: ctx.user.username,
+            displayName: ctx.user.wechatNickname || ctx.user.displayName || ctx.user.username,
+            avatar: ctx.user.wechatAvatar || '',
+          }
+        : null,
       workspaceId: getWorkspaceId(accessMode, ctx.user),
       // 注册入口是否可见。只回传"能不能注册"，邀请码本身不下发——它得由管理员另行转达。
       registrationOpen: accessMode === 'accounts' && inviteStatus(config.site).ok,
+      credits: publicCredits(config.site),
+      // 登录页需要知道的：用哪种方式、要不要显示二维码。凭据一律不下发。
+      wechat: {
+        enabled: config.site.wechat.enabled,
+        loginMode: config.site.wechat.loginMode,
+        hasQrcodeImage: Boolean(config.site.wechat.qrcodeImage),
+      },
       site: {
         title: config.site.title,
         failoverEnabled: config.site.failoverEnabled,
@@ -55,6 +90,10 @@ export async function handleGuestRoute(req, res, ctx) {
             channels: getEnabledChannels().map(toPublicChannel),
             customProviders: config.customProviders,
           }
+        : {}),
+      // 登录后顺带把余额下发，省掉前端启动时再打一次。
+      ...(gateOpen && config.site.credits.enabled && ctx.user
+        ? { credits: { ...publicCredits(config.site), ...userCreditsView(ctx.user.id) } }
         : {}),
     })
   }
@@ -77,101 +116,82 @@ export async function handleGuestRoute(req, res, ctx) {
     })
   }
 
+  // ===== 积分 =====
+
+  if (ctx.path === '/api/credits' && req.method === 'GET') {
+    if (!config.site.credits.enabled) throw new HttpError(404, '本站未启用积分制')
+    if (!ctx.user) throw new HttpError(401, '请先登录')
+    return sendJson(res, 200, userCreditsView(ctx.user.id, 60))
+  }
+
+  if (ctx.path === '/api/credits/redeem' && req.method === 'POST') {
+    if (!config.site.credits.enabled) throw new HttpError(404, '本站未启用积分制')
+    if (!ctx.user) throw new HttpError(401, '请先登录后再兑换')
+
+    // 卡密是可爆破的秘密（虽然有 60 bit 空间），跟登录共用"10 分钟 10 次"的限流桶。
+    const ip = getClientIp(req)
+    const key = `redeem:${ip}`
+    if (isLocked(key)) throw new HttpError(429, `尝试次数过多，请 ${getLockRemainingSeconds(key)} 秒后重试`)
+
+    const body = await readJsonBody(req)
+    const result = redeemCard(body.code, ctx.user.id)
+    if (!result.ok) {
+      recordFailure(key)
+      throw new HttpError(400, result.message)
+    }
+    recordSuccess(key)
+
+    addCredits(ctx.user.id, result.credits, { type: 'redeem', ref: result.code, note: '卡密兑换' })
+    return sendJson(res, 200, {
+      ok: true,
+      credited: result.credits,
+      ...userCreditsView(ctx.user.id, 60),
+    })
+  }
+
   if (ctx.path.startsWith('/api/relay/')) {
-    if (!gateOpen) throw new HttpError(401, accessMode === 'accounts' ? '需要登录' : '需要访问口令')
-    return relayToChannel(req, res, ctx)
+    if (!gateOpen) throw new HttpError(401, accessMode === 'accounts' || accessMode === 'wechat' ? '需要登录' : '需要访问口令')
+    return handleRelay(req, res, ctx)
   }
 
   throw new HttpError(404, '未知接口')
 }
 
-async function relayToChannel(req, res, ctx) {
-  const rest = ctx.path.slice('/api/relay/'.length)
-  const slash = rest.indexOf('/')
-  const channelId = decodeURIComponent(slash < 0 ? rest : rest.slice(0, slash))
-  const endpointPath = slash < 0 ? '' : rest.slice(slash + 1)
+/** 微信登录相关的路由。这些接口本身不需要身份，它们的作用就是拿到身份。 */
+async function handleWechatRoute(req, res, ctx, accessMode) {
+  const config = getConfig()
 
-  const channel = findChannel(channelId)
-  if (!channel) throw new HttpError(404, '渠道不存在或已下线')
-  if (!channel.enabled) throw new HttpError(503, `渠道「${channel.name}」已停用`)
-  if (!channel.apiKey) throw new HttpError(503, `渠道「${channel.name}」未配置 API Key`)
+  if (!config.site.wechat.enabled) throw new HttpError(503, '本站未启用微信登录')
 
-  const timeoutMs = Math.max(10_000, channel.timeout * 1000)
-  // 只统计提交请求。异步渠道的轮询是 GET，一次出图能轮几十次，全记会把成功率算歪。
-  const counted = req.method === 'POST'
-  const started = Date.now()
-  // 访客提前断开（点了停止、关了标签页）会让转发以失败结算，但这跟渠道好坏无关。
-  let clientGone = false
-  res.on('close', () => {
-    if (!res.writableEnded) clientGone = true
-  })
-  const track = (ok, status, error) => {
-    if (!counted) return
-    recordChannelCall({
-      channelId,
-      userId: ctx.user?.id ?? '',
-      ok,
-      status,
-      latencyMs: Date.now() - started,
-      at: started,
-      error,
-      aborted: !ok && clientGone,
-    })
+  if (ctx.path === '/api/wechat/login' && req.method === 'POST') {
+    if (accessMode !== 'wechat') throw new HttpError(403, '当前站点不是微信登录模式')
+    const ip = getClientIp(req)
+    const key = `wechat-login:${ip}`
+    if (isLocked(key)) throw new HttpError(429, `操作过于频繁，请 ${getLockRemainingSeconds(key)} 秒后重试`)
+    // 发起登录本身不算失败，不计入限流桶；限流桶留给"验证码猜错"这类失败。
+    recordSuccess(key)
+    return startWechatLogin(req, res)
   }
 
-  try {
-    const result = channel.provider === 'fal'
-      // fal SDK 的 proxyUrl 机制：真实目标放在 x-fal-target-url 头里。目标头已被消费，不能再往上游传。
-      ? await pipeToUpstream(req, res, {
-          upstreamUrl: resolveFalTargetUrl(req, channel),
-          authHeader: `Key ${channel.apiKey}`,
-          timeoutMs,
-          dropHeaders: [FAL_TARGET_URL_HEADER],
-        })
-      : await (() => {
-          if (!endpointPath) throw new HttpError(400, '缺少上游接口路径')
-          return pipeToUpstream(req, res, {
-            upstreamUrl: buildUpstreamUrl(channel.baseUrl, endpointPath, ctx.search ?? ''),
-            authHeader: `Bearer ${channel.apiKey}`,
-            timeoutMs,
-          })
-        })()
-
-    const status = result?.status ?? 0
-    track(status >= 200 && status < 300, status, status >= 200 && status < 300 ? '' : `上游返回 HTTP ${status}`)
-    return result
-  } catch (err) {
-    track(false, 0, err instanceof Error ? err.message : '转发失败')
-    throw err
-  }
-}
-
-function resolveFalTargetUrl(req, channel) {
-  const raw = req.headers[FAL_TARGET_URL_HEADER]
-  const target = Array.isArray(raw) ? raw[0] : raw
-  if (!target) throw new HttpError(400, `缺少 ${FAL_TARGET_URL_HEADER} 头`)
-
-  const url = (() => {
-    try {
-      return new URL(String(target))
-    } catch {
-      throw new HttpError(400, 'fal 目标地址无效')
-    }
-  })()
-
-  const base = String(channel.baseUrl ?? '').trim().replace(/\/+$/, '')
-  // 管理员配置了自定义 fal 兼容网关时，把目标的 origin 换成该网关。
-  if (base && base !== 'https://fal.run') {
-    const gateway = (() => {
-      try {
-        return new URL(/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(base) ? base : `https://${base}`)
-      } catch {
-        throw new HttpError(500, '渠道的 fal 网关地址无效')
-      }
-    })()
-    return new URL(`${url.pathname}${url.search}`, gateway.origin)
+  if (ctx.path === '/api/wechat/login' && req.method === 'GET') {
+    return pollWechatLogin(req, res, ctx)
   }
 
-  if (!FAL_ALLOWED_HOSTS.test(url.hostname)) throw new HttpError(400, `不允许转发到 ${url.hostname}`)
-  return url
+  // 公众号的固定二维码图片（验证码模式下显示给用户扫）。
+  if (ctx.path === '/api/wechat/qr-image' && req.method === 'GET') {
+    return serveFixedQrcode(res)
+  }
+
+  const sceneMatch = ctx.path.match(/^\/api\/wechat\/qr\/([^/]+)\.png$/)
+  if (sceneMatch && req.method === 'GET') {
+    return serveSceneQrcode(res, decodeURIComponent(sceneMatch[1]))
+  }
+
+  // 微信服务器的校验与事件推送。既不要求同源也不要求登录——
+  // 请求来自微信的服务器，它没有我们的 cookie。
+  if (ctx.path === '/api/wechat/callback') {
+    return handleWechatCallback(req, res, ctx)
+  }
+
+  throw new HttpError(404, '未知接口')
 }

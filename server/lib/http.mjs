@@ -12,14 +12,25 @@ export function sendJson(res, status, payload) {
   res.end(body)
 }
 
-export function sendText(res, status, text, contentType = 'text/plain; charset=utf-8') {
+export function sendText(res, status, text, contentType = 'text/plain; charset=utf-8', extraHeaders) {
   const body = Buffer.from(text, 'utf-8')
   res.writeHead(status, {
     'Content-Type': contentType,
     'Content-Length': body.length,
     'Cache-Control': 'no-store',
+    ...extraHeaders,
   })
   res.end(body)
+}
+
+/** 回一段二进制（二维码 PNG 之类）。cacheSeconds > 0 时允许浏览器缓存。 */
+export function sendBinary(res, status, buffer, contentType, cacheSeconds = 0) {
+  res.writeHead(status, {
+    'Content-Type': contentType,
+    'Content-Length': buffer.length,
+    'Cache-Control': cacheSeconds > 0 ? `public, max-age=${cacheSeconds}` : 'no-store',
+  })
+  res.end(buffer)
 }
 
 export function sendError(res, status, message, extra) {
@@ -55,10 +66,38 @@ export function readJsonBody(req) {
 }
 
 export class HttpError extends Error {
-  constructor(status, message) {
+  /**
+   * extra 会原样合并进错误响应体，让前端能按 code 区分错误种类、按字段做定制提示。
+   * 例：积分不足时带 { code: 'insufficient-credits', required, available }。
+   */
+  constructor(status, message, extra) {
     super(message)
     this.status = status
+    this.extra = extra
   }
+}
+
+/**
+ * 读取原始请求体。
+ * 微信服务器推送的是 XML 而不是 JSON，走不了 readJsonBody，
+ * 所以单独开一条只做"收字节"的路径，解析交给调用方。
+ */
+export function readRawBody(req, limit = 256 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    req.on('data', (chunk) => {
+      size += chunk.length
+      if (size > limit) {
+        reject(new HttpError(413, '请求体过大'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('error', reject)
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')))
+  })
 }
 
 export function parseCookies(header) {

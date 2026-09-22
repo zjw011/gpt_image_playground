@@ -243,3 +243,75 @@ export function LogoutIcon(props: SVGProps<SVGSVGElement>) {
   )
 }
 
+/** 微信：两个对话气泡 + 两点眼睛。用微信自己的识别形状，比通用的聊天图标更好认。 */
+export function WechatIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg fill="currentColor" viewBox="0 0 24 24" {...props}>
+      <path d="M9.2 3C5.2 3 2 5.7 2 9c0 1.9 1 3.5 2.7 4.7l-.7 2.2 2.5-1.3c.8.2 1.7.4 2.7.4h.5a5.4 5.4 0 0 1-.2-1.5c0-3.1 3-5.6 6.7-5.6h.6C15.9 5.1 12.9 3 9.2 3Zm-2.4 3.4a1 1 0 1 1 0 2 1 1 0 0 1 0-2Zm4.8 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2Z" />
+      <path d="M22 13.4c0-2.7-2.7-4.9-6-4.9s-6 2.2-6 4.9 2.7 4.9 6 4.9c.7 0 1.4-.1 2-.3l2.2 1.1-.6-1.9c1.5-.9 2.4-2.2 2.4-3.8Zm-7.9-1.5a.85.85 0 1 1 0 1.7.85.85 0 0 1 0-1.7Zm3.8 0a.85.85 0 1 1 0 1.7.85.85 0 0 1 0-1.7Z" />
+    </svg>
+  )
+}
+
+/** 积分：一枚硬币。 */
+export function CoinIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7.5v9M14.6 9.6c-.5-.7-1.4-1.1-2.6-1.1-1.5 0-2.5.7-2.5 1.8 0 1 1 1.6 2.5 1.7 1.6.1 2.6.7 2.6 1.8s-1.1 1.8-2.6 1.8c-1.2 0-2.2-.5-2.7-1.2" />
+    </svg>
+  )
+}
+
+/** 卡密：一张带缺口与磁条的卡片。 */
+export function CardIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" {...props}>
+      <rect x="2" y="5" width="20" height="14" rx="2.5" />
+      <path d="M2 10h20" />
+      <path d="M6 15h4" />
+    </svg>
+  )
+}
+
+export function QrCodeIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" {...props}>
+      <rect x="3" y="3" width="7" height="7" rx="1.5" />
+      <rect x="14" y="3" width="7" height="7" rx="1.5" />
+      <rect x="3" y="14" width="7" height="7" rx="1.5" />
+      <path d="M14 14h3v3h-3zM20 14v.01M20 20v.01M17 20v.01M14 20v.01M20 17v.01" />
+    </svg>
+  )
+}
+
+export function CheckCircleIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8.5 12.5l2.5 2.5 4.5-5" />
+    </svg>
+  )
+}
+
+export function AlertCircleIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7.5v5M12 16v.01" />
+    </svg>
+  )
+}
+
+export function ExternalLinkIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" {...props}>
+      <path d="M14 4h6v6" />
+      <path d="M20 4l-8.5 8.5" />
+      <path d="M19 14v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+    </svg>
+  )
+}
+
+
+

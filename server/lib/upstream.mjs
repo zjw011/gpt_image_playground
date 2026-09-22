@@ -140,3 +140,55 @@ export function pipeToUpstream(req, res, options) {
     req.on('error', () => upstream.destroy())
   })
 }
+
+/** 把上游响应头整理成可以直接 writeHead 的形状。与 pipeToUpstream 里那段保持一致。 */
+export function forwardableHeaders(upstreamRes) {
+  const headers = {}
+  for (const [name, value] of Object.entries(upstreamRes.headers)) {
+    if (DROPPED_RESPONSE_HEADERS.has(name)) continue
+    if (value != null) headers[name] = value
+  }
+  headers['cache-control'] = headers['cache-control'] ?? 'no-store'
+  if (String(upstreamRes.headers['content-type'] ?? '').includes('text/event-stream')) {
+    headers['x-accel-buffering'] = 'no'
+  }
+  return headers
+}
+
+/**
+ * 发起一次上游请求，但**先不把响应写回客户端**——只把上游响应对象交出来。
+ *
+ * 故障转移需要这个能力：一旦往 res 写了响应头就没法改投别的渠道了。
+ * 所以先拿到响应对象判断"这条响应值不值得采用"，确认之后调用方才落地。
+ *
+ * `options.body` 是 Buffer 时直接 end 出去（可重放）；为 null 时从 req 流式转发（不可重放）。
+ */
+export function attemptUpstream(req, upstreamUrl, options) {
+  const send = upstreamUrl.protocol === 'http:' ? httpRequest : httpsRequest
+
+  return new Promise((resolve, reject) => {
+    const upstream = send(
+      upstreamUrl,
+      {
+        method: req.method,
+        headers: pickRequestHeaders(req, upstreamUrl, options),
+        timeout: options.timeoutMs,
+      },
+      (upstreamRes) => resolve({ upstream, upstreamRes, status: upstreamRes.statusCode ?? 0 }),
+    )
+
+    upstream.on('timeout', () => upstream.destroy(new Error('上游请求超时')))
+    upstream.on('error', reject)
+
+    if (options.body) {
+      upstream.end(options.body)
+      return
+    }
+
+    // 超限没缓冲下来的请求只能流式，且注定无法重试。
+    for (const chunk of options.headChunks ?? []) upstream.write(chunk)
+    req.pipe(upstream)
+    req.on('error', () => upstream.destroy())
+  })
+}
+

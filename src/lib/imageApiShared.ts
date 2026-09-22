@@ -1,5 +1,6 @@
 import type { AppSettings, ResponsesOutputItem, TaskParams } from '../types'
 import { blobToDataUrl } from './dataUrl'
+import { useCreditsStore } from './creditsStore'
 
 export const MIME_MAP: Record<string, string> = {
   png: 'image/png',
@@ -186,8 +187,11 @@ export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, 
 export async function getApiErrorMessage(response: Response): Promise<string> {
   let errorMsg = `HTTP ${response.status}`
   const textResponse = response.clone()
+  // 失败响应里可能带着服务端给的结构化字段（code / required / available），边解析边留下引用。
+  let payload: Record<string, unknown> | null = null
   try {
     const errJson = await response.json()
+    payload = errJson && typeof errJson === 'object' ? errJson as Record<string, unknown> : null
     if (errJson.error?.message) errorMsg = errJson.error.message
     else if (typeof errJson.detail === 'string') errorMsg = errJson.detail
     else if (Array.isArray(errJson.detail)) errorMsg = errJson.detail.map((item: unknown) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n')
@@ -200,6 +204,16 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
       /* ignore */
     }
   }
+
+  // 中继在积分不足时回一条结构化的 402。这里顺手把充值弹窗唤起来：
+  // 光甩一句"积分不足"，用户还得自己去找充值入口，白跑一趟。
+  // 用 code 判断而不是匹配文案，管理员改措辞不会把这条引导弄丢。
+  if (response.status === 402 && payload?.code === 'insufficient-credits') {
+    const required = typeof payload.required === 'number' ? payload.required : 0
+    const available = typeof payload.available === 'number' ? payload.available : 0
+    useCreditsStore.getState().openRedeem(Math.max(0, required - available))
+  }
+
   return errorMsg
 }
 

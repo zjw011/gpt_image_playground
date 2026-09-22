@@ -2,12 +2,27 @@
 // 所有路由都要求管理员会话，除了 /api/admin/state（用于判断是否首次初始化）与 /api/admin/login。
 
 import { randomBytes } from 'node:crypto'
+import {
+  cardsOverview,
+  deleteBatch,
+  deleteCards,
+  exportCards,
+  generateCards,
+  listBatches,
+  listCards,
+  recentRedeems,
+  restoreCards,
+  voidBatch,
+  voidCards,
+} from './cards.mjs'
 import { auditChannel } from './channelAudit.mjs'
-import { HttpError, readJsonBody, sendJson } from './http.mjs'
+import { creditsOverview, creditsSummary, listLedger, removeAccount, resetCreditStats, setBalance } from './credits.mjs'
+import { HttpError, readJsonBody, sendJson, sendText } from './http.mjs'
 import {
   ACCESS_MODES,
   AGENT_MODES,
   BUILT_IN_PROVIDERS,
+  WECHAT_LOGIN_MODES,
   findChannel,
   findUserById,
   findUserByUsername,
@@ -22,11 +37,18 @@ import {
   normalizeUser,
   toAdminChannel,
   toAdminUser,
+  toAdminWechat,
   updateConfig,
   verifyPassword,
 } from './store.mjs'
 import { buildUpstreamUrl } from './upstream.mjs'
 import { channelHealth, clearChannelFault, resetUsage, usageOverview, usageSummary } from './usage.mjs'
+import { getAccessToken, isWechatConfigured, QRCODE_TTL_SECONDS, wechatCallbackPath } from './wechat.mjs'
+
+/** 判断是不是一个普通对象。store.mjs 里那份没有导出，这里不为了两个判断去加一个导出。 */
+function isRecordLike(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
 
 function genChannelId() {
   return `ch-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
@@ -56,6 +78,9 @@ export async function handleAdminRoute(req, res, ctx) {
   // ===== 渠道列表与站点状态 =====
   if (path === '/api/admin/state' && method === 'GET') {
     const config = getConfig()
+    const userNames = new Map(config.users.map((user) => [user.id, user.wechatNickname || user.displayName || user.username]))
+    const creditsRows = new Map(creditsSummary(userNames, { ledgerLimit: 1 }).users.map((row) => [row.id, row]))
+
     return sendJson(res, 200, {
       initialized: Boolean(config.adminPasswordHash),
       authenticated: ctx.role === 'admin',
@@ -65,9 +90,25 @@ export async function handleAdminRoute(req, res, ctx) {
             guestPasswordSet: Boolean(config.guestPasswordHash),
             // 健康度直接挂在渠道上：后台列表要能一眼看出哪条挂了，不该再多一次请求。
             channels: config.channels.map((channel) => ({ ...toAdminChannel(channel), health: channelHealth(channel.id) })),
-            users: config.users.map(toAdminUser),
+            // 用户列表顺带带上积分余额，省掉为了显示一列数字再打一次接口。
+            users: config.users.map((user) => ({
+              ...toAdminUser(user),
+              balance: creditsRows.get(user.id)?.balance ?? 0,
+              totalOut: creditsRows.get(user.id)?.totalOut ?? 0,
+            })),
             minUserPasswordLength: MIN_USER_PASSWORD_LENGTH,
             customProviders: config.customProviders,
+            wechat: {
+              ...toAdminWechat(config.site),
+              // 回调地址要展示给管理员复制到公众号后台，这里直接算好。
+              callbackPath: wechatCallbackPath(),
+              configured: isWechatConfigured(config.site.wechat),
+              qrcodeTtlSeconds: QRCODE_TTL_SECONDS,
+            },
+            credits: {
+              ...creditsOverview(),
+              cards: cardsOverview(),
+            },
             updatedAt: config.updatedAt,
           }
         : {}),
@@ -469,6 +510,175 @@ export async function handleAdminRoute(req, res, ctx) {
       return config
     })
     return sendJson(res, 200, { ok: true })
+  }
+
+  // ===== 积分 =====
+  //
+  // 专门开一个只改积分的口子，而不是复用 /api/admin/site：
+  // 那个接口会顺带重算 registrationEnabled、校验 agentMode，改个单价却把访问方式相关字段
+  // 一起卷进来，出了问题很难查。这里只碰 site.credits。
+  if (path === '/api/admin/credits' && method === 'PUT') {
+    const body = await readJsonBody(req)
+    const current = getConfig().site.credits
+    const raw = isRecordLike(body.credits) ? body.credits : body
+
+    updateConfig((config) => {
+      config.site.credits = {
+        ...current,
+        ...raw,
+        // 渠道倍率与套餐是整块替换的语义：后台每次保存都提交完整列表，
+        // 合并旧值会让"删掉一个套餐"变成不可能。
+        channelRates: isRecordLike(raw.channelRates) ? raw.channelRates : current.channelRates,
+        packs: Array.isArray(raw.packs) ? raw.packs : current.packs,
+      }
+      return config
+    })
+    return sendJson(res, 200, { credits: getConfig().site.credits })
+  }
+
+  if (path === '/api/admin/credits' && method === 'GET') {
+    const config = getConfig()
+    const userNames = new Map(config.users.map((user) => [user.id, user.wechatNickname || user.displayName || user.username]))
+    return sendJson(res, 200, {
+      ...creditsSummary(userNames, { ledgerLimit: 200 }),
+      overview: creditsOverview(),
+      settings: config.site.credits,
+    })
+  }
+
+  const balanceMatch = path.match(/^\/api\/admin\/credits\/users\/([^/]+)$/)
+  if (balanceMatch && method === 'PUT') {
+    const id = decodeURIComponent(balanceMatch[1])
+    const user = findUserById(id)
+    if (!user) throw new HttpError(404, '用户不存在')
+
+    const body = await readJsonBody(req)
+    const next = Number(body.balance)
+    if (!Number.isFinite(next) || next < 0) throw new HttpError(400, '积分必须是不小于 0 的数字')
+
+    const result = setBalance(id, Math.trunc(next), { note: String(body.note ?? '管理员调整') })
+    return sendJson(res, 200, { ok: true, balance: result.balance, changed: result.changed })
+  }
+
+  // 清空统计但不动余额。余额是用户资产，任何"清空"按钮都不该碰它。
+  if (path === '/api/admin/credits/stats' && method === 'DELETE') {
+    resetCreditStats()
+    return sendJson(res, 200, { ok: true })
+  }
+
+  // ===== 卡密 =====
+  if (path === '/api/admin/cards' && method === 'GET') {
+    const query = new URLSearchParams(ctx.search ?? '')
+    const config = getConfig()
+    const userNames = new Map(config.users.map((user) => [user.id, user.wechatNickname || user.displayName || user.username]))
+    return sendJson(res, 200, {
+      ...listCards({
+        status: query.get('status') ?? '',
+        batch: query.get('batch') ?? '',
+        keyword: query.get('keyword') ?? '',
+        limit: Number(query.get('limit')) || 100,
+        offset: Number(query.get('offset')) || 0,
+      }),
+      batches: listBatches(),
+      overview: cardsOverview(),
+      recentRedeems: recentRedeems(30, userNames),
+    })
+  }
+
+  if (path === '/api/admin/cards' && method === 'POST') {
+    const body = await readJsonBody(req)
+    try {
+      const result = generateCards({
+        credits: Number(body.credits),
+        count: Number(body.count),
+        note: body.note,
+      })
+      return sendJson(res, 200, { ...result, overview: cardsOverview() })
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : '生成失败')
+    }
+  }
+
+  if (path === '/api/admin/cards/void' && method === 'POST') {
+    const body = await readJsonBody(req)
+    const result = body.batch
+      ? voidBatch(String(body.batch))
+      : voidCards(body.codes)
+    return sendJson(res, 200, { ...result, overview: cardsOverview() })
+  }
+
+  if (path === '/api/admin/cards/restore' && method === 'POST') {
+    const body = await readJsonBody(req)
+    return sendJson(res, 200, { ...restoreCards(body.codes), overview: cardsOverview() })
+  }
+
+  if (path === '/api/admin/cards/delete' && method === 'POST') {
+    const body = await readJsonBody(req)
+    // 已兑换的卡是财务凭证，deleteCards 会跳过它们并如实回报跳过了几张。
+    const result = body.batch ? deleteBatch(String(body.batch)) : deleteCards(body.codes)
+    return sendJson(res, 200, { ...result, overview: cardsOverview() })
+  }
+
+  // 导出成纯文本，一行一张码——直接贴进发卡网就行。
+  if (path === '/api/admin/cards/export' && method === 'GET') {
+    const query = new URLSearchParams(ctx.search ?? '')
+    const status = query.get('status') ?? ''
+    const batch = query.get('batch') ?? ''
+    const rows = exportCards({ status, batch })
+    if (!rows.length) throw new HttpError(404, '没有符合条件的卡密')
+
+    const header = query.get('with-credits') === '1'
+      ? (row) => `${row.code},${row.credits}`
+      : (row) => row.code
+    const body = rows.map(header).join('\n')
+    const stamp = new Date().toISOString().slice(0, 10)
+    return sendText(res, 200, body, `text/plain; charset=utf-8`, {
+      'Content-Disposition': `attachment; filename="gip-cards-${stamp}.txt"`,
+    })
+  }
+
+  // ===== 微信登录设置 =====
+  if (path === '/api/admin/wechat' && method === 'PUT') {
+    const body = await readJsonBody(req)
+    const current = getConfig().site.wechat
+    if (body.loginMode !== undefined && !WECHAT_LOGIN_MODES.has(body.loginMode)) {
+      throw new HttpError(400, '未知的微信登录方式')
+    }
+    // 凭据留空表示"不修改"，否则后台每次保存都要重填 AppSecret。
+    const appSecret = typeof body.appSecret === 'string' && body.appSecret.trim() ? body.appSecret.trim() : current.appSecret
+    const token = typeof body.token === 'string' && body.token.trim() ? body.token.trim() : current.token
+    const encodingAesKey = typeof body.encodingAesKey === 'string' && body.encodingAesKey.trim()
+      ? body.encodingAesKey.trim()
+      : current.encodingAesKey
+
+    if (encodingAesKey && encodingAesKey.length !== 43) {
+      throw new HttpError(400, 'EncodingAESKey 必须是 43 位字符，请从公众号后台原样复制')
+    }
+
+    updateConfig((config) => {
+      config.site.wechat = {
+        ...config.site.wechat,
+        ...body,
+        appSecret,
+        token,
+        encodingAesKey,
+        appId: typeof body.appId === 'string' ? body.appId.trim() : current.appId,
+      }
+      return config
+    })
+    return sendJson(res, 200, { wechat: toAdminWechat(getConfig().site) })
+  }
+
+  // 拿一次 access_token，验证 AppID / AppSecret / IP 白名单三件事是否都对了。
+  if (path === '/api/admin/wechat/test' && method === 'POST') {
+    const wechat = getConfig().site.wechat
+    if (!wechat.appId || !wechat.appSecret) throw new HttpError(400, '请先填写 AppID 与 AppSecret')
+    try {
+      await getAccessToken(wechat, { force: true })
+      return sendJson(res, 200, { ok: true, message: '接口调用成功：AppID、AppSecret 与 IP 白名单都已就绪' })
+    } catch (err) {
+      return sendJson(res, 200, { ok: false, message: err instanceof Error ? err.message : '调用失败' })
+    }
   }
 
   throw new HttpError(404, '未知的管理接口')

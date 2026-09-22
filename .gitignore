@@ -7,3 +7,5 @@ dev-proxy.config.json
 .env.*.local
 server-data/
 .tmp-server-data/
+.tmp-check/
+.workbuddy/

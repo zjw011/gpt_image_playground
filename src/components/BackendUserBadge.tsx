@@ -24,8 +24,10 @@ export default function BackendUserBadge() {
       title={`${label}（点击退出登录）`}
       className="group flex max-w-[9rem] shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 dark:text-gray-400 dark:hover:bg-gray-900 dark:hover:text-gray-200"
     >
-      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-500/10 text-[10px] font-semibold uppercase text-blue-600 dark:bg-blue-400/15 dark:text-blue-300">
-        {label.slice(0, 1)}
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full bg-blue-500/10 text-[10px] font-semibold uppercase text-blue-600 dark:bg-blue-400/15 dark:text-blue-300">
+        {user.avatar
+          ? <img src={user.avatar} alt="" className="h-full w-full object-cover" draggable={false} referrerPolicy="no-referrer" />
+          : label.slice(0, 1)}
       </span>
       <span className="hidden truncate sm:inline">{label}</span>
       <LogoutIcon className="h-3.5 w-3.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />

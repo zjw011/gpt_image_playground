@@ -22,6 +22,8 @@ import MaskEditorModal from './components/MaskEditorModal'
 import ImageContextMenu from './components/ImageContextMenu'
 import SupportPromptModal from './components/SupportPromptModal'
 import BackendGate from './components/BackendGate'
+import WechatGate from './components/WechatGate'
+import RedeemCardModal from './components/RedeemCardModal'
 import { FavoriteCollectionPickerModal, FavoriteCollectionsView, ManageCollectionsModal } from './components/FavoriteCollections'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
 
@@ -175,6 +177,17 @@ export default function App() {
   if (backend === undefined) return null
 
   if (backend && backend.accessMode !== 'open' && !backend.authenticated) {
+    // 微信登录走自己那套门禁：它要的是一个二维码和一段轮询，跟口令表单没有共同点。
+    if (backend.accessMode === 'wechat') {
+      return (
+        <WechatGate
+          title={backend.site.title}
+          hasQrcodeImage={backend.wechat.hasQrcodeImage}
+          onUnlocked={() => window.location.reload()}
+        />
+      )
+    }
+
     return (
       <BackendGate
         title={backend.site.title}
@@ -204,6 +217,7 @@ export default function App() {
       <SettingsModal />
       <ConfirmDialog />
       <SupportPromptModal />
+      <RedeemCardModal />
       <FavoriteCollectionPickerModal />
       <ManageCollectionsModal />
       <Toast />

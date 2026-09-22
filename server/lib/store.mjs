@@ -10,8 +10,8 @@ const SCRYPT_KEYLEN = 64
 
 export const BUILT_IN_PROVIDERS = new Set(['openai', 'sb2api-async', 'fal'])
 
-/** 访问方式：open 任何人可用、passcode 共享口令、accounts 逐用户账号（数据互相隔离）。 */
-export const ACCESS_MODES = new Set(['open', 'passcode', 'accounts'])
+/** 访问方式：open 任何人可用、passcode 共享口令、accounts 逐用户账号（数据互相隔离）、wechat 微信扫码关注登录。 */
+export const ACCESS_MODES = new Set(['open', 'passcode', 'accounts', 'wechat'])
 
 /** Agent 模式的接入方式：off 不开放、native 原生 image_generation 工具、hybrid 文本模型 + 独立图像渠道。 */
 export const AGENT_MODES = new Set(['off', 'native', 'hybrid'])
@@ -84,6 +84,34 @@ function createEmptyConfig() {
       inviteMaxUses: 0,
       inviteUsedCount: 0,
       inviteExpiresAt: 0,
+      // 微信扫码关注登录。默认关闭，且必须凑齐 AppID/AppSecret/Token 才能真正启用。
+      wechat: {
+        enabled: false,
+        appId: '',
+        appSecret: '',
+        // 公众号后台「服务器配置」里填的 Token，用于校验微信推送的签名。
+        token: '',
+        // 公众号后台「服务器配置」里的消息加解密密钥。安全/兼容模式必填，明文模式可留空。
+        encodingAesKey: '',
+        // 公众号的固定二维码图片（data: 内联图或 https 外链），验证码模式下显示给用户扫。
+        qrcodeImage: '',
+        // code：扫码关注后在公众号里回复验证码（未认证也能用）；
+        // qrcode：直接扫「带参数二维码」即登录（需要已认证的公众号）。
+        loginMode: 'code',
+        // 扫码关注后回复的文案，留空则只回 success（不产生被动回复）。
+        replyText: '',
+        // 是否尝试拉取昵称头像。只有已认证服务号有权限，订阅号会返回 48001。
+        fetchProfile: true,
+      },
+      // 积分制。默认关闭——不开启时前端完全看不到积分相关入口，行为与升级前一致。
+      credits: {
+        enabled: false,
+        costPerImage: 1,
+        signupBonus: 0,
+        purchaseUrl: '',
+        packs: [],
+        channelRates: {},
+      },
     },
     users: [],
     channels: [],
@@ -171,11 +199,17 @@ export function normalizeUser(input, fallbackId) {
     passwordHash: normalizeString(record.passwordHash, ''),
     enabled: normalizeBool(record.enabled, true),
     note: normalizeString(record.note, ''),
-    // 区分账号是管理员建的还是别人自己注册的，后台名册上要能一眼看出来。
-    createdVia: record.createdVia === 'invite' ? 'invite' : 'admin',
+    // 区分账号是怎么来的，后台名册上要能一眼看出来。
+    createdVia: record.createdVia === 'invite' ? 'invite' : record.createdVia === 'wechat' ? 'wechat' : 'admin',
     createdAt: normalizeInt(record.createdAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
     updatedAt: normalizeInt(record.updatedAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
     lastSeenAt: normalizeInt(record.lastSeenAt, 0, 0, Number.MAX_SAFE_INTEGER),
+    // 微信身份。openid 是登录的主键，一旦绑定不再变动；昵称头像只是展示用，拿不到就留空。
+    wechatOpenId: normalizeString(record.wechatOpenId, '').trim(),
+    wechatUnionId: normalizeString(record.wechatUnionId, '').trim(),
+    wechatNickname: normalizeString(record.wechatNickname, '').trim(),
+    wechatAvatar: normalizeString(record.wechatAvatar, '').trim(),
+    wechatSubscribed: normalizeBool(record.wechatSubscribed, false),
   }
 }
 
@@ -232,6 +266,76 @@ function normalizeRegistration(site, accessMode) {
   }
 }
 
+/** 微信登录方式：code 扫码后回复验证码（未认证也能用）、qrcode 带参数二维码（需认证）。 */
+export const WECHAT_LOGIN_MODES = new Set(['code', 'qrcode'])
+
+/**
+ * 微信登录设置清洗。
+ * `enabled` 只有在三件套（AppID / AppSecret / Token）齐了之后才可能为真——
+ * 缺任何一项都不可能跑通，留一个"开着但一定失败"的开关只会让管理员反复排查前端。
+ */
+function normalizeWechat(site) {
+  const raw = isRecord(site.wechat) ? site.wechat : {}
+  const appId = normalizeString(raw.appId, '').trim()
+  const appSecret = normalizeString(raw.appSecret, '').trim()
+  const token = normalizeString(raw.token, '').trim()
+  // 安全 / 兼容模式下微信推来的是密文，必须拿 EncodingAESKey 解开。43 位字符。
+  const encodingAesKey = normalizeString(raw.encodingAesKey, '').trim().slice(0, 64)
+  // 公众号二维码图片：管理员传上来的固定二维码，验证码模式下要显示给用户扫。
+  // 允许是 data: 内联图（上传）或 http(s) 外链（图床），长度上限防手滑贴进一个二进制文件。
+  const qrcodeImage = normalizeString(raw.qrcodeImage, '').trim().slice(0, 400_000)
+
+  return {
+    enabled: normalizeBool(raw.enabled, false) && Boolean(appId && appSecret && token),
+    appId,
+    appSecret,
+    token,
+    encodingAesKey,
+    qrcodeImage,
+    // 「生成带参数的二维码」只有认证公众号才能调，所以默认走验证码模式。
+    loginMode: WECHAT_LOGIN_MODES.has(raw.loginMode) ? raw.loginMode : 'code',
+    replyText: normalizeString(raw.replyText, '').slice(0, 600),
+    fetchProfile: normalizeBool(raw.fetchProfile, true),
+  }
+}
+
+/**
+ * 积分设置清洗。
+ * 面额与单价的上下限是防手滑的保险丝：单价 0 等于全站免费，面额 999 亿等于余额溢出。
+ */
+function normalizeCreditSettings(site) {
+  const raw = isRecord(site.credits) ? site.credits : {}
+
+  const packs = (Array.isArray(raw.packs) ? raw.packs : [])
+    .filter(isRecord)
+    .slice(0, 12)
+    .map((pack) => ({
+      name: normalizeString(pack.name, '').trim().slice(0, 40),
+      price: normalizeString(pack.price, '').trim().slice(0, 20),
+      credits: normalizeInt(pack.credits, 0, 0, 100_000_000),
+    }))
+    .filter((pack) => pack.credits > 0)
+
+  // 渠道倍率存百分比整数，100 表示原价。用整数是为了避开浮点误差累积到余额上。
+  const channelRates = {}
+  if (isRecord(raw.channelRates)) {
+    for (const [id, value] of Object.entries(raw.channelRates)) {
+      const numeric = Number(value)
+      if (!id || !Number.isFinite(numeric) || numeric <= 0) continue
+      channelRates[id] = Math.min(1000, Math.max(1, Math.trunc(numeric)))
+    }
+  }
+
+  return {
+    enabled: normalizeBool(raw.enabled, false),
+    costPerImage: normalizeInt(raw.costPerImage, 1, 0, 100_000),
+    signupBonus: normalizeInt(raw.signupBonus, 0, 0, 1_000_000),
+    purchaseUrl: normalizeString(raw.purchaseUrl, '').trim().slice(0, 500),
+    packs,
+    channelRates,
+  }
+}
+
 function normalizeConfig(input) {
   const record = isRecord(input) ? input : {}
   const site = isRecord(record.site) ? record.site : {}
@@ -276,6 +380,8 @@ function normalizeConfig(input) {
       allowGuestParamOverride: normalizeBool(site.allowGuestParamOverride, true),
       ...normalizeAgentSettings(site, normalizedChannels),
       ...normalizeRegistration(site, accessMode),
+      wechat: normalizeWechat(site),
+      credits: normalizeCreditSettings(site),
     },
     users: normalizedUsers,
     channels: normalizedChannels,
@@ -357,6 +463,37 @@ export function maskApiKey(apiKey) {
   return `${apiKey.slice(0, 4)}${'*'.repeat(Math.min(12, apiKey.length - 8))}${apiKey.slice(-4)}`
 }
 
+/** 后台可见的微信设置投影：AppSecret 与 Token 都是凭据，只回掩码。 */
+/**
+ * 微信配置的后台投影。
+ *
+ * 三处刻意的不透明处理：
+ *   1. AppSecret / Token / EncodingAESKey 只回"有没有"和打码后的样子。
+ *      后台的"留空表示不修改"依赖这个 mask，让管理员确认填过什么而不必读出明文。
+ *   2. 二维码图片可能是 400KB 的 data URL，而 state 是每次操作后都要重拉的接口，
+ *      把它塞进去纯属浪费带宽。要展示时前端直接引用同源的 /api/wechat/qr-image。
+ *   3. enabled 用服务端算过的那份——它要求 AppID+AppSecret+Token 齐全，
+ *      原样回传管理员勾的复选框只会让人以为"开了"，实际根本不工作。
+ */
+export function toAdminWechat(site) {
+  const wechat = site.wechat
+  return {
+    appId: wechat.appId,
+    appSecretMask: maskApiKey(wechat.appSecret),
+    hasAppSecret: Boolean(wechat.appSecret),
+    tokenMask: maskApiKey(wechat.token),
+    hasToken: Boolean(wechat.token),
+    encodingAesKeyMask: maskApiKey(wechat.encodingAesKey),
+    hasEncodingAesKey: Boolean(wechat.encodingAesKey),
+    qrcodeImage: '',
+    hasQrcodeImage: Boolean(wechat.qrcodeImage),
+    loginMode: wechat.loginMode,
+    replyText: wechat.replyText,
+    fetchProfile: wechat.fetchProfile,
+    enabled: wechat.enabled,
+  }
+}
+
 /** 下发给前端的渠道：只保留启用且已配置密钥的，顺序即故障转移顺序。 */
 export function getEnabledChannels() {
   return getConfig().channels.filter((channel) => channel.enabled && channel.apiKey)
@@ -379,6 +516,23 @@ export function findUserByUsername(username) {
   return getConfig().users.find((user) => user.username.toLowerCase() === target) ?? null
 }
 
+/** openid 是微信登录的唯一主键：同一个人反复扫码必须落到同一个账号。 */
+export function findUserByOpenId(openid) {
+  const target = String(openid ?? '').trim()
+  if (!target) return null
+  return getConfig().users.find((user) => user.wechatOpenId === target) ?? null
+}
+
+/** 前台可见的用户投影：只给展示需要的字段。 */
+export function toPublicUser(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    displayName: user.wechatNickname || user.displayName || user.username,
+    avatar: user.wechatAvatar || '',
+  }
+}
+
 /** 后台可见的用户投影：口令只回传"是否已设置"，永不回传哈希。 */
 export function toAdminUser(user) {
   return {
@@ -392,6 +546,12 @@ export function toAdminUser(user) {
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     lastSeenAt: user.lastSeenAt,
+    // 微信身份：openid 绝不回传（它本身就是一个可用来定位用户的标识），
+    // 只回"是不是微信账号"和展示用的昵称头像。
+    wechat: Boolean(user.wechatOpenId),
+    wechatNickname: user.wechatNickname,
+    wechatAvatar: user.wechatAvatar,
+    wechatSubscribed: user.wechatSubscribed,
   }
 }
 

@@ -1,6 +1,20 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest'
-import { backendAgentSettings, backendChannelToApiProfile, BACKEND_MANAGED_API_KEY, getRelayBaseUrl, readInviteFromUrl, type BackendBootstrap, type BackendChannel } from './backend'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  applyCreditsBalance,
+  formatCardCodeInput,
+  getCreditsConfig,
+  getCreditsView,
+  loadBackendBootstrap,
+  pickErrorCode,
+  backendAgentSettings,
+  backendChannelToApiProfile,
+  BACKEND_MANAGED_API_KEY,
+  getRelayBaseUrl,
+  readInviteFromUrl,
+  type BackendBootstrap,
+  type BackendChannel,
+} from './backend'
 import { buildApiUrl } from './devProxy'
 
 function createChannel(patch: Partial<BackendChannel> = {}): BackendChannel {
@@ -32,6 +46,8 @@ function createBootstrap(site: Partial<BackendBootstrap['site']> = {}): BackendB
     user: null,
     workspaceId: 'shared',
     registrationOpen: false,
+    credits: { enabled: false, costPerImage: 0, purchaseUrl: '', packs: [] },
+    wechat: { enabled: false, loginMode: 'code', hasQrcodeImage: false },
     site: {
       title: 'T',
       failoverEnabled: true,
@@ -122,5 +138,89 @@ describe('readInviteFromUrl', () => {
   it('没有 invite 参数时给空串，让门禁页照常显示登录表单', () => {
     window.history.replaceState({}, '', '/')
     expect(readInviteFromUrl()).toBe('')
+  })
+})
+
+describe('formatCardCodeInput', () => {
+  it('把用户抄来的卡密统一成 GIP-XXXX-XXXX-XXXX', () => {
+    expect(formatCardCodeInput('gipabcdefghijkl')).toBe('GIP-ABCD-EFGH-IJKL')
+  })
+
+  it('小写、空格、分隔符混着来也能收敛到同一种形状', () => {
+    expect(formatCardCodeInput(' gip abcd efgh ijkl ')).toBe('GIP-ABCD-EFGH-IJKL')
+    expect(formatCardCodeInput('gip-abcd-efgh-ijkl')).toBe('GIP-ABCD-EFGH-IJKL')
+  })
+
+  it('超出长度就截断，不让用户把整段垃圾粘进来', () => {
+    expect(formatCardCodeInput('gipabcdefghijklmnopqrst')).toBe('GIP-ABCD-EFGH-IJKL')
+  })
+})
+
+describe('pickErrorCode', () => {
+  it('有 code 就取出来，界面据此分流到充值入口', () => {
+    expect(pickErrorCode(Object.assign(new Error('积分不足'), { code: 'insufficient-credits' }))).toBe('insufficient-credits')
+  })
+
+  it('普通 Error 给空串，走通用报错分支', () => {
+    expect(pickErrorCode(new Error('boom'))).toBe('')
+    expect(pickErrorCode(null)).toBe('')
+  })
+})
+
+describe('积分字段的解析与本地覆盖', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  /** 造一个只有 /api/bootstrap 会返回 JSON 的假服务端。 */
+  function stubBootstrap(body: Record<string, unknown>) {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+  }
+
+  it('未登录时只有配置没有余额，界面不该显示一个假的 0', async () => {
+    stubBootstrap({ backendMode: true, accessMode: 'wechat', authenticated: false, credits: { enabled: true, costPerImage: 2 } })
+    const data = await loadBackendBootstrap()
+    expect(getCreditsConfig()).toMatchObject({ enabled: true, costPerImage: 2 })
+    expect(getCreditsView()).toBeNull()
+  })
+
+  it('登录后拿到余额视图，负数与非数都被夹住', async () => {
+    stubBootstrap({
+      backendMode: true,
+      accessMode: 'wechat',
+      authenticated: true,
+      credits: { enabled: true, costPerImage: 2, balance: 30, reserved: 4, available: 26, totalIn: 50, totalOut: 20, ledger: [{ at: 1, type: 'spend', amount: 2, balanceAfter: 30, ref: 'ch-1', note: '渠道' }] },
+    })
+    await loadBackendBootstrap()
+    expect(getCreditsView()).toMatchObject({ balance: 30, available: 26, totalIn: 50, totalOut: 20 })
+    expect(getCreditsView()?.ledger[0]).toMatchObject({ type: 'spend', ref: 'ch-1' })
+  })
+
+  it('余额字段残缺时当没有余额，而不是显示半真的数字', async () => {
+    stubBootstrap({ backendMode: true, accessMode: 'wechat', authenticated: true, credits: { enabled: true, available: 26 } })
+    await loadBackendBootstrap()
+    expect(getCreditsView()).toBeNull()
+  })
+
+  it('生图回执只带余额时按无在途占位推算可用额', async () => {
+    stubBootstrap({
+      backendMode: true,
+      accessMode: 'wechat',
+      authenticated: true,
+      credits: { enabled: true, costPerImage: 2, balance: 30, reserved: 0, available: 30, totalIn: 30, totalOut: 0, ledger: [] },
+    })
+    await loadBackendBootstrap()
+    applyCreditsBalance({ balance: 28 })
+    expect(getCreditsView()).toMatchObject({ balance: 28, available: 28 })
+  })
+
+  it('微信配置解析：未知的 loginMode 退回验证码模式（未认证订阅号也能用）', async () => {
+    stubBootstrap({ backendMode: true, accessMode: 'wechat', authenticated: false, wechat: { enabled: true, loginMode: 'something-else' } })
+    const data = await loadBackendBootstrap()
+    expect(data?.wechat).toMatchObject({ enabled: true, loginMode: 'code', hasQrcodeImage: false })
+    expect(data?.accessMode).toBe('wechat')
   })
 })

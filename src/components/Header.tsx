@@ -8,6 +8,7 @@ import HelpModal from './HelpModal'
 import HistoryModal from './HistoryModal'
 import { useFavoriteCollectionTitle } from './FavoriteCollections'
 import BackendUserBadge from './BackendUserBadge'
+import CreditsBadge from './CreditsBadge'
 import { getSiteTitle, isAgentAvailable, isBackendMode } from '../lib/backend'
 import { EditIcon, HelpCircleIcon, HistoryIcon, InstallIcon, SettingsIcon } from './icons'
 
@@ -254,6 +255,7 @@ export default function Header() {
             </button>
           </div>}
           <div className="flex items-center gap-1 shrink-0">
+            <CreditsBadge />
             <BackendUserBadge />
             {!isPwaInstalled && (
               <div
