@@ -3,7 +3,7 @@
 import { Link } from 'react-router-dom'
 import AppShell from './app/AppShell'
 import { useInApp } from './useInApp'
-import { PublicNav, SiteFooter } from './theme'
+import { PublicNav, SiteFooter, PageLoading } from './theme'
 import { IconBolt, IconShield, IconWallet, IconCheck, IconCoin, IconSparkle } from './icons'
 
 const PLANS = [
@@ -20,7 +20,10 @@ const NOTES = [
   { icon: IconWallet, title: '开具发票', desc: '企业用户可申请开具增值税发票' },
 ]
 
-function PricingContent() {
+function PricingContent({ inApp }: { inApp: boolean }) {
+  // 已登录还把人引去注册很怪，直接送进创作页。
+  const planTo = (plan: (typeof PLANS)[number]) => (inApp && plan.to === '/register' ? '/studio' : plan.to)
+
   return (
     <section className="mx-auto max-w-6xl px-5 pb-20 pt-14">
       <div className="text-center">
@@ -52,7 +55,7 @@ function PricingContent() {
             </p>
             <p className="mt-3 flex-1 text-[12.5px] leading-5 text-[#8a86ac]">{plan.desc}</p>
             <Link
-              to={plan.to}
+              to={planTo(plan)}
               className={`mt-6 flex items-center justify-center gap-2 rounded-full py-3 text-sm font-semibold transition ${
                 plan.hot
                   ? 'bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] text-white shadow-lg shadow-[#7c6cf6]/30 hover:from-[#6b5ce7] hover:to-[#9678f5]'
@@ -60,7 +63,7 @@ function PricingContent() {
               }`}
             >
               <IconSparkle className="h-4 w-4" />
-              {plan.cta}
+              {inApp && plan.to === '/register' ? '继续创作' : plan.cta}
             </Link>
           </div>
         ))}
@@ -90,11 +93,11 @@ function PricingContent() {
 
 export default function PricingPage() {
   const inApp = useInApp()
-  if (inApp === undefined) return null
+  if (inApp === undefined) return <PageLoading />
   if (inApp) {
     return (
       <AppShell title="价格与积分">
-        <PricingContent />
+        <PricingContent inApp={inApp} />
       </AppShell>
     )
   }
@@ -102,7 +105,7 @@ export default function PricingPage() {
   return (
     <div className="min-h-screen bg-[#f5f4fb] text-[#37335c]">
       <PublicNav active="pricing" />
-      <PricingContent />
+      <PricingContent inApp={false} />
       <SiteFooter />
     </div>
   )

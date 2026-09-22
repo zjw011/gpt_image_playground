@@ -74,7 +74,8 @@ export default function ResultPage() {
 
   const regenerate = async () => {
     await reuseConfig(task)
-    void submitTask()
+    // 提交失败（渠道没了之类）就留在当前这件作品上，别把 task 参数清掉
+    if (!await submitTask()) return
     // 清掉 task 参数：新任务进来后自动显示最新那张
     navigate('/studio/result', { replace: true })
   }

@@ -5,44 +5,10 @@
 // 用法：先 npm run dev，另开终端执行
 //   node scripts/audit-menu.mjs
 // 需要本机装有 Chrome（路径可用 CHROME_PATH 覆盖）。退出码非 0 表示有失败项。
-import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { launchChrome } from './lib/cdp.mjs'
 
-const CHROME = process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe'
 const BASE = process.env.AUDIT_BASE_URL || 'http://localhost:5173'
-const PORT = Number(process.env.AUDIT_CDP_PORT || 9411)
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-
-const profileDir = mkdtempSync(join(tmpdir(), 'audit-menu-'))
-const chrome = spawn(CHROME, [
-  '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-  `--remote-debugging-port=${PORT}`, `--user-data-dir=${profileDir}`, 'about:blank',
-], { stdio: 'ignore' })
-
-let socket
-let messageId = 1
-const pending = new Map()
-const consoleErrors = []
-
-function send(method, params) {
-  const id = messageId++
-  socket.send(JSON.stringify({ id, method, params: params ?? {} }))
-  return new Promise((resolve, reject) => pending.set(id, { resolve, reject }))
-}
-
-async function waitForDevtools() {
-  for (let i = 0; i < 80; i++) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${PORT}/json/version`)
-      if (response.ok) return
-    } catch {}
-    await sleep(250)
-  }
-  throw new Error('Chrome DevTools 未就绪，请确认已安装 Chrome')
-}
+const CDP_PORT = Number(process.env.AUDIT_CDP_PORT || 9411)
 
 let failed = 0
 function report(label, ok, detail) {
@@ -50,43 +16,16 @@ function report(label, ok, detail) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? `  | ${detail}` : ''}`)
 }
 
+const consoleErrors = []
+let browser
 try {
-  await waitForDevtools()
-  const target = await (await fetch(`http://127.0.0.1:${PORT}/json/new?about:blank`, { method: 'PUT' })).json()
-  socket = new WebSocket(target.webSocketDebuggerUrl)
-  await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject })
-  socket.onmessage = (event) => {
-    const message = JSON.parse(event.data)
-    if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') {
-      consoleErrors.push(message.params.args.map((arg) => arg.value || arg.description).join(' ').slice(0, 160))
-    }
-    const entry = message.id && pending.get(message.id)
-    if (!entry) return
-    pending.delete(message.id)
-    message.error ? entry.reject(new Error(JSON.stringify(message.error))) : entry.resolve(message.result)
-  }
-  await send('Runtime.enable')
-
-  const evaluate = async (expression) => {
-    const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
-    if (result.exceptionDetails) throw new Error(result.exceptionDetails.text)
-    return result.result.value
-  }
-  const open = async (path, wait = 2200) => {
-    await evaluate(`location.href = ${JSON.stringify(BASE + path)}`)
-    await sleep(wait)
-  }
-  const click = async (selector, wait = 1000) => {
-    const state = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return 'missing'; el.click(); return 'clicked' })()`)
-    await sleep(wait)
-    return state
-  }
-  const clickByText = async (label, wait = 1000) => {
-    const state = await evaluate(`(() => { const el = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.trim() === ${JSON.stringify(label)}); if (!el) return 'missing'; el.click(); return 'clicked' })()`)
-    await sleep(wait)
-    return state
-  }
-  const currentUrl = () => evaluate('location.pathname + location.search')
+  browser = await launchChrome({
+    port: CDP_PORT,
+    baseUrl: BASE,
+    onConsoleError: (line) => consoleErrors.push(line),
+  })
+  const { evaluate, open, click, clickByText, sleep } = browser
+  const currentUrl = () => browser.url()
   const inAppShell = () => evaluate('!!document.querySelector("aside")')
 
   // 公开页导航：每项都应跳到对应路由
@@ -95,13 +34,34 @@ try {
     ['公开导航 · 作品广场', 'nav a[href="/gallery"]', '/gallery'],
     ['公开导航 · 价格与积分', 'nav a[href="/pricing"]', '/pricing'],
     ['公开导航 · 帮助中心', 'nav a[href="/help"]', '/help'],
-    ['公开导航 · 登录', 'a[href="/login"]', '/login'],
-    ['公开导航 · 注册', 'a[href="/register"]', '/register'],
   ]) {
     await open('/')
     const state = await click(selector)
     const url = await currentUrl()
     report(label, state === 'clicked' && url === expected, `${state} -> ${url}（期望 ${expected}）`)
+  }
+
+  // 导航右侧入口要跟登录态一致：有账号体系才劝登录，纯前端（无后端）模式下
+  // 把人引去登录页会撞上「本站未启用账号系统」，所以那里该是「进入创作」。
+  await open('/')
+  const hasAuthEntry = await evaluate('!!document.querySelector(\'header a[href="/register"]\')')
+  const hasStudioEntry = await evaluate('Array.from(document.querySelectorAll("header a")).some((a) => a.innerText.includes("进入创作"))')
+  report('公开导航 · 入口跟随登录态', hasAuthEntry !== hasStudioEntry, `注册入口=${hasAuthEntry} 进入创作=${hasStudioEntry}`)
+  if (hasStudioEntry) {
+    const state = await evaluate('(() => { const el = Array.from(document.querySelectorAll("header a")).find((a) => a.innerText.includes("进入创作")); if (!el) return "missing"; el.click(); return "clicked" })()')
+    await sleep(1000)
+    const url = await currentUrl()
+    report('公开导航 · 进入创作跳转', state === 'clicked' && url === '/studio', `${state} -> ${url}`)
+  } else {
+    for (const [label, selector, expected] of [
+      ['公开导航 · 登录', 'header a[href="/login"]', '/login'],
+      ['公开导航 · 注册', 'header a[href="/register"]', '/register'],
+    ]) {
+      await open('/')
+      const state = await click(selector)
+      const url = await currentUrl()
+      report(label, state === 'clicked' && url === expected, `${state} -> ${url}（期望 ${expected}）`)
+    }
   }
 
   // 应用侧栏：既要跳对，也要留在应用外壳里
@@ -149,15 +109,36 @@ try {
   await open('/classic', 1600)
   report('/classic 回落首页', (await currentUrl()) === '/', await currentUrl())
 
+  // 帮助中心的文案不能介绍已经下线的功能
+  await open('/help', 1800)
+  const helpText = await evaluate('document.body.innerText')
+  report('帮助中心无过期文案', helpText.length > 200 && !helpText.includes('智能体创作') && !helpText.includes('经典界面'), helpText.includes('智能体创作') ? '仍提到「智能体创作」' : helpText.includes('经典界面') ? '仍提到「经典界面」' : '')
+
+  // 认证页在没有后端时必须给出说明，而不是空白页或者被静默弹回创作页
+  await open('/login', 2000)
+  const loginPath = await currentUrl()
+  const loginText = await evaluate('document.body.innerText')
+  if (loginPath === '/login' && loginText.includes('未启用账号系统')) {
+    for (const path of ['/register', '/forgot']) {
+      await open(path, 1800)
+      const text = await evaluate('document.body.innerText')
+      report(`无后端时 ${path} 给出说明`, (await currentUrl()) === path && text.includes('未启用账号系统'), await currentUrl())
+    }
+  } else {
+    report(`认证页说明（当前非纯前端模式，落在 ${loginPath}，跳过）`, true)
+  }
+
+  // 落地页底部 CTA 也要跟登录态一致
+  await open('/')
+  const landingText = await evaluate('document.body.innerText')
+  report('落地页底部 CTA 文案一致', landingText.includes('免费开始创作') || landingText.includes('继续创作'), '')
+
   report('无控制台报错', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' || '))
 } catch (error) {
   failed++
   console.log(`FAIL  脚本执行  | ${error.message}`)
 } finally {
-  try { socket?.close() } catch {}
-  chrome.kill()
-  await sleep(300)
-  try { rmSync(profileDir, { recursive: true, force: true }) } catch {}
+  try { await browser?.close() } catch {}
   console.log(`\n失败 ${failed} 项`)
   process.exit(failed ? 1 : 0)
 }

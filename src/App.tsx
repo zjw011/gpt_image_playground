@@ -19,6 +19,7 @@ import ImageContextMenu from './components/ImageContextMenu'
 import SupportPromptModal from './components/SupportPromptModal'
 import RedeemCardModal from './components/RedeemCardModal'
 import { FavoriteCollectionPickerModal, ManageCollectionsModal } from './components/FavoriteCollections'
+import { PageLoading } from './pages/theme'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
 
 let defaultConfigImportStarted = false
@@ -165,7 +166,7 @@ export default function App() {
     if (backend) document.title = backend.site.title
   }, [backend])
 
-  if (backend === undefined) return null
+  if (backend === undefined) return <PageLoading text="正在进入绘想…" />
 
   // 登录门禁：新版登录/注册页在 /login、/register，未登录直接跳转过去。
   if (backend && backend.accessMode !== 'open' && !backend.authenticated) {

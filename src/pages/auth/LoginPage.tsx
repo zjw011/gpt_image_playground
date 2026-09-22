@@ -6,7 +6,7 @@ import { syncWorkspaceId } from '../../lib/workspace'
 import AuthLayout from './AuthLayout'
 import NoAccountSystemNotice from './NoAccountSystemNotice'
 import { useAuthBootstrap, enterStudio } from './useAuthBootstrap'
-import { TEXT_INPUT, PRIMARY_BTN } from '../theme'
+import { TEXT_INPUT, PRIMARY_BTN, PageLoading } from '../theme'
 import { IconEye, IconLock, IconUser, IconWechat } from '../icons'
 import WechatGate from '../../components/WechatGate'
 
@@ -23,7 +23,7 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false)
   const [wechatOpen, setWechatOpen] = useState(false)
 
-  if (backend === undefined) return null
+  if (backend === undefined) return <PageLoading />
   // 没连后端：说清楚为什么没有登录，而不是把用户静默弹走
   if (!backend) return <NoAccountSystemNotice page="login" />
   // 开放模式 / 已登录：登录页没有意义，直接去创作页
@@ -143,15 +143,15 @@ export default function LoginPage() {
         </button>
       </form>
 
-      {/* 第三方登录：微信有配置才真能点，其余先占位 */}
-      <div className="mt-8">
-        <div className="flex items-center gap-3 text-xs text-[#b3aed0]">
-          <span className="h-px flex-1 bg-[#e4e1f2]" />
-          或使用以下方式登录
-          <span className="h-px flex-1 bg-[#e4e1f2]" />
-        </div>
-        <div className="mt-4 flex justify-center gap-4">
-          {wechat?.enabled && (
+      {/* 第三方登录：微信没配置就整块不渲染，免得留一条空分隔线 */}
+      {wechat?.enabled && (
+        <div className="mt-8">
+          <div className="flex items-center gap-3 text-xs text-[#b3aed0]">
+            <span className="h-px flex-1 bg-[#e4e1f2]" />
+            或使用以下方式登录
+            <span className="h-px flex-1 bg-[#e4e1f2]" />
+          </div>
+          <div className="mt-4 flex justify-center gap-4">
             <button
               type="button"
               onClick={() => setWechatOpen(true)}
@@ -160,9 +160,9 @@ export default function LoginPage() {
             >
               <IconWechat className="h-5 w-5" />
             </button>
-          )}
+          </div>
         </div>
-      </div>
+      )}
 
       {backend.registrationOpen && (
         <p className="mt-8 text-center text-[13px] text-[#8a86ac]">

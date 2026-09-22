@@ -6,7 +6,7 @@ import { syncWorkspaceId } from '../../lib/workspace'
 import AuthLayout from './AuthLayout'
 import NoAccountSystemNotice from './NoAccountSystemNotice'
 import { useAuthBootstrap, enterStudio } from './useAuthBootstrap'
-import { TEXT_INPUT, PRIMARY_BTN } from '../theme'
+import { TEXT_INPUT, PRIMARY_BTN, PageLoading } from '../theme'
 import { IconMail, IconLock, IconUser } from '../icons'
 
 /** 邮箱格式粗筛，真正的校验在服务端 */
@@ -35,7 +35,7 @@ export default function RegisterPage() {
     return () => clearTimeout(timer)
   }, [cooldown])
 
-  if (backend === undefined) return null
+  if (backend === undefined) return <PageLoading />
   // 没连后端：说清楚为什么没有注册，而不是把用户静默弹走
   if (!backend) return <NoAccountSystemNotice page="register" />
   if (backend.accessMode === 'open' || backend.authenticated) {

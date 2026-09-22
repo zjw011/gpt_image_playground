@@ -7,6 +7,12 @@
 - React 19 + Vite + TypeScript 前端应用，使用 Zustand 状态管理、Tailwind CSS 样式。
 - 源码在 `src/`，构建产物由 Vite 生成，不要手动编辑 `dist/`。
 - 包管理器为 npm（有 `package-lock.json`），不要使用 yarn 或 pnpm。
+- 前台页面在 `src/pages/`：公开页（`LandingPage`/`PricingPage`/`HelpPage`）与认证页（`auth/`）不进应用引导流程；
+  应用页（`app/`）统一由 `src/App.tsx` 做 bootstrap 与登录门禁，再由 `app/AppShell.tsx` 提供侧栏外壳。
+- 路由表在 `src/router.tsx`。`vite.config` 的 `base` 是 `'./'`，**不能**直接当 react-router 的 basename——
+  相对 basename 会让整张路由表一条都匹配不上（页面能看但点哪儿都不跳），必须走 `resolveRouterBasename()`。
+- 视觉基座在 `src/pages/theme.tsx`（配色、按钮、输入框、Logo、页脚、加载占位），图标在 `src/pages/icons.tsx`。
+- 插画素材在 `public/art/`，已按实际渲染尺寸压过，替换时别塞回原始大图。
 
 ## 常用命令
 
@@ -17,9 +23,14 @@
 | 构建 | `npm run build` |
 | 运行测试 | `npm test` |
 | 监听测试 | `npm run test:watch` |
+| 菜单跳转审计 | `npm run dev` 后另开终端 `npm run audit:menu` |
+| 托管模式审计 | `npm run audit:server`（会先构建，自己起后端） |
 
 - 测试使用 Vitest，已有多个 `*.test.ts` 文件。
 - 不要新增 lint/formatter 配置文件，除非明确要求。
+- 两个审计脚本用本机 Chrome 的 DevTools 协议真机点击，验证跳转、文案、开关联动。
+  改动导航、页面文案或后台管控相关的逻辑后跑一遍，比肉眼看代码可靠。
+  需要本机装有 Chrome，路径可用 `CHROME_PATH` 覆盖。
 
 ## 代码风格（强制）
 
@@ -158,6 +169,9 @@ else params = baseParams
 - 避免在多处重复定义相同工具函数（如 `blobToDataUrl`），优先复用 `src/lib/` 中已有导出。
 - 新增较大功能时，优先拆成独立模块（lib 函数 + hook + 组件），而非全部塞进现有大文件。
 - 组件超过 800 行时，考虑按逻辑边界拆成子组件或自定义 hook。
+- **用户侧 / 管理员侧的边界**：渠道、模型、密钥一律由管理员在后台维护。托管模式下（`isBackendManagedMode()`）
+  用户侧不能出现任何新增/编辑/删除渠道的入口，设置弹窗里的「API 配置」要换成只读的「我的渠道」，
+  校验提示也不能让用户去补一个他根本填不了的 API Key。只有纯前端（自备密钥）模式才允许用户自己填。
 
 ## 注意事项
 

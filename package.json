@@ -12,7 +12,9 @@
     "server": "node server/index.mjs",
     "start": "npm run build && node server/index.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "audit:menu": "node scripts/audit-menu.mjs",
+    "audit:server": "npm run build && node scripts/audit-server.mjs"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.0",

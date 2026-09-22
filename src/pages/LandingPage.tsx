@@ -1,6 +1,7 @@
 // 首页（未登录落地页）：主视觉插画 + 标语 + 特性卡片 + 作品流。对应设计稿 1。
 import { Link } from 'react-router-dom'
 import { PublicNav, SiteFooter, BRAND_SLOGAN } from './theme'
+import { useInApp } from './useInApp'
 import { IconSparkle, IconBolt, IconCoin, IconShield, IconArrowRight, IconHeart, IconEye } from './icons'
 
 const FEATURES = [
@@ -21,9 +22,13 @@ const SHOWCASE = [
 ]
 
 export default function LandingPage() {
+  // 已登录的话不再劝注册：顶部和底部 CTA 都换成「继续创作」。
+  // inApp 尚未确定（undefined）时按未登录渲染，首屏不空着等一个导航栏。
+  const inApp = useInApp() === true
+
   return (
     <div className="min-h-screen bg-[#f5f4fb] text-[#37335c]">
-      <PublicNav active="home" overlay />
+      <PublicNav active="home" overlay inApp={inApp} />
 
       {/* 主视觉：左侧标语 + 右侧插画 */}
       <section className="relative overflow-hidden">
@@ -116,10 +121,12 @@ export default function LandingPage() {
           <div className="pointer-events-none absolute -left-20 -top-24 h-64 w-64 rounded-full bg-white/10 blur-2xl" />
           <div className="pointer-events-none absolute -bottom-24 -right-16 h-64 w-64 rounded-full bg-white/10 blur-2xl" />
           <h2 className="relative text-2xl font-bold md:text-3xl">每一个想象，都值得被看见</h2>
-          <p className="relative mt-3 text-sm text-white/80">注册即送体验积分，第一张图免费画</p>
-          <Link to="/register" className="relative mt-7 inline-flex items-center gap-2 rounded-full bg-white px-8 py-3.5 text-[15px] font-semibold text-[#6b5ce7] shadow-lg transition hover:bg-[#f5f4fb]">
+          <p className="relative mt-3 text-sm text-white/80">
+            {inApp ? '接着上次的灵感，继续画下去' : '注册即送体验积分，第一张图免费画'}
+          </p>
+          <Link to={inApp ? '/studio' : '/register'} className="relative mt-7 inline-flex items-center gap-2 rounded-full bg-white px-8 py-3.5 text-[15px] font-semibold text-[#6b5ce7] shadow-lg transition hover:bg-[#f5f4fb]">
             <IconEye className="h-4 w-4" />
-            免费开始创作
+            {inApp ? '继续创作' : '免费开始创作'}
           </Link>
         </div>
       </section>

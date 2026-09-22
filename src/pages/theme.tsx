@@ -21,6 +21,18 @@ export const TEXT_INPUT =
 /** 页面浅底 */
 export const PAGE_BG = 'min-h-screen bg-[#f5f4fb] text-[#37335c]'
 
+/** 等后端 bootstrap 时的整页占位：什么都不画会让人以为站点挂了 */
+export function PageLoading({ text = '正在加载…' }: { text?: string }) {
+  return (
+    <div className={PAGE_BG}>
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3">
+        <span className="h-9 w-9 animate-spin rounded-full border-[3px] border-[#e4e1f2] border-t-[#7c6cf6]" />
+        <p className="text-sm text-[#8a86ac]">{text}</p>
+      </div>
+    </div>
+  )
+}
+
 /** 品牌 Logo：星形图标 + 绘想字标。应用内传 to="/studio"，免得点一下跳出应用。 */
 export function Logo({ light, size = 'md', to = '/' }: { light?: boolean, size?: 'md' | 'lg', to?: string }) {
   const box = size === 'lg' ? 'h-11 w-11 rounded-xl text-xl' : 'h-9 w-9 rounded-lg text-base'
@@ -58,8 +70,11 @@ export function SiteFooter() {
   )
 }
 
-/** 公开页顶部导航：首页 / AI 绘画 / 作品广场 / 价格与积分 / 帮助中心 */
-export function PublicNav({ active, overlay }: { active?: string, overlay?: boolean }) {
+/**
+ * 公开页顶部导航：首页 / AI 绘画 / 作品广场 / 价格与积分 / 帮助中心。
+ * inApp 为真说明访问者已经在应用里了，右侧换成「进入创作」——已登录还劝人注册很怪。
+ */
+export function PublicNav({ active, overlay, inApp }: { active?: string, overlay?: boolean, inApp?: boolean }) {
   const items = [
     { label: '首页', to: '/', key: 'home' },
     { label: 'AI 绘画', to: '/studio', key: 'studio' },
@@ -86,15 +101,22 @@ export function PublicNav({ active, overlay }: { active?: string, overlay?: bool
             </NavLink>
           ))}
         </nav>
-        <div className="flex items-center gap-2.5">
-          <Link to="/login" className="rounded-full px-4 py-2 text-sm font-medium text-[#6f6a94] transition hover:text-[#37335c]">
-            登录
-          </Link>
-          <Link to="/register" className={`${PRIMARY_BTN} !px-5 !py-2`}>
+        {inApp ? (
+          <Link to="/studio" className={`${PRIMARY_BTN} !px-5 !py-2`}>
             <IconSparkle className="h-4 w-4" />
-            注册
+            进入创作
           </Link>
-        </div>
+        ) : (
+          <div className="flex items-center gap-2.5">
+            <Link to="/login" className="rounded-full px-4 py-2 text-sm font-medium text-[#6f6a94] transition hover:text-[#37335c]">
+              登录
+            </Link>
+            <Link to="/register" className={`${PRIMARY_BTN} !px-5 !py-2`}>
+              <IconSparkle className="h-4 w-4" />
+              注册
+            </Link>
+          </div>
+        )}
       </div>
     </header>
   )

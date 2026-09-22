@@ -1,11 +1,12 @@
 // 积分充值页。对应设计稿 9：积分档位 + 支付方式 + 卡密兑换入口。
 // 在线支付是预留入口（接口就绪前走卡密兑换）。
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { getCreditsConfig } from '../../lib/backend'
 import { useCreditsStore } from '../../lib/creditsStore'
 import { useStore } from '../../store'
 import AppShell from './AppShell'
-import { IconCheck, IconCoin, IconWechat, IconWallet } from '../icons'
+import { IconArrowRight, IconCheck, IconCoin, IconWechat, IconWallet } from '../icons'
 
 /** 后台没配套餐时的兜底展示 */
 const FALLBACK_PACKS = [
@@ -20,11 +21,38 @@ export default function RechargePage() {
   const view = useCreditsStore((s) => s.view)
   const openRedeem = useCreditsStore((s) => s.openRedeem)
   const showToast = useStore((s) => s.showToast)
-  const packs = credits && credits.packs.length > 0 ? credits.packs : FALLBACK_PACKS
+
+  // 后台配了套餐就按后台的价格展示；没配只给一组参考档位，并把按钮换成卡密引导，
+  // 免得用户对着一个买不到的价签点半天。
+  const configuredPacks = credits ? credits.packs : []
+  const hasPacks = configuredPacks.length > 0
+  const packs = hasPacks ? configuredPacks : FALLBACK_PACKS
   const [selected, setSelected] = useState(() => Math.min(2, packs.length - 1))
   const [payMethod, setPayMethod] = useState<'wechat' | 'alipay'>('wechat')
 
   const pack = packs[selected]
+
+  // 本站没开积分制：这张页面整页都没有意义，直接说清楚并把人送回创作页。
+  if (!credits) {
+    return (
+      <AppShell title="积分充值">
+        <div className="flex flex-col items-center rounded-3xl border border-[#eceaf6] bg-white py-24 text-center">
+          <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#efedfd] text-[#7c6cf6]">
+            <IconCoin className="h-6 w-6" />
+          </span>
+          <p className="mt-4 text-[15px] font-semibold">本站未开启积分制</p>
+          <p className="mt-1.5 text-sm text-[#8a86ac]">当前可以直接创作，不需要消耗积分</p>
+          <Link
+            to="/studio"
+            className="mt-6 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] px-7 py-3 text-sm font-semibold text-white shadow-lg shadow-[#7c6cf6]/30 transition hover:from-[#6b5ce7] hover:to-[#9678f5]"
+          >
+            开始创作
+            <IconArrowRight className="h-4 w-4" />
+          </Link>
+        </div>
+      </AppShell>
+    )
+  }
 
   const pay = () => {
     // 在线支付接口还没接，先指向卡密兑换，别把用户堵死在死按钮上
@@ -39,7 +67,7 @@ export default function RechargePage() {
           <div className="p-7">
             <h2 className="text-lg font-bold">积分充值</h2>
             <p className="mt-1 text-[13px] text-[#8a86ac]">
-              购买积分，解锁更多创作可能
+              {hasPacks ? '购买积分，解锁更多创作可能' : '积分档位仅供参考，实际以卡密面值为准'}
               {view ? ` · 当前余额 ${view.available.toLocaleString()} 积分` : ''}
             </p>
 
@@ -107,7 +135,7 @@ export default function RechargePage() {
               onClick={pay}
               className="mt-7 w-full rounded-2xl bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] py-4 text-[15px] font-semibold text-white shadow-xl shadow-[#7c6cf6]/30 transition hover:from-[#6b5ce7] hover:to-[#9678f5]"
             >
-              立即支付 {pack?.price || ''}
+              {hasPacks ? `立即支付 ${pack?.price || ''}`.trim() : '用卡密兑换积分'}
             </button>
 
             <div className="mt-4 flex items-center justify-center gap-4 text-xs text-[#a5a1c4]">
