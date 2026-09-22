@@ -290,7 +290,7 @@ describe('getAccessToken', () => {
 describe('describeErrcode', () => {
   it('已知错误码翻成中文，未知错误码带上原始 errmsg', () => {
     expect(describeErrcode(40013)).toMatch(/AppID/)
-    expect(describeErrcode(48001)).toMatch(/订阅号/)
+    expect(describeErrcode(48001)).toMatch(/未认证/)
     expect(describeErrcode(99999, 'something odd')).toMatch(/something odd/)
   })
 })

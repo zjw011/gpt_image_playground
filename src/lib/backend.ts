@@ -95,7 +95,7 @@ export type BackendCredits = BackendCreditsConfig & Partial<BackendCreditsView>
 /** 登录页需要知道的微信配置。凭据（AppSecret / Token）一律不下发。 */
 export interface BackendWechatConfig {
   enabled: boolean
-  /** code = 扫码关注后回 6 位验证码；qrcode = 带参数二维码扫码即登录（需认证公众号）。 */
+  /** code = 扫码关注后回 6 位验证码；qrcode = 带参数二维码扫码即登录（仅微信认证服务号可用）。 */
   loginMode: 'code' | 'qrcode'
   hasQrcodeImage: boolean
 }

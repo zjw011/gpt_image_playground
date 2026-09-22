@@ -101,7 +101,7 @@ const WECHAT_LOGIN_MODES = [
   {
     id: 'qrcode',
     title: '带参数二维码',
-    detail: '生成一张临时二维码，扫码即登录，用户不用回消息。但「生成带参数的二维码」接口只有已认证的公众号才能调，调用失败会自动退回验证码方式。',
+    detail: '生成一张临时二维码，扫码即登录，用户不用回消息。但「生成带参数的二维码」接口只对微信认证的<b>服务号</b>开放，个人主体的订阅号即使做完认证也调不了（个人注册不了服务号）；调用失败会自动退回验证码方式。',
   },
 ]
 
@@ -1653,10 +1653,11 @@ function renderWechatView() {
       <p class="hint">不同类型能调的接口差别很大，先确认你是哪一种，再选登录方式。</p>
       <div class="stats">
         <div class="stat"><strong class="accent">验证码</strong><span>任何类型都能用</span></div>
-        <div class="stat"><strong class="warn">带参数二维码</strong><span>仅限已认证公众号</span></div>
-        <div class="stat"><strong class="warn">昵称头像</strong><span>仅限已认证服务号</span></div>
+        <div class="stat"><strong class="bad">带参数二维码</strong><span>仅限认证服务号</span></div>
+        <div class="stat"><strong class="ok">昵称头像</strong><span>认证订阅号即可</span></div>
       </div>
       <p class="hint" style="margin-top:14px">本方案对<b>未认证订阅号</b>同样可用：验证码方式只需要"用户能给你发消息"这一件事，不碰任何需要认证的接口，也不需要配置 IP 白名单。拉取昵称头像失败时会退成「微信用户 1234」这样的占位名，不影响登录。</p>
+      <p class="hint">注意<b>带参数二维码</b>那条路对个人主体是走不通的：该接口只对微信认证服务号开放，而个人主体只能注册订阅号、注册不了服务号，两种类型还不可互转——<b>去做个人认证也解锁不了它</b>。个人认证真正能给到本站点的好处是「获取用户基本信息」，也就是能存下真实昵称和头像。想用扫码自动登录，只能另注册一个企业主体的服务号。</p>
     </div>
 
     <div class="panel">
