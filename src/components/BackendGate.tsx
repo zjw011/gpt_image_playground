@@ -19,6 +19,8 @@ interface Props {
   /** 注册的详细可用状态：要不要邀请码、发信配好了没。 */
   registration: BackendRegistration
   credits: BackendCredits
+  /** 已启用的账号数。够多才拿出来当社会认同，太少反而是反效果。 */
+  userCount: number
   onUnlocked: () => void
 }
 
@@ -29,11 +31,38 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 const MIN_PASSWORD_LENGTH = 6
 
-/** 左侧品牌区的能力清单。文案说"能干什么"，不说技术细节。 */
+/**
+ * 社会认同只在人数过得去时才说。写"已有 2 位创作者加入"比不写更劝退，
+ * 所以这里设了个下限——宁可少一句文案，不要给人"这站没人用"的第一印象。
+ */
+const SOCIAL_PROOF_MIN_USERS = 10
+
+/**
+ * 左侧品牌区的能力清单。
+ * 每条的前半句是用户能拿到的结果，后半句才是支撑它的事实——先讲收益，再讲原理。
+ * 图标用一次性内联 SVG：只有 4 个、形状简单，为此引一个图标库不划算。
+ */
 const FEATURES = [
-  { title: '一句话出图', detail: '描述你想要什么就行，支持参考图改图、批量生成。' },
-  { title: '作品只属于你', detail: '历史记录保存在你自己的浏览器里，站方不存你的作品。' },
-  { title: '多线路保障', detail: '后台配了多条生图通道，一条不稳会自动切换，你不用管。' },
+  {
+    title: '一句话出图',
+    detail: '描述你想要的画面就行，几十秒拿到成品图。',
+    icon: 'M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8L12 3z',
+  },
+  {
+    title: '改图 · 批量 · 多轮',
+    detail: '参考图改造、一次出多张、边聊边改，都在同一个输入框里完成。',
+    icon: 'M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5',
+  },
+  {
+    title: '失败不扣积分',
+    detail: '出图成功才结算，失败自动把积分全额退回，试错没有成本。',
+    icon: 'M12 3l7 3v6c0 4.2-3 7.4-7 9-4-1.6-7-4.8-7-9V6l7-3zM9 12l2 2 4-4',
+  },
+  {
+    title: '作品只属于你',
+    detail: '历史记录存在你自己的浏览器里，站方不保存、也看不到你的图。',
+    icon: 'M5 11h14v9H5zM9 11V8a3 3 0 016 0v3',
+  },
 ]
 
 /**
@@ -53,6 +82,7 @@ export default function BackendGate({
   registrationOpen,
   registration,
   credits,
+  userCount,
   onUnlocked,
 }: Props) {
   const accounts = accessMode === 'accounts'
@@ -85,6 +115,9 @@ export default function BackendGate({
   const emailReady = !needsEmail || EMAIL_PATTERN.test(email.trim())
   const registrationUsable = registrationOpen && registration.emailVerification
   const bonus = credits.enabled ? credits.signupBonus : 0
+  const costPerImage = credits.enabled ? credits.costPerImage : 0
+  const packs = credits.enabled ? credits.packs : []
+  const showSocialProof = userCount >= SOCIAL_PROOF_MIN_USERS
 
   const canSubmit = Boolean(password.trim())
     && password.length >= (registering || resetting ? MIN_PASSWORD_LENGTH : 1)
@@ -172,9 +205,11 @@ export default function BackendGate({
   const description = resetting
     ? '输入注册时用的邮箱，我们把验证码发过去，验证后就能设置新密码。'
     : registering
-      ? '注册需要验证邮箱，之后用这个邮箱对应的账号登录。'
+      ? bonus > 0
+        ? `邮箱收个验证码就能开通，注册立刻到账 ${bonus} 积分。`
+        : '填个邮箱收验证码就能开通，一分钟搞定。'
       : accounts
-        ? '用注册时的账号登录，你的作品只有自己能看到。'
+        ? '用注册时的用户名和密码登录。'
         : '这个站点需要访问口令，请向管理员索取。'
 
   const switchLink =
@@ -183,7 +218,7 @@ export default function BackendGate({
   return (
     <div className="flex min-h-screen bg-gray-50 dark:bg-[#101114]">
       {/* 宽屏品牌区。窄屏隐藏，避免用户进来先滚一屏才看到表单。 */}
-      <aside className="relative hidden w-[46%] max-w-[560px] flex-col justify-between overflow-hidden bg-gradient-to-br from-blue-600 via-blue-500 to-indigo-600 p-11 lg:flex">
+      <aside className="relative hidden w-[50%] max-w-[620px] flex-col justify-between overflow-hidden bg-gradient-to-br from-blue-600 via-blue-500 to-indigo-600 p-11 lg:flex">
         {/* 两个大光斑，纯装饰，不做交互。 */}
         <div className="pointer-events-none absolute -right-24 -top-24 h-80 w-80 rounded-full bg-white/10 blur-2xl" />
         <div className="pointer-events-none absolute -bottom-32 -left-16 h-96 w-96 rounded-full bg-indigo-400/20 blur-3xl" />
@@ -192,43 +227,82 @@ export default function BackendGate({
           <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/15 text-xl font-semibold text-white ring-1 ring-inset ring-white/25 backdrop-blur">
             {title.slice(0, 1)}
           </span>
-          <span className="text-lg font-semibold tracking-wide text-white">{title}</span>
+          <div>
+            <span className="block text-lg font-semibold tracking-wide text-white">{title}</span>
+            <span className="block text-[10px] tracking-[0.22em] text-white/50">AI IMAGE STUDIO</span>
+          </div>
         </div>
 
-        <div className="relative mt-12">
-          <h2 className="text-[26px] font-semibold leading-snug text-white">
-            AI 图片创作工作台
+        <div className="relative mt-10">
+          <h2 className="text-[30px] font-semibold leading-[1.3] text-white">
+            一句话，
+            <br />
+            就是一张成品图。
           </h2>
-          <p className="mt-3 text-sm leading-7 text-white/75">
-            把想法写成一句话，剩下的交给 {title}。
+          <p className="mt-4 text-sm leading-7 text-white/70">
+            不用学提示词工程，也不用装设计软件。把需求说清楚，剩下的交给 {title}。
           </p>
 
           <ul className="mt-9 space-y-5">
             {FEATURES.map((feature) => (
-              <li key={feature.title} className="flex gap-3">
-                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/20 text-[11px] text-white">
-                  ✓
+              <li key={feature.title} className="flex gap-3.5">
+                <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/15 ring-1 ring-inset ring-white/20">
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-4 w-4 text-white"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d={feature.icon} />
+                  </svg>
                 </span>
                 <span>
                   <strong className="block text-sm font-medium text-white">{feature.title}</strong>
-                  <span className="mt-1 block text-[13px] leading-6 text-white/65">{feature.detail}</span>
+                  <span className="mt-1 block text-[13px] leading-6 text-white/60">{feature.detail}</span>
                 </span>
               </li>
             ))}
           </ul>
         </div>
 
-        {/* 拉新钩子：只在后台确实在送积分时才说，不然就是骗人。 */}
-        <div className="relative mt-12">
-          {bonus > 0 ? (
-            <div className="inline-flex items-baseline gap-2 rounded-2xl bg-white/15 px-5 py-3.5 ring-1 ring-inset ring-white/20 backdrop-blur">
-              <span className="text-sm text-white/80">注册即送</span>
-              <span className="text-2xl font-semibold text-white">{bonus}</span>
-              <span className="text-sm text-white/80">积分</span>
+        {/* 计费卡：只在后台确实开了积分制时才说，不然就是骗人。 */}
+        <div className="relative mt-10">
+          {credits.enabled ? (
+            <div className="rounded-2xl bg-white/12 p-5 ring-1 ring-inset ring-white/20 backdrop-blur">
+              {bonus > 0 ? (
+                <div className="flex items-baseline gap-2">
+                  <span className="text-sm text-white/75">注册即送</span>
+                  <span className="text-3xl font-semibold leading-none text-white">{bonus}</span>
+                  <span className="text-sm text-white/75">积分</span>
+                </div>
+              ) : (
+                <p className="text-sm font-medium text-white">按量计费，用多少花多少</p>
+              )}
+              <p className="mt-2 text-xs leading-6 text-white/55">
+                每张图 {costPerImage} 积分起 · 出图失败自动退分
+              </p>
+              {/* 套餐只是价目表，最多摆 4 个，多了会挤成一片反而看不清。 */}
+              {packs.length > 0 && (
+                <div className="mt-3.5 flex flex-wrap gap-1.5">
+                  {packs.slice(0, 4).map((pack) => (
+                    <span
+                      key={`${pack.name}-${pack.credits}`}
+                      className="rounded-lg bg-white/10 px-2.5 py-1 text-[11px] text-white/80 ring-1 ring-inset ring-white/15"
+                    >
+                      {pack.name}
+                      {pack.price ? ` ${pack.price}` : ''}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           ) : (
             <p className="text-xs leading-6 text-white/50">
-              账号仅用于区分各自的生图记录，站方不收集你的作品。
+              账号用于区分各自的生图记录与历史，站方不保存你的作品。
             </p>
           )}
         </div>
@@ -394,6 +468,18 @@ export default function BackendGate({
                       : '进入'}
             </button>
           </form>
+
+          {/* 按钮下方一行短说明，回答"我凭什么把这个邮箱交给你"。 */}
+          <p className="mt-4 text-center text-[11px] leading-5 text-gray-400 dark:text-gray-500">
+            邮箱只用于登录与找回密码
+            {credits.enabled ? ' · 出图失败不扣积分' : ''}
+          </p>
+
+          {showSocialProof && (
+            <p className="mt-2 text-center text-[11px] text-gray-400 dark:text-gray-500">
+              已有 {userCount} 位创作者加入
+            </p>
+          )}
 
           <div className="mt-5 flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
             {registrationUsable && !registering && !resetting && (

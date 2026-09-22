@@ -195,6 +195,7 @@ export default function App() {
         registrationOpen={backend.registrationOpen}
         registration={backend.registration}
         credits={backend.credits}
+        userCount={backend.userCount}
         onUnlocked={() => window.location.reload()}
       />
     )
