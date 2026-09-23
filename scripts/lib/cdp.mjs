@@ -21,6 +21,9 @@ export async function launchChrome({ port, chromePath, onConsoleError, baseUrl }
   const profileDir = mkdtempSync(join(tmpdir(), 'cdp-audit-'))
   const child = spawn(chrome, [
     '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+    // 审计永远指向本机端口，绝不能被系统代理劫持——代理一挂，所有页面都会变成
+    // chrome-error://chromewebdata/，脚本只会看到"标题是 127.0.0.1 的空页面"。
+    '--no-proxy-server',
     `--remote-debugging-port=${port}`, `--user-data-dir=${profileDir}`, 'about:blank',
   ], { stdio: 'ignore' })
 

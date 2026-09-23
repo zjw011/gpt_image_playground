@@ -16,7 +16,6 @@ import ConfirmDialog from './components/ConfirmDialog'
 import Toast from './components/Toast'
 import MaskEditorModal from './components/MaskEditorModal'
 import ImageContextMenu from './components/ImageContextMenu'
-import SupportPromptModal from './components/SupportPromptModal'
 import RedeemCardModal from './components/RedeemCardModal'
 import { FavoriteCollectionPickerModal, ManageCollectionsModal } from './components/FavoriteCollections'
 import { PageLoading } from './pages/theme'
@@ -180,7 +179,6 @@ export default function App() {
       <Lightbox />
       <SettingsModal />
       <ConfirmDialog />
-      <SupportPromptModal />
       <RedeemCardModal />
       <FavoriteCollectionPickerModal />
       <ManageCollectionsModal />

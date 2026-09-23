@@ -49,22 +49,14 @@ export function Logo({ light, size = 'md', to = '/' }: { light?: boolean, size?:
   )
 }
 
-/** 公开页底部：品牌标语 + 开源署名。署名是 MIT 许可要求保留的，别删。 */
+/** 公开页底部：品牌标语 + 作者署名。
+ *  MIT 许可的版权与许可声明保留在 LICENSE 文件里（这是许可要求的保留位置），界面上不放上游署名。 */
 export function SiteFooter() {
   return (
     <footer className="border-t border-[#eceaf6] py-8 text-center text-xs text-[#a5a1c4]">
       <p>绘想 · 用 AI 绘出无限想象</p>
-      <p className="mt-2">
-        基于开源项目{' '}
-        <a
-          href="https://github.com/CookSleep/gpt_image_playground"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-[#8a86ac] underline underline-offset-2 transition hover:text-[#6b5ce7]"
-        >
-          GPT Image Playground
-        </a>
-        {' '}(@CookSleep, MIT License) 修改
+      <p className="mt-2 text-[13px] tracking-wide text-[#8a86ac]">
+        by <span className="font-semibold text-[#6b5ce7]">jwei</span>
       </p>
     </footer>
   )

@@ -24,9 +24,6 @@ export interface PersistedAppState {
   agentAssetPanelCollapsed: boolean
   favoriteCollections: FavoriteCollection[]
   defaultFavoriteCollectionId: string | null
-  supportPromptDismissed: boolean
-  supportPromptOpen: boolean
-  supportPromptSkippedForImportedData: boolean
 }
 
 type PersistedStateSource = Omit<PersistedAppState, 'prompt' | 'inputImages' | 'agentConversations'> & {
@@ -117,9 +114,6 @@ export function createPersistedState(state: PersistedStateSource, includeLegacyA
     agentAssetPanelCollapsed: state.agentAssetPanelCollapsed,
     favoriteCollections: state.favoriteCollections,
     defaultFavoriteCollectionId: state.defaultFavoriteCollectionId,
-    supportPromptDismissed: state.supportPromptDismissed,
-    supportPromptOpen: state.supportPromptOpen,
-    supportPromptSkippedForImportedData: state.supportPromptSkippedForImportedData,
   }
 }
 
@@ -217,9 +211,6 @@ export function normalizePersistedState(
       agentAssetPanelCollapsed: Boolean(persistedState.agentAssetPanelCollapsed),
       favoriteCollections,
       defaultFavoriteCollectionId: resolveDefaultFavoriteCollectionId(favoriteCollections, preferredDefaultFavoriteCollectionId),
-      supportPromptDismissed: Boolean(persistedState.supportPromptDismissed),
-      supportPromptOpen: Boolean(persistedState.supportPromptOpen),
-      supportPromptSkippedForImportedData: Boolean(persistedState.supportPromptSkippedForImportedData),
       prompt: restoredAgentDraft ? restoredAgentDraft.prompt : galleryInputDraft?.prompt ?? '',
       inputImages: restoredAgentDraft ? restoredAgentDraft.inputImages : galleryInputDraft?.inputImages ?? [],
       maskDraft: restoredAgentDraft ? restoredAgentDraft.maskDraft : galleryInputDraft?.maskDraft ?? null,
