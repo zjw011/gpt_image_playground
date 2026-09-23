@@ -5,6 +5,7 @@ import { requestEmailCode, submitResetPassword } from '../../lib/backend'
 import AuthLayout from './AuthLayout'
 import NoAccountSystemNotice from './NoAccountSystemNotice'
 import { useAuthBootstrap } from './useAuthBootstrap'
+import EmailSentNotice from './EmailSentNotice'
 import { TEXT_INPUT, PRIMARY_BTN, PageLoading } from '../theme'
 import { IconArrowLeft, IconLock, IconMail, IconEye } from '../icons'
 
@@ -18,7 +19,7 @@ export default function ForgotPasswordPage() {
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [sentTo, setSentTo] = useState<string | null>(null)
   const [done, setDone] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [sending, setSending] = useState(false)
@@ -48,11 +49,10 @@ export default function ForgotPasswordPage() {
     if (!emailReady || sending || cooldown > 0 || blocked) return
     setSending(true)
     setError(null)
-    setNotice(null)
     try {
       const result = await requestEmailCode({ email: email.trim(), purpose: 'reset' })
       setCooldown(result.resendAfterSeconds ?? 60)
-      setNotice(`验证码已发到 ${email.trim()}，请查收。`)
+      setSentTo(email.trim())
     } catch (err) {
       const retryAfter = (err as { retryAfterSeconds?: number }).retryAfterSeconds
       if (typeof retryAfter === 'number' && retryAfter > 0) setCooldown(retryAfter)
@@ -176,7 +176,7 @@ export default function ForgotPasswordPage() {
             </div>
           </label>
 
-          {notice && <p className="mt-5 rounded-xl bg-emerald-50 px-4 py-3 text-[12.5px] leading-5 text-emerald-700">{notice}</p>}
+          {sentTo && <EmailSentNotice email={sentTo} />}
           {error && <p className="mt-5 rounded-xl bg-red-50 px-4 py-3 text-[12.5px] leading-5 text-red-600">{error}</p>}
 
           <button type="submit" disabled={!canSubmit} className={`${PRIMARY_BTN} mt-7 w-full !py-3.5`}>

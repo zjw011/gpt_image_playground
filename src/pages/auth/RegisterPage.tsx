@@ -5,6 +5,7 @@ import { requestEmailCode, submitRegister, readInviteFromUrl } from '../../lib/b
 import { syncWorkspaceId } from '../../lib/workspace'
 import AuthLayout from './AuthLayout'
 import NoAccountSystemNotice from './NoAccountSystemNotice'
+import EmailSentNotice from './EmailSentNotice'
 import { useAuthBootstrap, enterStudio } from './useAuthBootstrap'
 import { TEXT_INPUT, PRIMARY_BTN, PageLoading } from '../theme'
 import { IconMail, IconLock, IconUser, IconEye } from '../icons'
@@ -25,7 +26,7 @@ export default function RegisterPage() {
   const [inviteCode, setInviteCode] = useState(invite)
   const [agreed, setAgreed] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [sentTo, setSentTo] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [sending, setSending] = useState(false)
   const [cooldown, setCooldown] = useState(0)
@@ -64,14 +65,14 @@ export default function RegisterPage() {
     if (!emailReady || sending || cooldown > 0 || blocked) return
     setSending(true)
     setError(null)
-    setNotice(null)
     try {
       const result = await requestEmailCode({ email: email.trim(), purpose: 'register' })
       setCooldown(result.resendAfterSeconds ?? 60)
-      setNotice(`验证码已发到 ${email.trim()}，请查收。没看到的话翻一下垃圾邮件。`)
+      setSentTo(email.trim())
     } catch (err) {
       const retryAfter = (err as { retryAfterSeconds?: number }).retryAfterSeconds
       if (typeof retryAfter === 'number' && retryAfter > 0) setCooldown(retryAfter)
+      setSentTo(null)
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setSending(false)
@@ -225,7 +226,7 @@ export default function RegisterPage() {
           </span>
         </label>
 
-        {notice && <p className="mt-5 rounded-xl bg-emerald-50 px-4 py-3 text-[12.5px] leading-5 text-emerald-700">{notice}</p>}
+        {sentTo && <EmailSentNotice email={sentTo} />}
         {error && <p className="mt-5 rounded-xl bg-red-50 px-4 py-3 text-[12.5px] leading-5 text-red-600">{error}</p>}
 
         <button type="submit" disabled={!canSubmit} className={`${PRIMARY_BTN} mt-7 w-full !py-3.5`}>
