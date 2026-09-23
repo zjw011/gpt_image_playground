@@ -654,14 +654,21 @@ export async function handleAdminRoute(req, res, ctx) {
     const query = new URLSearchParams(ctx.search ?? '')
     const config = getConfig()
     const userNames = new Map(config.users.map((user) => [user.id, user.wechatNickname || user.displayName || user.username]))
+    const payload = listCards({
+      status: query.get('status') ?? '',
+      batch: query.get('batch') ?? '',
+      keyword: query.get('keyword') ?? '',
+      limit: Number(query.get('limit')) || 100,
+      offset: Number(query.get('offset')) || 0,
+    })
+    // 列表要直接显示"被谁用了"，不能让前端再拿 userId 去对一遍名册。
+    const cards = payload.cards.map((card) => ({
+      ...card,
+      usedByName: card.usedBy ? (userNames.get(card.usedBy) ?? '（已删除的用户）') : '',
+    }))
     return sendJson(res, 200, {
-      ...listCards({
-        status: query.get('status') ?? '',
-        batch: query.get('batch') ?? '',
-        keyword: query.get('keyword') ?? '',
-        limit: Number(query.get('limit')) || 100,
-        offset: Number(query.get('offset')) || 0,
-      }),
+      ...payload,
+      cards,
       batches: listBatches(),
       overview: cardsOverview(),
       recentRedeems: recentRedeems(30, userNames),

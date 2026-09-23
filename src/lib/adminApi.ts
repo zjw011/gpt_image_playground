@@ -179,11 +179,86 @@ export function setUserBalance(userId: string, balance: number, note = '管理�
 }
 
 // ===== 卡密 =====
-export function listCards(query = '') {
-  return request<Record<string, unknown>>(`/api/admin/cards${query ? `?${query}` : ''}`)
+export type CardStatus = 'unused' | 'used' | 'void'
+
+export interface AdminCardRow {
+  code: string
+  credits: number
+  batch: string
+  note: string
+  status: CardStatus
+  createdAt: number
+  usedAt: number
+  usedBy: string
+  /** 兑换者昵称，服务端已按名册映射好；未兑换为空串 */
+  usedByName?: string
 }
-export function generateCards(body: Record<string, unknown>) {
-  return request<Record<string, unknown>>('/api/admin/cards', { method: 'POST', body: JSON.stringify(body) })
+
+export interface CardBatch {
+  id: string
+  credits: number
+  count: number
+  note: string
+  createdAt: number
+  total: number
+  used: number
+  unused: number
+  voided: number
+}
+
+export interface CardsOverview {
+  total: number
+  unused: number
+  used: number
+  void: number
+  redeemedCredits: number
+  unusedCredits: number
+  batches: number
+}
+
+export interface CardTable {
+  total: number
+  limit: number
+  offset: number
+  cards: AdminCardRow[]
+  batches: CardBatch[]
+  overview: CardsOverview
+}
+
+export function getCardTable(params: { status?: string, batch?: string, keyword?: string, limit?: number, offset?: number }) {
+  const query = new URLSearchParams()
+  if (params.status) query.set('status', params.status)
+  if (params.batch) query.set('batch', params.batch)
+  if (params.keyword) query.set('keyword', params.keyword)
+  query.set('limit', String(params.limit ?? 50))
+  query.set('offset', String(params.offset ?? 0))
+  return request<CardTable>(`/api/admin/cards?${query.toString()}`)
+}
+
+export function generateCards(body: { credits: number, count: number, note?: string }) {
+  return request<{ batchId: string, credits: number, count: number, codes: string[], overview: CardsOverview }>('/api/admin/cards', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+/** 作废：只能作废未使用的。传 batch 则整批作废。 */
+export function voidCards(codes: string[]) {
+  return request<{ changed: number, overview: CardsOverview }>('/api/admin/cards/void', { method: 'POST', body: JSON.stringify({ codes }) })
+}
+export function voidCardBatch(batch: string) {
+  return request<{ changed: number, overview: CardsOverview }>('/api/admin/cards/void', { method: 'POST', body: JSON.stringify({ batch }) })
+}
+/** 恢复：把已作废的卡重新放回未使用。 */
+export function restoreCards(codes: string[]) {
+  return request<{ changed: number, overview: CardsOverview }>('/api/admin/cards/restore', { method: 'POST', body: JSON.stringify({ codes }) })
+}
+/** 删除：已兑换的卡是财务凭证，服务端会跳过并在结果里回报 skipped 数。 */
+export function deleteCards(codes: string[]) {
+  return request<{ removed: number, skipped: number, overview: CardsOverview }>('/api/admin/cards/delete', { method: 'POST', body: JSON.stringify({ codes }) })
+}
+export function deleteCardBatch(batch: string) {
+  return request<{ removed: number, overview: CardsOverview }>('/api/admin/cards/delete', { method: 'POST', body: JSON.stringify({ batch }) })
 }
 
 // ===== 微信 / SMTP =====

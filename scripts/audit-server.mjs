@@ -126,6 +126,14 @@ try {
     console.log(`\n【${scenario.name}】`)
     for (const check of scenario.checks) {
       await browser.open(check.path, 2200)
+      // 先等关键文案出现再读：冷启动/慢网时固定 sleep 会把"还没渲染完"误报成失败
+      if (check.has?.length) {
+        for (let i = 0; i < 40; i++) {
+          const current = await browser.text()
+          if (check.has.every((keyword) => current.includes(keyword))) break
+          await sleep(200)
+        }
+      }
       // 默认拿整页文本；给了 probe 就读指定元素的属性（placeholder 之类不在 innerText 里）
       const text = check.probe ? String(await browser.evaluate(check.probe)) : await browser.text()
       const missing = (check.has ?? []).filter((keyword) => !text.includes(keyword))
