@@ -177,14 +177,19 @@ export default function LoginPage() {
         )}
       </div>
 
-      {backend.registrationOpen && (
+      {backend.registrationOpen ? (
         <p className="mt-8 text-center text-[13px] text-[#8a86ac]">
           还没有账号？
           <Link to="/register" className="ml-1 font-semibold text-[#6b5ce7] transition hover:text-[#5a4cd6]">
             立即注册
           </Link>
         </p>
-      )}
+      ) : accounts ? (
+        // 注册开关没开时不显示链接，但也不能什么都不说——否则看起来像"功能丢了"。
+        <p className="mt-8 text-center text-[13px] text-[#8a86ac]">
+          本站暂未开放自助注册，如需账号请联系站长开通。
+        </p>
+      ) : null}
     </AuthLayout>
   )
 }

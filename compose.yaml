@@ -23,6 +23,9 @@ services:
       # 登录入口和普通用户是同一个，进去后前端按 role 自动跳管理后台。
       GIP_ADMIN_USER: '${GIP_ADMIN_USER:-xiaole}'
       GIP_ADMIN_PASSWORD: '${GIP_ADMIN_PASSWORD:-}'
+      # 逃生门：设为 1 时强制把站长账号密码重置成 GIP_ADMIN_PASSWORD 的值
+      # （同名账号已存在但密码对不上/被锁死时用）。重置完记得改回 0 或删掉这行。
+      GIP_ADMIN_PASSWORD_RESET: '${GIP_ADMIN_PASSWORD_RESET:-}'
       # 访客口令，留空则不启用门禁（任何人都能打开前端使用你配置的渠道）。
       GIP_GUEST_PASSWORD: '${GIP_GUEST_PASSWORD:-}'
     volumes:

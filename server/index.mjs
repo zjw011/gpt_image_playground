@@ -68,35 +68,68 @@ initCards(DATA_DIR)
 // 首次启动可用环境变量播种站长账号（role=admin），省掉手动初始化步骤。
 // 后台并入主前端后，管理员就是一条普通用户记录——凭用户名 + 密码在同一个入口登录，
 // 前端拿到 role 后自动进 /admin。所以这里创建的是账号，不是"管理员口令"。
-// 只创建不覆盖：运维在后台改过密码之后，不该被环境变量顶回去。
+//
+// 账号已存在时分两种情况：
+//   - 默认只做"扶正"（提权成 admin + 启用），不动密码——运维在后台改过密码后，
+//     不该被环境变量顶回去；
+//   - 设了 GIP_ADMIN_PASSWORD_RESET=1 则强制把密码重置成环境变量里的值——
+//     这是账号被锁死时的逃生门（比如忘了密码、或同名账号是别人注册走的）。
 {
   const initialAdminUser = (process.env.GIP_ADMIN_USER ?? 'admin').trim()
   const initialAdminPassword = process.env.GIP_ADMIN_PASSWORD ?? ''
+  const forceReset = process.env.GIP_ADMIN_PASSWORD_RESET === '1'
   if (initialAdminPassword) {
     if (!isValidUsername(initialAdminUser)) {
       console.error('GIP_ADMIN_USER 不合法（字母或数字开头，2-32 位），已忽略。')
     } else if (initialAdminPassword.length < MIN_USER_PASSWORD_LENGTH) {
       console.error(`GIP_ADMIN_PASSWORD 至少需要 ${MIN_USER_PASSWORD_LENGTH} 个字符，已忽略。`)
-    } else if (findUserByUsername(initialAdminUser)) {
-      console.log(`站长账号「${initialAdminUser}」已存在，跳过创建。`)
     } else {
-      const now = Date.now()
-      const id = generateUserId()
-      updateConfig((next) => {
-        next.users.push(normalizeUser({
-          id,
-          username: initialAdminUser,
-          displayName: initialAdminUser,
-          passwordHash: hashPassword(initialAdminPassword),
-          role: 'admin',
-          enabled: true,
-          createdVia: 'admin',
-          createdAt: now,
-          updatedAt: now,
-        }, id))
-        return next
-      })
-      console.log(`已创建站长账号「${initialAdminUser}」，登录后自动进入管理后台。`)
+      const existing = findUserByUsername(initialAdminUser)
+      if (!existing) {
+        const now = Date.now()
+        const id = generateUserId()
+        updateConfig((next) => {
+          next.users.push(normalizeUser({
+            id,
+            username: initialAdminUser,
+            displayName: initialAdminUser,
+            passwordHash: hashPassword(initialAdminPassword),
+            role: 'admin',
+            enabled: true,
+            createdVia: 'admin',
+            createdAt: now,
+            updatedAt: now,
+          }, id))
+          return next
+        })
+        console.log(`已创建站长账号「${initialAdminUser}」，登录后自动进入管理后台。`)
+      } else {
+        const needsPromotion = existing.role !== 'admin' || !existing.enabled
+        const needsPassword = forceReset || !existing.passwordHash
+        if (needsPromotion || needsPassword) {
+          updateConfig((next) => {
+            const idx = next.users.findIndex((item) => item.id === existing.id)
+            if (idx < 0) return next
+            next.users[idx] = {
+              ...next.users[idx],
+              role: 'admin',
+              enabled: true,
+              updatedAt: Date.now(),
+              ...(needsPassword ? { passwordHash: hashPassword(initialAdminPassword) } : {}),
+            }
+            return next
+          })
+          if (needsPassword) destroySessionsByUser(existing.id)
+          console.log(
+            `站长账号「${initialAdminUser}」已存在：${[
+              needsPromotion ? '已提权为 admin 并启用' : '',
+              needsPassword ? (forceReset ? '密码已按 GIP_ADMIN_PASSWORD_RESET 重置' : '原账号没有密码，已补上环境变量里的密码') : '',
+            ].filter(Boolean).join('，') || '无需改动'}。`,
+          )
+        } else {
+          console.log(`站长账号「${initialAdminUser}」已存在且可用，跳过。`)
+        }
+      }
     }
   }
 }
