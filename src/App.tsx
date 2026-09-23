@@ -22,18 +22,19 @@ import { PageLoading } from './pages/theme'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
 
 let defaultConfigImportStarted = false
+// 引导结果整页只算一次：App 在「/studio 这一族路由 ↔ 其它分支（帮助中心/后台/登录）」之间
+// 来回导航时会被反复挂载，每次都重跑「拉 bootstrap + IndexedDB 水合 + 配置导入」，
+// 慢服务器上就是用户看到的「点一下菜单卡一下、整屏正在进入绘想」。
+// 这里把整条链缓存成 Promise，重进 App 时直接复用现成结果，同步给组件状态，秒开。
+let appBootstrapPromise: Promise<BackendBootstrap | null> | null = null
 
-export default function App() {
-  // null 表示尚未确定是否为后端托管模式，此期间不渲染主界面，避免闪现未锁定的设置。
-  const [backend, setBackend] = useState<BackendBootstrap | null | undefined>(undefined)
-  useDockerApiUrlMigrationNotice()
-  useGlobalClickSuppression()
+function startAppBootstrap(setBackend: (b: BackendBootstrap | null) => void) {
+  if (appBootstrapPromise) return appBootstrapPromise
+  defaultConfigImportStarted = true
+  // 是否已经向组件通报过 bootstrap 结果：失败兜底时要据此决定是置 null 还是保留现状
+  let announced: BackendBootstrap | null | undefined
 
-  useEffect(() => {
-    if (defaultConfigImportStarted) return
-    defaultConfigImportStarted = true
-
-    const searchParams = new URLSearchParams(window.location.search)
+  const searchParams = new URLSearchParams(window.location.search)
     const customProviderConfigUrl = getCustomProviderConfigUrl()
     const embeddedDefaultConfig = hasEmbeddedDefaultConfig()
     const loadDefaultConfig = () => embeddedDefaultConfig
@@ -61,13 +62,14 @@ export default function App() {
       window.history.replaceState(null, '', nextUrl)
     }
 
-    void loadBackendBootstrap()
+    const promise = loadBackendBootstrap()
       .then((data) => {
         // 工作区决定 localStorage 键与 IndexedDB 库名，而 store 已经用缓存的工作区水合过了。
         // 身份和上次不一致时只能刷新重来，否则会把上一个账号的数据显示给当前账号。
         if (syncWorkspaceId(data?.workspaceId)) {
           window.location.reload()
-          return
+          // 页面马上整个重来，这里的返回值没人消费，给齐类型即可
+          return data
         }
 
         setBackend(data)
@@ -87,7 +89,7 @@ export default function App() {
               ...backendAgentSettings(data),
             }))
             clearAppliedUrlSettings()
-            return
+            return data
           }
 
           const importedSettings = embeddedDefaultConfig || customProviderConfigUrl
@@ -136,18 +138,37 @@ export default function App() {
             : current.settings
           current.setSettings(await applyUrlSettings(settings))
           clearAppliedUrlSettings()
+          return data
         })
       })
       .catch((error) => {
         console.warn('Failed to import preset config:', error)
-        setBackend((current) => current === undefined ? null : current)
+        setBackend(announced ?? null)
         setPresetConfig(null)
         const state = useStore.getState()
         void applyUrlSettings(state.settings).then((settings) => {
           useStore.getState().setSettings(settings)
           clearAppliedUrlSettings()
         })
+        // 引导失败按"无后端"处理：界面照常可用，只是没有托管配置
+        return null
       })
+  appBootstrapPromise = promise
+  return promise
+}
+
+export default function App() {
+  // null 表示尚未确定是否为后端托管模式，此期间不渲染主界面，避免闪现未锁定的设置。
+  const [backend, setBackend] = useState<BackendBootstrap | null | undefined>(undefined)
+  useDockerApiUrlMigrationNotice()
+  useGlobalClickSuppression()
+
+  useEffect(() => {
+    void startAppBootstrap(setBackend).then((data) => {
+      // 首次挂载时 startAppBootstrap 内部已经提前 set 过一次（bootstrap 一回来就渲染）；
+      // SPA 里重进 App 时靠这里把缓存好的最终结果立刻吐出来，不再等网络。
+      setBackend(data)
+    })
   }, [])
 
   useEffect(() => {

@@ -56,10 +56,10 @@ export default function UsagePage() {
   const [busy, setBusy] = useState(false)
   const [range, setRange] = useState<7 | 14 | 30>(14)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     setBusy(true)
     try {
-      const result = await getAdminUsage()
+      const result = await getAdminUsage(fresh ? 0 : 10000)
       setData(result as unknown as UsageData)
       setError(null)
     } catch (err) {
@@ -71,7 +71,7 @@ export default function UsagePage() {
   const clear = async () => {
     if (!window.confirm('确定清空全部用量统计吗？这个操作不可撤销（只清统计，不影响账号与渠道）。')) return
     setBusy(true)
-    try { await resetAdminUsage(); await load() }
+    try { await resetAdminUsage(); await load(true) }
     catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
   }
 
@@ -148,7 +148,7 @@ export default function UsagePage() {
         <div className="flex items-center justify-between border-b border-[#f1f5f9] px-5 py-4">
           <h3 className="text-sm font-bold">按渠道</h3>
           <div className="flex gap-2">
-            <button type="button" onClick={() => void load()} disabled={busy} className="flex items-center gap-1.5 rounded-lg border border-[#e2e8f0] px-3 py-1.5 text-xs font-medium text-[#475569] transition hover:bg-[#f8fafc] disabled:opacity-50">
+            <button type="button" onClick={() => void load(true)} disabled={busy} className="flex items-center gap-1.5 rounded-lg border border-[#e2e8f0] px-3 py-1.5 text-xs font-medium text-[#475569] transition hover:bg-[#f8fafc] disabled:opacity-50">
               <IconRefresh className="h-3.5 w-3.5" />
               刷新
             </button>

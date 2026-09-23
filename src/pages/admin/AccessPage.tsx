@@ -11,9 +11,9 @@ export default function AccessPage() {
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     try {
-      const state = await getAdminState()
+      const state = await getAdminState(fresh ? 0 : 8000)
       setGuestSet(state.guestPasswordSet)
       setAccessMode(String((state.site as Record<string, unknown>).accessMode ?? 'accounts'))
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) }
@@ -28,7 +28,7 @@ export default function AccessPage() {
       await setGuestPassword(password)
       setPassword('')
       toast('访客口令已更新')
-      await load()
+      await load(true)
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
   }
 

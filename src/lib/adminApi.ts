@@ -76,20 +76,37 @@ async function request<T = unknown>(path: string, options: RequestInit = {}): Pr
   return payload as T
 }
 
-export function getAdminState() {
-  return request<AdminState>('/api/admin/state')
+// ===== 读缓存 =====
+// 后台每个页签挂载时都要拉一份全量配置，服务器一慢"点一下卡一下"就很明显。
+// 给读接口加个短 TTL：切页签时直接吃缓存秒开；任何写操作之后页面都会带 fresh=true
+// 重新拉一遍，缓存随之更新。后台通常就站长一个人在用，几秒的陈旧可以接受。
+interface CacheEntry<T> { at: number, data: T }
+const readCaches = new Map<string, CacheEntry<unknown>>()
+
+async function cachedRead<T>(key: string, maxAgeMs: number, loader: () => Promise<T>): Promise<T> {
+  if (maxAgeMs > 0) {
+    const hit = readCaches.get(key) as CacheEntry<T> | undefined
+    if (hit && Date.now() - hit.at < maxAgeMs) return hit.data
+  }
+  const data = await loader()
+  readCaches.set(key, { at: Date.now(), data })
+  return data
 }
 
-export function getAdminDashboard() {
-  return request<AdminDashboard>('/api/admin/dashboard')
+export function getAdminState(maxAgeMs = 0) {
+  return cachedRead('state', maxAgeMs, () => request<AdminState>('/api/admin/state')) as Promise<AdminState>
 }
 
-export function getAdminOverview(range = 'today') {
-  return request<Record<string, unknown>>(`/api/admin/overview?range=${encodeURIComponent(range)}`)
+export function getAdminDashboard(maxAgeMs = 0) {
+  return cachedRead('dashboard', maxAgeMs, () => request<AdminDashboard>('/api/admin/dashboard')) as Promise<AdminDashboard>
 }
 
-export function getAdminUsage() {
-  return request<Record<string, unknown>>('/api/admin/usage')
+export function getAdminCredits(maxAgeMs = 0) {
+  return cachedRead('credits', maxAgeMs, () => request<Record<string, unknown>>('/api/admin/credits')) as Promise<Record<string, unknown>>
+}
+
+export function getAdminUsage(maxAgeMs = 0) {
+  return cachedRead('usage', maxAgeMs, () => request<Record<string, unknown>>('/api/admin/usage')) as Promise<Record<string, unknown>>
 }
 
 export function resetAdminUsage() {
@@ -153,9 +170,6 @@ export function updateSite(body: Record<string, unknown>) {
 // ===== 积分 =====
 export function updateCredits(body: Record<string, unknown>) {
   return request('/api/admin/credits', { method: 'PUT', body: JSON.stringify(body) })
-}
-export function getAdminCredits() {
-  return request<Record<string, unknown>>('/api/admin/credits')
 }
 export function resetCreditStats() {
   return request('/api/admin/credits/stats', { method: 'DELETE' })

@@ -31,9 +31,9 @@ export default function ChannelsPage() {
   // 表单态
   const [form, setForm] = useState({ name: '', provider: 'openai', baseUrl: '', model: '', apiKey: '', enabled: true })
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     try {
-      const state = await getAdminState()
+      const state = await getAdminState(fresh ? 0 : 8000)
       setChannels(state.channels)
       setCustomProviders(state.customProviders ?? [])
       setProviderDraft(JSON.stringify(state.customProviders ?? [], null, 2))
@@ -86,7 +86,7 @@ export default function ChannelsPage() {
         toast('渠道已创建')
       }
       closeForm()
-      await load()
+      await load(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -98,7 +98,7 @@ export default function ChannelsPage() {
     if (!window.confirm(`确定删除渠道「${channel.name}」吗？`)) return
     await deleteChannel(channel.id)
     toast('渠道已删除')
-    await load()
+    await load(true)
   }
 
   const doTest = async (id: string) => {
@@ -106,7 +106,7 @@ export default function ChannelsPage() {
     try {
       const result = await testChannel(id)
       toast(result.ok ? `「${result.message ?? '连通正常'}」` : `连通失败：${result.message ?? '未知原因'}`)
-    } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false); await load() }
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false); await load(true) }
   }
 
   const doTestAll = async () => {
@@ -115,7 +115,7 @@ export default function ChannelsPage() {
       const { results } = await testAllChannels()
       const failed = results.filter((r) => !r.ok).length
       toast(`测试完成：${results.length - failed} 条正常，${failed} 条异常`)
-      await load()
+      await load(true)
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
   }
 
@@ -134,7 +134,7 @@ export default function ChannelsPage() {
           toast(`自检完成：${down.length} 条渠道异常`)
         }
       }
-      await load()
+      await load(true)
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
   }
 

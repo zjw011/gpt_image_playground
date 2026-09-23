@@ -21,9 +21,9 @@ export default function CreditsPage() {
   const [cardCount, setCardCount] = useState('10')
   const [cardCredits, setCardCredits] = useState('100')
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     try {
-      const result = await getAdminCredits()
+      const result = await getAdminCredits(fresh ? 0 : 8000)
       setData(result)
       const settings = (result as { settings?: Record<string, unknown> }).settings ?? {}
       setEnabled(settings.enabled !== false)
@@ -65,7 +65,7 @@ export default function CreditsPage() {
     try {
       await generateCards({ count: Number(cardCount) || 1, credits: Number(cardCredits) || 1 })
       toast(`已生成 ${cardCount} 张卡密`)
-      await load(); await loadCards()
+      await load(true); await loadCards()
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
   }
 

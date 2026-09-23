@@ -22,9 +22,9 @@ export default function SitePage() {
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     try {
-      const state = await getAdminState()
+      const state = await getAdminState(fresh ? 0 : 8000)
       const site = (state.site as Record<string, unknown>) ?? {}
       setForm({
         title: String(site.title ?? '绘想'),
@@ -52,7 +52,7 @@ export default function SitePage() {
         agentMode: form.agentMode,
       })
       toast('站点设置已保存')
-      await load()
+      await load(true)
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
   }
 

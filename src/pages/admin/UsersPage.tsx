@@ -14,9 +14,9 @@ export default function UsersPage() {
   const [form, setForm] = useState({ username: '', displayName: '', password: '', note: '', enabled: true, role: 'user' as 'user' | 'admin' })
   const [createdPw, setCreatedPw] = useState<string | null>(null)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     try {
-      const state = await getAdminState()
+      const state = await getAdminState(fresh ? 0 : 8000)
       setUsers(state.users)
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) }
   }, [])
@@ -43,7 +43,7 @@ export default function UsersPage() {
         toast('用户已创建')
       }
       closeForm()
-      await load()
+      await load(true)
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
   }
 
@@ -52,7 +52,7 @@ export default function UsersPage() {
     if (!window.confirm(`确定删除用户「${u.username}」吗？`)) return
     await deleteUser(u.id)
     toast('用户已删除')
-    await load()
+    await load(true)
   }
 
   const adjustBalance = async (u: AdminUser) => {
@@ -62,7 +62,7 @@ export default function UsersPage() {
     if (!Number.isFinite(amount) || amount < 0) { setError('积分必须是不小于 0 的数字'); return }
     await setUserBalance(u.id, Math.trunc(amount))
     toast('积分已调整')
-    await load()
+    await load(true)
   }
 
   return (

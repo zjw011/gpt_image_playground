@@ -25,9 +25,9 @@ export default function AgentPage() {
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     try {
-      const state = await getAdminState()
+      const state = await getAdminState(fresh ? 0 : 8000)
       const site = (state.site as Record<string, unknown>) ?? {}
       setChannels(state.channels ?? [])
       setForm({
@@ -61,7 +61,7 @@ export default function AgentPage() {
         agentWebSearch: form.agentWebSearch,
       })
       toast('Agent 设置已保存')
-      await load()
+      await load(true)
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
   }
 

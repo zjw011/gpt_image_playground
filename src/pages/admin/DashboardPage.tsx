@@ -57,7 +57,7 @@ export default function AdminDashboardPage() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    getAdminDashboard().then(setData).catch((err) => setError(err instanceof Error ? err.message : String(err)))
+    getAdminDashboard(10000).then(setData).catch((err) => setError(err instanceof Error ? err.message : String(err)))
   }, [])
 
   const stats = data?.stats
