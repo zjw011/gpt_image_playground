@@ -79,6 +79,8 @@ export default function CreditsPage() {
   const [costPerImage, setCostPerImage] = useState('1')
   const [signupBonus, setSignupBonus] = useState('50')
   const [purchaseUrl, setPurchaseUrl] = useState('')
+  // 充值套餐草稿：名称/价格/积分三列，随积分设置一起保存
+  const [packs, setPacks] = useState<Array<{ name: string, price: string, credits: string }>>([])
 
   // 列表状态
   const [rows, setRows] = useState<AdminCardRow[]>([])
@@ -116,6 +118,12 @@ export default function CreditsPage() {
       setCostPerImage(String(settings.costPerImage ?? 1))
       setSignupBonus(String(settings.signupBonus ?? 0))
       setPurchaseUrl(String(settings.purchaseUrl ?? ''))
+      const rawPacks = Array.isArray(settings.packs) ? settings.packs : []
+      setPacks(rawPacks.map((pack) => ({
+        name: String((pack as Record<string, unknown>).name ?? ''),
+        price: String((pack as Record<string, unknown>).price ?? ''),
+        credits: String((pack as Record<string, unknown>).credits ?? ''),
+      })))
     } catch { /* 积分设置拉不到不拦住卡密列表 */ }
   }, [])
 
@@ -226,7 +234,17 @@ export default function CreditsPage() {
   const saveCredits = async () => {
     setBusy(true); setError(null)
     try {
-      await updateCredits({ credits: { enabled, costPerImage: Number(costPerImage) || 0, signupBonus: Number(signupBonus) || 0, purchaseUrl } })
+      await updateCredits({
+        credits: {
+          enabled,
+          costPerImage: Number(costPerImage) || 0,
+          signupBonus: Number(signupBonus) || 0,
+          purchaseUrl,
+          packs: packs
+            .map((pack) => ({ name: pack.name.trim(), price: pack.price.trim(), credits: Number(pack.credits) || 0 }))
+            .filter((pack) => pack.name && pack.credits > 0),
+        },
+      })
       toast('积分设置已保存')
       await loadCredits(true)
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
@@ -510,6 +528,57 @@ export default function CreditsPage() {
               <input value={purchaseUrl} onChange={(e) => setPurchaseUrl(e.target.value)} className="w-full rounded-lg border border-[#e2e8f0] px-3 py-2 outline-none focus:border-[#3b82f6] focus:ring-2 focus:ring-[#3b82f6]/15" placeholder="https://…" />
             </label>
           </div>
+
+          {/* 充值套餐：价格随你定，用户在「积分充值」页看到的就是这几行 */}
+          <div className="mt-6 border-t border-[#f1f5f9] pt-5">
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-bold">充值套餐</h4>
+              <button
+                type="button"
+                onClick={() => setPacks((current) => [...current, { name: '', price: '', credits: '' }])}
+                className="flex items-center gap-1 rounded-lg border border-[#e2e8f0] px-3 py-1.5 text-xs font-medium text-[#475569] transition hover:bg-[#f8fafc]"
+              >
+                <IconPlus className="h-3.5 w-3.5" />
+                加一档
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-[#94a3b8]">最多 12 档。第 3 档会带「推荐」角标；留空或积分为 0 的行保存时会被忽略。</p>
+            <div className="mt-3 space-y-2">
+              {packs.length === 0 && <p className="rounded-lg bg-[#f8fafc] px-4 py-3 text-xs text-[#94a3b8]">还没有套餐，点「加一档」创建</p>}
+              {packs.map((pack, idx) => (
+                <div key={idx} className="flex flex-wrap items-center gap-2">
+                  <input
+                    value={pack.name}
+                    onChange={(e) => setPacks((current) => current.map((item, i) => i === idx ? { ...item, name: e.target.value } : item))}
+                    placeholder="档位名，如 100 积分"
+                    className="w-40 rounded-lg border border-[#e2e8f0] px-3 py-2 text-sm outline-none focus:border-[#3b82f6] focus:ring-2 focus:ring-[#3b82f6]/15"
+                  />
+                  <input
+                    value={pack.price}
+                    onChange={(e) => setPacks((current) => current.map((item, i) => i === idx ? { ...item, price: e.target.value } : item))}
+                    placeholder="价格，如 ¥0.5"
+                    className="w-32 rounded-lg border border-[#e2e8f0] px-3 py-2 text-sm outline-none focus:border-[#3b82f6] focus:ring-2 focus:ring-[#3b82f6]/15"
+                  />
+                  <input
+                    type="number"
+                    min="1"
+                    value={pack.credits}
+                    onChange={(e) => setPacks((current) => current.map((item, i) => i === idx ? { ...item, credits: e.target.value } : item))}
+                    placeholder="积分"
+                    className="w-28 rounded-lg border border-[#e2e8f0] px-3 py-2 text-sm outline-none focus:border-[#3b82f6] focus:ring-2 focus:ring-[#3b82f6]/15"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setPacks((current) => current.filter((_, i) => i !== idx))}
+                    className="rounded-lg border border-red-200 px-3 py-2 text-xs font-medium text-red-500 transition hover:bg-red-50"
+                  >
+                    删除
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <button type="button" onClick={saveCredits} disabled={busy} className="mt-5 rounded-lg bg-[#2563eb] px-5 py-2 text-sm font-medium text-white transition hover:bg-[#1d4ed8] disabled:opacity-50">保存设置</button>
         </div>
       )}

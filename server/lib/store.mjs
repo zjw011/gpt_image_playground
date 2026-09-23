@@ -134,7 +134,13 @@ function createEmptyConfig() {
         costPerImage: 1,
         signupBonus: 0,
         purchaseUrl: '',
-        packs: [],
+        // 默认档位按 1 元 = 200 积分定价；后台「积分与卡密」可随时改
+        packs: [
+          { name: '100 积分', price: '¥0.5', credits: 100 },
+          { name: '500 积分', price: '¥2.5', credits: 500 },
+          { name: '1,200 积分', price: '¥6', credits: 1200 },
+          { name: '2,800 积分', price: '¥14', credits: 2800 },
+        ],
         channelRates: {},
       },
     },
