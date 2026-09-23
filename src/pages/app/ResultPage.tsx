@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore, submitTask, reuseConfig, removeTask } from '../../store'
 import AppShell from './AppShell'
+import GeneratingQuote from '../../components/GeneratingQuote'
 import { useFullImage, useThumbnail } from './useTaskImage'
 import { getImage } from '../../lib/db'
 import { isBackendMode, getBackendUser } from '../../lib/backend'
@@ -175,6 +176,7 @@ export default function ResultPage() {
                   </span>
                   <p className="mt-5 text-sm font-semibold">正在绘制你的想象…</p>
                   <p className="mt-1.5 max-w-sm truncate text-xs text-[#a5a1c4]">{task.prompt}</p>
+                  <GeneratingQuote />
                 </div>
               ) : task.status === 'error' ? (
                 <div className="max-w-md text-center">

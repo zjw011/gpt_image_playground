@@ -14,8 +14,10 @@ import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { replaceImageMentionsForApi } from '../lib/promptImageMentions'
 import { getApiProviderLabel } from '../lib/apiProfiles'
 import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, TrashIcon } from './icons'
+import { IconSparkle } from '../pages/icons'
 
 import ViewportTooltip from './ViewportTooltip'
+import GeneratingQuote from './GeneratingQuote'
 
 export default function DetailModal() {
   const tasks = useStore((s) => s.tasks)
@@ -663,7 +665,7 @@ export default function DetailModal() {
                     />
                   ) : null}
                   {(!currentStreamPreviewSrc || !streamPreviewLoaded) && (
-                    <svg className="w-10 h-10 text-blue-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <svg className="w-10 h-10 text-[#7c6cf6] animate-spin" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
@@ -699,10 +701,16 @@ export default function DetailModal() {
                 </>
               )}
               {task.status === 'running' && streamPreviewLen === 0 && (
-                <svg className="w-10 h-10 text-blue-400 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
+                <div className="flex flex-col items-center text-center">
+                  <span className="relative flex h-16 w-16 items-center justify-center">
+                    <span className="absolute inset-0 animate-ping rounded-full bg-[#7c6cf6]/20" />
+                    <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-white shadow-lg shadow-[#7c6cf6]/30">
+                      <IconSparkle className="h-6 w-6 animate-pulse" />
+                    </span>
+                  </span>
+                  <p className="mt-4 text-sm font-semibold">正在绘制你的想象…</p>
+                  <GeneratingQuote />
+                </div>
               )}
             </>
           )}

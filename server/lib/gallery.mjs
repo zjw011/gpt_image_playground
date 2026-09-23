@@ -13,6 +13,11 @@ import { randomBytes } from 'node:crypto'
 
 const MAX_ITEMS = 500
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+// 防滥用：公开站点任何人都能注册登录，上传口子必须有闸。
+// 单人总量 30 件 + 每小时最多发 10 件，足以正常分享，又能挡住灌盘。
+const MAX_PER_USER = 30
+const PUBLISH_WINDOW_MS = 60 * 60 * 1000
+const MAX_PUBLISH_PER_WINDOW = 10
 const ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const EXT_BY_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }
 
@@ -20,6 +25,20 @@ let dataDir = ''
 let items = []
 let byId = new Map()
 let byHash = new Map()
+// 发布频率：内存滑窗计数即可，重启清零是可接受的（限流不是记账）
+const publishLog = new Map()
+
+function checkPublishRate(userId) {
+  const now = Date.now()
+  const stamps = (publishLog.get(userId) ?? []).filter((at) => now - at < PUBLISH_WINDOW_MS)
+  if (stamps.length >= MAX_PUBLISH_PER_WINDOW) {
+    const waitMinutes = Math.ceil((stamps[0] + PUBLISH_WINDOW_MS - now) / 60000)
+    return `上传太频繁了，请约 ${waitMinutes} 分钟后再试`
+  }
+  stamps.push(now)
+  publishLog.set(userId, stamps)
+  return null
+}
 
 function file() {
   return join(dataDir, 'gallery.json')
@@ -126,11 +145,19 @@ export function publishWork({ ownerId, ownerName, prompt, model, imageDataUrl })
   if (!bytes.length) return { ok: false, error: '图片内容为空' }
   if (bytes.length > MAX_IMAGE_BYTES) return { ok: false, error: '图片超过 8MB，无法上传' }
 
+  // 同一张图重复上传直接复用已有作品：不计频率、不占配额
   const hash = createHash('sha256').update(bytes).digest('hex')
   const existing = byHash.get(hash)
   if (existing) {
-    // 同一张图重复上传：直接复用已有作品，不占两份盘
     return { ok: true, item: toPublic(existing, ownerId), duplicated: true }
+  }
+
+  // 防滥用两道闸：发布频率 + 单人总量
+  const rateError = checkPublishRate(ownerId)
+  if (rateError) return { ok: false, error: rateError }
+  const ownedCount = items.filter((item) => item.ownerId === ownerId && !item.seed).length
+  if (ownedCount >= MAX_PER_USER) {
+    return { ok: false, error: `每个账号最多上传 ${MAX_PER_USER} 件作品，请先删除一些再试` }
   }
 
   const now = Date.now()
