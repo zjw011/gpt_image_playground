@@ -1,6 +1,7 @@
 // 渠道链路：列表 + 新建/编辑 + 删除 + 排序 + 连通测试 + 深度自检 + 自定义服务商。
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import AdminShell from './AdminShell'
+import { useStore } from '../../store'
 import {
   getAdminState, createChannel, updateChannel, deleteChannel, reorderChannels,
   testChannel, testAllChannels, auditChannels, bulkDisableChannels, updateCustomProviders,
@@ -52,6 +53,7 @@ export default function ChannelsPage() {
     return [...BUILT_IN_PROVIDERS, ...ids]
   }, [customProviders])
 
+  const setConfirmDialog = useStore((st) => st.setConfirmDialog)
   const toast = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(null), 2600) }
 
   const saveProviders = async () => {
@@ -94,11 +96,18 @@ export default function ChannelsPage() {
     }
   }
 
-  const remove = async (channel: AdminChannel) => {
-    if (!window.confirm(`确定删除渠道「${channel.name}」吗？`)) return
-    await deleteChannel(channel.id)
-    toast('渠道已删除')
-    await load(true)
+  const remove = (channel: AdminChannel) => {
+    setConfirmDialog({
+      title: '删除渠道',
+      message: `确定删除渠道「${channel.name}」吗？删除后使用该渠道的请求会自动切换到下一条。`,
+      confirmText: '删除',
+      tone: 'danger',
+      action: async () => {
+        await deleteChannel(channel.id)
+        toast('渠道已删除')
+        await load(true)
+      },
+    })
   }
 
   const doTest = async (id: string) => {

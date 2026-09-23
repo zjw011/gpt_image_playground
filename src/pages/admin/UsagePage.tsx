@@ -2,6 +2,7 @@
 // 数据来自 usage 缓存（进程内累积、按 5 秒防抖落盘），所以这里也提供「清空统计」。
 import { useCallback, useEffect, useState } from 'react'
 import AdminShell from './AdminShell'
+import { useStore } from '../../store'
 import { getAdminUsage, resetAdminUsage } from '../../lib/adminApi'
 import { IconRefresh, IconTrash } from '../icons'
 
@@ -55,6 +56,7 @@ export default function UsagePage() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [range, setRange] = useState<7 | 14 | 30>(14)
+  const setConfirmDialog = useStore((st) => st.setConfirmDialog)
 
   const load = useCallback(async (fresh = false) => {
     setBusy(true)
@@ -68,11 +70,18 @@ export default function UsagePage() {
   }, [])
   useEffect(() => { void load() }, [load])
 
-  const clear = async () => {
-    if (!window.confirm('确定清空全部用量统计吗？这个操作不可撤销（只清统计，不影响账号与渠道）。')) return
-    setBusy(true)
-    try { await resetAdminUsage(); await load(true) }
-    catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
+  const clear = () => {
+    setConfirmDialog({
+      title: '清空用量统计',
+      message: '确定清空全部用量统计吗？这个操作不可撤销（只清统计，不影响账号与渠道）。',
+      confirmText: '清空',
+      tone: 'danger',
+      action: async () => {
+        setBusy(true)
+        try { await resetAdminUsage(); await load(true) }
+        catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
+      },
+    })
   }
 
   const totals = data?.totals ?? { total: 0, ok: 0, fail: 0 }

@@ -39,6 +39,7 @@ export default function GalleryPage() {
   const navigate = useNavigate()
   const setPrompt = useStore((s) => s.setPrompt)
   const showToast = useStore((s) => s.showToast)
+  const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const backendMode = isBackendMode()
   const me = getBackendUser()
 
@@ -109,16 +110,23 @@ export default function GalleryPage() {
     }
   }
 
-  const removeMine = async (item: GalleryItem) => {
-    if (!window.confirm('确定从作品广场删除这件作品吗？')) return
-    try {
-      await deleteWork(item.id)
-      showToast('已从作品广场删除', 'success')
-      setPreview(null)
-      await loadWorks()
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : '删除失败', 'error')
-    }
+  const removeMine = (item: GalleryItem) => {
+    setConfirmDialog({
+      title: '删除作品',
+      message: '确定从作品广场删除这件作品吗？删除后其他人就看不到了。',
+      confirmText: '删除',
+      tone: 'danger',
+      action: async () => {
+        try {
+          await deleteWork(item.id)
+          showToast('已从作品广场删除', 'success')
+          setPreview(null)
+          await loadWorks()
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : '删除失败', 'error')
+        }
+      },
+    })
   }
 
   const useSamePrompt = (item: GalleryItem | DemoWork) => {
@@ -276,7 +284,7 @@ export default function GalleryPage() {
                 {isServerItem(preview) && myId !== null && preview.ownerId === myId && (
                   <button
                     type="button"
-                    onClick={() => void removeMine(preview)}
+                    onClick={() => removeMine(preview)}
                     className="flex items-center justify-center gap-1.5 rounded-full border border-red-200 px-4 py-2.5 text-sm font-medium text-red-500 transition hover:bg-red-50"
                   >
                     <IconTrash className="h-4 w-4" />

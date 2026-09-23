@@ -10,13 +10,12 @@ const ACCESS_LABELS: Record<string, string> = {
 }
 // 「微信扫码」不在可选项里：微信登录还没上线，选它等于把所有人锁在门外。
 // 等公众号/小程序下来、微信登录做好后再放回来。
-const AGENT_LABELS: Record<string, string> = { off: '关闭', native: '原生 Agent', hybrid: '混合模式' }
 
 export default function SitePage() {
   const [form, setForm] = useState({
     title: '', accessMode: 'accounts', registrationEnabled: true,
     requireInviteCode: false, inviteCode: '',
-    failoverEnabled: true, agentMode: 'off',
+    failoverEnabled: true,
   })
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -33,7 +32,6 @@ export default function SitePage() {
         requireInviteCode: site.requireInviteCode === true,
         inviteCode: String(site.inviteCode ?? ''),
         failoverEnabled: site.failoverEnabled !== false,
-        agentMode: String(site.agentMode ?? 'off'),
       })
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) }
   }, [])
@@ -49,7 +47,6 @@ export default function SitePage() {
         registrationEnabled: form.registrationEnabled,
         requireInviteCode: form.requireInviteCode,
         failoverEnabled: form.failoverEnabled,
-        agentMode: form.agentMode,
       })
       toast('站点设置已保存')
       await load(true)
@@ -90,12 +87,6 @@ export default function SitePage() {
             <span className={label}>访问方式</span>
             <select value={form.accessMode} onChange={(e) => setForm({ ...form, accessMode: e.target.value })} className={input}>
               {Object.entries(ACCESS_LABELS).map(([key, text]) => <option key={key} value={key}>{text}</option>)}
-            </select>
-          </label>
-          <label className="block">
-            <span className={label}>Agent 模式</span>
-            <select value={form.agentMode} onChange={(e) => setForm({ ...form, agentMode: e.target.value })} className={input}>
-              {Object.entries(AGENT_LABELS).map(([key, text]) => <option key={key} value={key}>{text}</option>)}
             </select>
           </label>
           <div className="flex flex-col gap-3 pt-1">

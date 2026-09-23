@@ -6,22 +6,21 @@
 // ./assets/xxx.js 解析成 /admin/assets/xxx.js，直接白屏——只有一层才安全。
 // 前台个人中心的分区页签本来就是 /me?tab=xxx，这里保持一致。
 import { Link, useLocation, useSearchParams } from 'react-router-dom'
+import ConfirmDialog from '../../components/ConfirmDialog'
 import { getBackendUser, submitFrontLogout } from '../../lib/backend'
 import {
-  IconGrid, IconLayers, IconBolt, IconRobot, IconUser, IconCoin,
-  IconWechat, IconMail, IconShield, IconSettings, IconLogout, IconHome,
+  IconGrid, IconLayers, IconBolt, IconUser, IconCoin,
+  IconWechat, IconMail, IconSettings, IconLogout, IconHome,
 } from '../icons'
 
 export const ADMIN_TABS = [
   { key: 'dashboard', label: '仪表盘', icon: IconGrid },
   { key: 'channels', label: '渠道链路', icon: IconLayers },
   { key: 'usage', label: '用量与健康', icon: IconBolt },
-  { key: 'agent', label: 'Agent 模式', icon: IconRobot },
   { key: 'users', label: '用户', icon: IconUser },
   { key: 'credits', label: '积分与卡密', icon: IconCoin },
   { key: 'wechat', label: '微信登录', icon: IconWechat },
   { key: 'smtp', label: '邮件发信', icon: IconMail },
-  { key: 'access', label: '访问与安全', icon: IconShield },
   { key: 'site', label: '站点设置', icon: IconSettings },
 ] as const
 
@@ -99,6 +98,8 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
           </div>
         </header>
         <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-6">{children}</main>
+        {/* 后台所有确认弹窗共用全站样式（store 驱动），替代原生 confirm */}
+        <ConfirmDialog />
       </div>
     </div>
   )

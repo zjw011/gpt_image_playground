@@ -185,11 +185,9 @@ try {
     for (const [tab, keyword] of [
       ['channels', '新建渠道'],
       ['usage', '累计请求'],
-      ['agent', 'Agent 接入方式'],
       ['users', '新建用户'],
       ['credits', '生成卡密'],
       ['smtp', 'SMTP 发信配置'],
-      ['access', '随机生成'],
       ['site', '保存设置'],
     ]) {
       await browser.open(`/admin?tab=${tab}`, 2600)

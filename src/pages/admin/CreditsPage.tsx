@@ -6,6 +6,7 @@
 // navigator.clipboard 不存在，得退回 execCommand。
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import AdminShell from './AdminShell'
+import { useStore } from '../../store'
 import {
   getAdminCredits, updateCredits,
   getCardTable, generateCards, voidCards, restoreCards, deleteCards,
@@ -53,9 +54,16 @@ async function copyText(text: string): Promise<boolean> {
     document.body.removeChild(area)
     if (ok) return true
   } catch { /* 走最后一级 */ }
-  // 最后一级：手动复制。取消（返回 null）才算失败。
-  const manual = window.prompt('自动复制不可用，请全选后手动复制：', text)
-  return manual !== null
+  // 最后一级：弹系统样式的对话框，让用户手动全选复制（取消才算失败）
+  return new Promise<boolean>((resolve) => {
+    useStore.getState().setConfirmDialog({
+      title: '自动复制不可用',
+      message: `请手动全选并复制以下内容：\n\n${text}`,
+      icon: 'copy',
+      messageAlign: 'left',
+      buttons: [{ label: '我已复制', action: () => resolve(true) }, { label: '取消', action: () => resolve(false) }],
+    })
+  })
 }
 
 function downloadText(filename: string, text: string) {
@@ -108,6 +116,7 @@ export default function CreditsPage() {
   const [genCredits, setGenCredits] = useState('100')
   const [genNote, setGenNote] = useState('')
 
+  const setConfirmDialog = useStore((st) => st.setConfirmDialog)
   const toast = (msg: string) => { setNotice(msg); setTimeout(() => setNotice(null), 2800) }
 
   const loadCredits = useCallback(async (fresh = false) => {
@@ -356,7 +365,13 @@ export default function CreditsPage() {
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => { if (window.confirm(`确定作废选中的 ${selectedUnused.length} 张未使用卡密吗？作废后无法兑换，但可恢复。`)) void act(() => voidCards(selectedUnused.map((row) => row.code)), `已作废 ${selectedUnused.length} 张`) }}
+                onClick={() => setConfirmDialog({
+                  title: '批量作废',
+                  message: `确定作废选中的 ${selectedUnused.length} 张未使用卡密吗？作废后无法兑换，但可以恢复。`,
+                  confirmText: '作废',
+                  tone: 'warning',
+                  action: () => act(() => voidCards(selectedUnused.map((row) => row.code)), `已作废 ${selectedUnused.length} 张`),
+                })}
                 className="rounded-lg border border-amber-200 bg-white px-3 py-1.5 text-xs font-medium text-amber-600 transition hover:bg-amber-50 disabled:opacity-50"
               >
                 作废所选（{selectedUnused.length}）
@@ -376,7 +391,13 @@ export default function CreditsPage() {
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => { if (window.confirm(`确定删除选中的 ${selectedRemovable.length} 张卡密吗？已兑换的会自动跳过并保留（财务凭证）。`)) void act(() => deleteCards(selectedRemovable.map((row) => row.code)), '删除完成') }}
+                onClick={() => setConfirmDialog({
+                  title: '批量删除',
+                  message: `确定删除选中的 ${selectedRemovable.length} 张卡密吗？已兑换的会自动跳过并保留（财务凭证）。`,
+                  confirmText: '删除',
+                  tone: 'danger',
+                  action: () => act(() => deleteCards(selectedRemovable.map((row) => row.code)), '删除完成'),
+                })}
                 className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-500 transition hover:bg-red-50 disabled:opacity-50"
               >
                 删除所选（{selectedRemovable.length}）
@@ -455,7 +476,13 @@ export default function CreditsPage() {
                         <button
                           type="button"
                           disabled={busy}
-                          onClick={() => { if (window.confirm('确定作废这张卡密吗？作废后无法兑换，但可以恢复。')) void act(() => voidCards([row.code]), '已作废') }}
+                          onClick={() => setConfirmDialog({
+                          title: '作废卡密',
+                          message: `确定作废 ${row.code} 吗？作废后无法兑换，但可以恢复。`,
+                          confirmText: '作废',
+                          tone: 'warning',
+                          action: () => act(() => voidCards([row.code]), '已作废'),
+                        })}
                           className="rounded px-2 py-1 text-amber-600 transition hover:bg-amber-50 disabled:opacity-50"
                         >作废</button>
                       )}
@@ -466,7 +493,13 @@ export default function CreditsPage() {
                         <button
                           type="button"
                           disabled={busy}
-                          onClick={() => { if (window.confirm('确定删除这张卡密吗？已兑换的卡无法删除。')) void act(() => deleteCards([row.code]), '已删除') }}
+                          onClick={() => setConfirmDialog({
+                          title: '删除卡密',
+                          message: `确定删除 ${row.code} 吗？已兑换的卡无法删除。`,
+                          confirmText: '删除',
+                          tone: 'danger',
+                          action: () => act(() => deleteCards([row.code]), '已删除'),
+                        })}
                           className="rounded px-2 py-1 text-red-500 transition hover:bg-red-50 disabled:opacity-50"
                         >删除</button>
                       )}

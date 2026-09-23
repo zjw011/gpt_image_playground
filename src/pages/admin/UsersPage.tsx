@@ -1,8 +1,9 @@
 // 用户管理：列表 + 新建（可设站长角色）+ 编辑 + 删除 + 调整积分。
 import { useCallback, useEffect, useState } from 'react'
 import AdminShell from './AdminShell'
+import { useStore } from '../../store'
 import { getAdminState, createUser, updateUser, deleteUser, setUserBalance, type AdminUser } from '../../lib/adminApi'
-import { IconPlus, IconTrash, IconEdit } from '../icons'
+import { IconPlus, IconTrash, IconEdit, IconCoin } from '../icons'
 
 export default function UsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([])
@@ -13,6 +14,9 @@ export default function UsersPage() {
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({ username: '', displayName: '', password: '', note: '', enabled: true, role: 'user' as 'user' | 'admin' })
   const [createdPw, setCreatedPw] = useState<string | null>(null)
+  // 余额调整弹层（替代原生 prompt，风格与全站一致）
+  const [balanceEdit, setBalanceEdit] = useState<{ user: AdminUser, value: string } | null>(null)
+  const setConfirmDialog = useStore((s) => s.setConfirmDialog)
 
   const load = useCallback(async (fresh = false) => {
     try {
@@ -47,22 +51,34 @@ export default function UsersPage() {
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
   }
 
-  const remove = async (u: AdminUser) => {
+  const remove = (u: AdminUser) => {
     if (u.role === 'admin') { setError('不能删除站长账号，请先在编辑里取消站长角色'); return }
-    if (!window.confirm(`确定删除用户「${u.username}」吗？`)) return
-    await deleteUser(u.id)
-    toast('用户已删除')
-    await load(true)
+    setConfirmDialog({
+      title: '删除用户',
+      message: `确定删除用户「${u.username}」吗？删除后该账号将无法登录。`,
+      confirmText: '删除',
+      tone: 'danger',
+      action: async () => {
+        await deleteUser(u.id)
+        toast('用户已删除')
+        await load(true)
+      },
+    })
   }
 
-  const adjustBalance = async (u: AdminUser) => {
-    const value = window.prompt(`设置「${u.username}」的积分余额（当前 ${u.balance}）：`, String(u.balance))
-    if (value === null) return
-    const amount = Number(value)
+  const openBalanceEdit = (u: AdminUser) => setBalanceEdit({ user: u, value: String(u.balance) })
+
+  const saveBalance = async () => {
+    if (!balanceEdit) return
+    const amount = Number(balanceEdit.value)
     if (!Number.isFinite(amount) || amount < 0) { setError('积分必须是不小于 0 的数字'); return }
-    await setUserBalance(u.id, Math.trunc(amount))
-    toast('积分已调整')
-    await load(true)
+    setBusy(true)
+    try {
+      await setUserBalance(balanceEdit.user.id, Math.trunc(amount))
+      toast('积分已调整')
+      setBalanceEdit(null)
+      await load(true)
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
   }
 
   return (
@@ -157,7 +173,7 @@ export default function UsersPage() {
                   </td>
                   <td className="px-5 py-3">
                     <div className="flex items-center justify-end gap-1">
-                      <button type="button" onClick={() => adjustBalance(u)} className="rounded px-2 py-1 text-xs text-[#2563eb] transition hover:bg-[#eff6ff]">调积分</button>
+                      <button type="button" onClick={() => openBalanceEdit(u)} className="rounded px-2 py-1 text-xs text-[#2563eb] transition hover:bg-[#eff6ff]">调积分</button>
                       <button type="button" onClick={() => openEdit(u)} className="rounded p-1.5 text-[#64748b] transition hover:bg-[#f1f5f9] hover:text-[#2563eb]" title="编辑"><IconEdit className="h-4 w-4" /></button>
                       <button type="button" onClick={() => remove(u)} className="rounded p-1.5 text-[#64748b] transition hover:bg-red-50 hover:text-red-500" title="删除"><IconTrash className="h-4 w-4" /></button>
                     </div>
@@ -168,6 +184,35 @@ export default function UsersPage() {
           </table>
         )}
       </div>
+      {/* 余额调整弹层：替代原生 prompt，风格与全站一致 */}
+      {balanceEdit && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4" onClick={() => setBalanceEdit(null)}>
+          <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
+          <div className="relative z-10 w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <h3 className="flex items-center gap-2 text-base font-bold text-[#1e293b]">
+              <IconCoin className="h-5 w-5 text-[#f5b83d]" />
+              调整积分余额
+            </h3>
+            <p className="mt-2 text-sm text-[#64748b]">
+              设置「{balanceEdit.user.displayName || balanceEdit.user.username}」的积分余额（当前 {balanceEdit.user.balance}）
+            </p>
+            <input
+              autoFocus
+              type="number"
+              min="0"
+              value={balanceEdit.value}
+              onChange={(event) => setBalanceEdit({ ...balanceEdit, value: event.target.value })}
+              onKeyDown={(event) => { if (event.key === 'Enter') void saveBalance() }}
+              className="mt-4 w-full rounded-lg border border-[#e2e8f0] px-3 py-2.5 text-sm outline-none focus:border-[#3b82f6] focus:ring-2 focus:ring-[#3b82f6]/15"
+            />
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setBalanceEdit(null)} className="rounded-lg border border-[#e2e8f0] px-4 py-2 text-sm font-medium text-[#475569] transition hover:bg-[#f8fafc]">取消</button>
+              <button type="button" onClick={() => void saveBalance()} disabled={busy} className="rounded-lg bg-[#2563eb] px-5 py-2 text-sm font-medium text-white transition hover:bg-[#1d4ed8] disabled:opacity-50">保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </AdminShell>
   )
 }

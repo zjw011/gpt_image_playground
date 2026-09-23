@@ -7,12 +7,10 @@ import { useSearchParams } from 'react-router-dom'
 import DashboardPage from './DashboardPage'
 import ChannelsPage from './ChannelsPage'
 import UsagePage from './UsagePage'
-import AgentPage from './AgentPage'
 import UsersPage from './UsersPage'
 import CreditsPage from './CreditsPage'
 import WechatPage from './WechatPage'
 import SmtpPage from './SmtpPage'
-import AccessPage from './AccessPage'
 import SitePage from './SitePage'
 import { ADMIN_TABS } from './AdminShell'
 
@@ -20,12 +18,10 @@ const VIEWS: Record<string, React.ComponentType> = {
   dashboard: DashboardPage,
   channels: ChannelsPage,
   usage: UsagePage,
-  agent: AgentPage,
   users: UsersPage,
   credits: CreditsPage,
   wechat: WechatPage,
   smtp: SmtpPage,
-  access: AccessPage,
   site: SitePage,
 }
 
