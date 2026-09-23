@@ -34,8 +34,19 @@ function commit() {
 
 function index() {
   byId = new Map(items.map((item) => [item.id, item]))
-  byHash = new Map(items.map((item) => [item.hash, item]))
+  byHash = new Map(items.filter((item) => item.hash).map((item) => [item.hash, item]))
 }
+
+// 内置精选作品：随站点分发的示例图（/art/*.jpg），任何部署首次启动就自动上架，
+// 让广场公开可见、不至于空着。它们没有图片文件（staticPath 直指静态资源），不可被普通用户删除。
+const SEED_WORKS = [
+  { id: 'w-seed-train', staticPath: '/art/work-train.jpg', ownerName: '星野', baseLikes: 1280, prompt: '星空下的列车，璀璨银河，车窗暖光，新海诚风格', daysAgo: 6 },
+  { id: 'w-seed-seaside', staticPath: '/art/work-seaside.jpg', ownerName: '蓝调', baseLikes: 986, prompt: '海边少女回头微笑，粉蓝色天空，海鸥，唯美治愈', daysAgo: 5 },
+  { id: 'w-seed-cyber', staticPath: '/art/work-cyber.jpg', ownerName: 'NightCity', baseLikes: 2100, prompt: '赛博朋克城市夜景，霓虹灯牌，雨后街道倒影', daysAgo: 4 },
+  { id: 'w-seed-cat', staticPath: '/art/work-cat.jpg', ownerName: '喵星人', baseLikes: 2800, prompt: '布偶猫特写肖像，蓝眼睛，淡紫蝴蝶结，花瓣光斑', daysAgo: 3 },
+  { id: 'w-seed-hanfu', staticPath: '/art/work-hanfu.jpg', ownerName: '古风小筑', baseLikes: 764, prompt: '汉服少女桃花树下，江南水乡，柔和晨光，国风插画', daysAgo: 2 },
+  { id: 'w-seed-sakura', staticPath: '/art/work-sakura.jpg', ownerName: '春日部', baseLikes: 1500, prompt: '春日樱花街道，透明雨伞少女背影，花瓣纷飞', daysAgo: 1 },
+]
 
 export function initGallery(dir) {
   dataDir = join(dir, 'gallery')
@@ -51,7 +62,24 @@ export function initGallery(dir) {
       console.error('[gallery] gallery.json 解析失败，已按空广场处理')
     }
   } else {
-    items = []
+    // 首次启动：播种精选作品，广场一上线就有内容、对所有人可见
+    const now = Date.now()
+    items = SEED_WORKS.map((seed) => ({
+      id: seed.id,
+      staticPath: seed.staticPath,
+      file: '',
+      hash: '',
+      bytes: 0,
+      prompt: seed.prompt,
+      model: '',
+      ownerId: 'system',
+      ownerName: seed.ownerName,
+      baseLikes: seed.baseLikes,
+      likedBy: [],
+      createdAt: now - seed.daysAgo * 86_400_000,
+      seed: true,
+    }))
+    commit()
   }
   index()
   // 元数据丢失时按文件名无法还原作者等信息，孤儿图片文件宁可清掉也不展示"无主"作品
@@ -75,10 +103,11 @@ function toPublic(item, viewerId) {
     model: item.model,
     ownerName: item.ownerName,
     ownerId: item.ownerId,
-    likes: item.likedBy.length,
+    likes: (item.baseLikes ?? 0) + item.likedBy.length,
     likedByMe: viewerId ? item.likedBy.includes(viewerId) : false,
     createdAt: item.createdAt,
-    imageUrl: `/api/gallery/${item.id}/image`,
+    // 精选作品直接引用随站点分发的内置图；用户上传的走图片接口
+    imageUrl: item.staticPath ?? `/api/gallery/${item.id}/image`,
   }
 }
 
@@ -145,13 +174,15 @@ export function toggleLike(itemId, userId) {
   if (idx >= 0) item.likedBy.splice(idx, 1)
   else item.likedBy.push(userId)
   commit()
-  return { ok: true, liked: idx < 0, likes: item.likedBy.length }
+  // likes 口径与列表投影一致：基础点赞（精选作品自带）+ 真实点赞
+  return { ok: true, liked: idx < 0, likes: (item.baseLikes ?? 0) + item.likedBy.length }
 }
 
 /** 删除：作者本人或管理员。删元数据 + 删文件 + 释放内容去重。 */
 export function removeWork(itemId, { userId, isAdmin }) {
   const item = byId.get(itemId)
   if (!item) return { ok: false, error: '作品不存在或已被删除' }
+  if (item.seed) return { ok: false, error: '精选作品不可删除' }
   if (!isAdmin && item.ownerId !== userId) return { ok: false, error: '只能删除自己的作品' }
   items = items.filter((candidate) => candidate.id !== itemId)
   index()
