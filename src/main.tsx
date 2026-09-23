@@ -8,6 +8,7 @@ import 'katex/dist/katex.min.css'
 import './index.css'
 import { installMobileViewportGuards } from './lib/viewport'
 import { installCreditsSync } from './lib/creditsSync'
+import ErrorBoundary from './components/ErrorBoundary'
 
 installMobileViewportGuards()
 // 必须在任何出图请求之前装好：它靠响应头里的余额回执来实时刷新顶栏数字。
@@ -30,6 +31,8 @@ if ('serviceWorker' in navigator) {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <RouterProvider router={router} />
+    <ErrorBoundary>
+      <RouterProvider router={router} />
+    </ErrorBoundary>
   </StrictMode>,
 )

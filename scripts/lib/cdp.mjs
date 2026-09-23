@@ -16,7 +16,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  * @param {(line: string) => void} [options.onConsoleError] 页面里 console.error 的回调
  * @param {string} [options.baseUrl] 相对路径跳转时的基准地址
  */
-export async function launchChrome({ port, chromePath, onConsoleError, baseUrl } = {}) {
+export async function launchChrome({ port, chromePath, onConsoleError, baseUrl, extraArgs = [] } = {}) {
   const chrome = chromePath || process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe'
   const profileDir = mkdtempSync(join(tmpdir(), 'cdp-audit-'))
   const child = spawn(chrome, [
@@ -25,6 +25,8 @@ export async function launchChrome({ port, chromePath, onConsoleError, baseUrl }
     // chrome-error://chromewebdata/，脚本只会看到"标题是 127.0.0.1 的空页面"。
     '--no-proxy-server',
     `--remote-debugging-port=${port}`, `--user-data-dir=${profileDir}`, 'about:blank',
+    // extraArgs 留个口子：窄屏（--window-size=390,844）之类的场景要自己加参数
+    ...extraArgs,
   ], { stdio: 'ignore' })
 
   let socket

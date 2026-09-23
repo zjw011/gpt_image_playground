@@ -39,51 +39,59 @@ export function SideNav() {
     return location.pathname.startsWith(path)
   }
 
+  // 窄屏（手机）只留图标栏：220px 的侧栏会把内容区挤到只剩一百多像素
   return (
-    <aside className="sticky top-0 flex h-screen w-[220px] shrink-0 flex-col border-r border-[#eceaf6] bg-white px-4 py-5">
-      <div className="px-2">
+    <aside className="sticky top-0 flex h-screen w-16 shrink-0 flex-col border-r border-[#eceaf6] bg-white px-2 py-4 lg:w-[220px] lg:px-4 lg:py-5">
+      <div className="hidden px-2 lg:block">
         <Logo to="/studio" />
       </div>
+      <div className="flex justify-center lg:hidden">
+        <Link to="/studio" className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-base font-bold text-white">
+          绘
+        </Link>
+      </div>
 
-      <nav className="mt-8 flex flex-col gap-1">
+      <nav className="mt-6 flex flex-col gap-1 lg:mt-8">
         {NAV_ITEMS.map((item) => (
           <NavLink
             key={item.label}
             to={item.to}
-            className={`flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition ${
+            title={item.label}
+            className={`flex items-center justify-center gap-3 rounded-xl px-2 py-2.5 text-sm font-medium transition lg:justify-start lg:px-3.5 ${
               isActive(item)
                 ? 'bg-[#efedfd] text-[#6b5ce7]'
                 : 'text-[#6f6a94] hover:bg-[#f5f4fb] hover:text-[#37335c]'
             }`}
           >
-            <item.icon className="h-[18px] w-[18px]" />
-            {item.label}
+            <item.icon className="h-[18px] w-[18px] shrink-0" />
+            <span className="hidden lg:inline">{item.label}</span>
           </NavLink>
         ))}
       </nav>
 
-      <div className="mt-6 border-t border-[#f1effa] pt-4">
-        <p className="px-3.5 text-[11px] font-medium uppercase tracking-wider text-[#b3aed0]">更多</p>
+      <div className="mt-5 border-t border-[#f1effa] pt-4 lg:mt-6">
+        <p className="hidden px-3.5 text-[11px] font-medium uppercase tracking-wider text-[#b3aed0] lg:block">更多</p>
         <div className="mt-2 flex flex-col gap-1">
-          <NavLink to="/help" className="flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium text-[#6f6a94] transition hover:bg-[#f5f4fb] hover:text-[#37335c]">
-            <IconHelp className="h-[18px] w-[18px]" />
-            帮助中心
+          <NavLink to="/help" title="帮助中心" className="flex items-center justify-center gap-3 rounded-xl px-2 py-2.5 text-sm font-medium text-[#6f6a94] transition hover:bg-[#f5f4fb] hover:text-[#37335c] lg:justify-start lg:px-3.5">
+            <IconHelp className="h-[18px] w-[18px] shrink-0" />
+            <span className="hidden lg:inline">帮助中心</span>
           </NavLink>
           {showSettingsEntry && (
             <button
               type="button"
               onClick={() => setShowSettings(true)}
-              className="flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-left text-sm font-medium text-[#6f6a94] transition hover:bg-[#f5f4fb] hover:text-[#37335c]"
+              title="设置"
+              className="flex items-center justify-center gap-3 rounded-xl px-2 py-2.5 text-left text-sm font-medium text-[#6f6a94] transition hover:bg-[#f5f4fb] hover:text-[#37335c] lg:justify-start lg:px-3.5"
             >
-              <IconSettings className="h-[18px] w-[18px]" />
-              设置
+              <IconSettings className="h-[18px] w-[18px] shrink-0" />
+              <span className="hidden lg:inline">设置</span>
             </button>
           )}
           {/* 站长账号在前台也能一键回后台，不用手动敲 /admin */}
           {isAdmin() && (
-            <Link to="/admin" className="flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium text-[#6f6a94] transition hover:bg-[#f5f4fb] hover:text-[#37335c]">
-              <IconShield className="h-[18px] w-[18px]" />
-              管理后台
+            <Link to="/admin" title="管理后台" className="flex items-center justify-center gap-3 rounded-xl px-2 py-2.5 text-sm font-medium text-[#6f6a94] transition hover:bg-[#f5f4fb] hover:text-[#37335c] lg:justify-start lg:px-3.5">
+              <IconShield className="h-[18px] w-[18px] shrink-0" />
+              <span className="hidden lg:inline">管理后台</span>
             </Link>
           )}
         </div>
@@ -91,12 +99,12 @@ export function SideNav() {
 
       {/* 底部积分卡：只在后台开启积分制时显示 */}
       {credits && (
-        <div className="mt-auto rounded-2xl bg-gradient-to-br from-[#efedfd] to-[#e3f0ff] p-4">
-          <div className="flex items-center gap-2 text-xs font-medium text-[#6f6a94]">
+        <div className="mt-auto rounded-2xl bg-gradient-to-br from-[#efedfd] to-[#e3f0ff] p-2 lg:p-4">
+          <div className="hidden items-center gap-2 text-xs font-medium text-[#6f6a94] lg:flex">
             <IconSparkle className="h-3.5 w-3.5 text-[#7c6cf6]" />
             剩余积分
           </div>
-          <div className="mt-1.5 text-2xl font-bold text-[#37335c]">
+          <div className="text-center text-base font-bold text-[#37335c] lg:mt-1.5 lg:text-left lg:text-2xl" title="剩余积分">
             {(view?.available ?? 0).toLocaleString()}
           </div>
           <Link

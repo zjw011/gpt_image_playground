@@ -1,5 +1,6 @@
 // 个人中心。左侧导航承担分区入口（作品/积分中心/账号设置）；
 // 「我的收藏」不单独占一栏——收藏就是打了星标的作品，在「我的作品」里用页签切换查看。
+import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore } from '../../store'
 import { getBackendUser, getCreditsConfig, submitFrontLogout, type BackendLedgerType } from '../../lib/backend'
@@ -97,6 +98,10 @@ export default function MePage() {
     window.location.assign(import.meta.env.BASE_URL)
   }
 
+  // 作品多了不能一把全渲染：每张缩略图都要从 IndexedDB 读一次，
+  // 一次几百张会明显卡顿。先出 48 张，剩下的点「加载更多」。
+  const [visibleCount, setVisibleCount] = useState(48)
+
   const isWorks = tab === 'works'
   const gridTasks = isWorks ? (favOnly ? favoriteTasks : doneTasks) : doneTasks
   const currentLabel = MENU.find((item) => item.key === tab)?.label ?? '我的作品'
@@ -170,11 +175,24 @@ export default function MePage() {
                 cta={favOnly ? undefined : '立即创作'}
               />
             ) : (
+              <>
               <div className="mt-4 grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-4">
-                {gridTasks.map((task) => (
+                {gridTasks.slice(0, visibleCount).map((task) => (
                   <WorkThumb key={task.id} imageId={task.outputImages[0]} taskId={task.id} favorite={task.isFavorite} />
                 ))}
               </div>
+              {gridTasks.length > visibleCount && (
+                <div className="mt-5 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleCount((count) => count + 48)}
+                    className="rounded-full border border-[#dcd8f0] px-6 py-2.5 text-sm font-medium text-[#6f6a94] transition hover:border-[#7c6cf6] hover:text-[#7c6cf6]"
+                  >
+                    加载更多（还有 {gridTasks.length - visibleCount} 张）
+                  </button>
+                </div>
+              )}
+              </>
             )}
             </>
           )}
