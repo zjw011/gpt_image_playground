@@ -1,19 +1,16 @@
-// 个人中心。对应设计稿 8：左侧资料卡 + 右侧菜单（作品/收藏/积分记录/订单/账号设置）。
+// 个人中心。左侧导航承担分区入口（作品/积分中心/账号设置）；
+// 「我的收藏」不单独占一栏——收藏就是打了星标的作品，在「我的作品」里用页签切换查看。
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore } from '../../store'
 import { getBackendUser, getCreditsConfig, submitFrontLogout, type BackendLedgerType } from '../../lib/backend'
 import { useCreditsStore } from '../../lib/creditsStore'
 import AppShell from './AppShell'
 import { useThumbnail } from './useTaskImage'
-import { IconImage, IconUser, IconLogout, IconSparkle } from '../icons'
+import { IconImage, IconUser, IconLogout, IconSparkle, IconStar } from '../icons'
 
-// 只保留合法取值和中文名（标题、空态要用）。入口清单在左侧导航里，
-// 这一页不再自己渲染一列菜单，免得和侧栏形成两层导航。
 const MENU = [
   { key: 'works', label: '我的作品' },
-  { key: 'favorites', label: '我的收藏' },
   { key: 'ledger', label: '积分中心' },
-  { key: 'orders', label: '订单记录' },
   { key: 'settings', label: '账号设置' },
 ] as const
 
@@ -27,7 +24,7 @@ const LEDGER_LABELS: Record<BackendLedgerType, string> = {
   admin: '管理员调整',
 }
 
-function WorkThumb({ imageId, taskId }: { imageId: string, taskId: string }) {
+function WorkThumb({ imageId, taskId, favorite }: { imageId: string, taskId: string, favorite?: boolean }) {
   const src = useThumbnail(imageId)
   return (
     <Link
@@ -37,6 +34,14 @@ function WorkThumb({ imageId, taskId }: { imageId: string, taskId: string }) {
       {src
         ? <img src={src} alt="" className="h-full w-full object-cover transition duration-300 group-hover:scale-105" />
         : <span className="flex h-full w-full items-center justify-center text-[#d8d4ec]"><IconImage className="h-7 w-7" /></span>}
+      {favorite && (
+        <span
+          className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-white/90 shadow-sm ring-1 ring-[#f3d9a4]"
+          title="已收藏"
+        >
+          <IconStar className="h-3.5 w-3.5 text-[#f0b429]" filled />
+        </span>
+      )}
     </Link>
   )
 }
@@ -75,7 +80,10 @@ export default function MePage() {
   const credits = getCreditsConfig()
   const view = useCreditsStore((s) => s.view)
 
-  const tab: MenuKey = (MENU.some((item) => item.key === searchParams.get('tab')) ? searchParams.get('tab') : 'works') as MenuKey
+  const rawTab = searchParams.get('tab') ?? 'works'
+  // 「我的收藏」已并入我的作品：旧链接 ?tab=favorites 等价于 works 页的收藏筛选
+  const tab: MenuKey = (MENU.some((item) => item.key === rawTab) ? rawTab : 'works') as MenuKey
+  const favOnly = rawTab === 'favorites' || searchParams.get('fav') === '1'
   const name = user?.displayName || user?.username || '本地创作者'
   const doneTasks = tasks.filter((task) => task.status === 'done' && task.outputImages.length > 0)
   const favoriteTasks = tasks.filter((task) => task.isFavorite)
@@ -89,7 +97,8 @@ export default function MePage() {
     window.location.assign(import.meta.env.BASE_URL)
   }
 
-  const gridTasks = tab === 'works' ? doneTasks : favoriteTasks
+  const isWorks = tab === 'works'
+  const gridTasks = isWorks ? (favOnly ? favoriteTasks : doneTasks) : doneTasks
   const currentLabel = MENU.find((item) => item.key === tab)?.label ?? '我的作品'
 
   return (
@@ -133,19 +142,41 @@ export default function MePage() {
         <h2 className="text-[15px] font-bold">{currentLabel}</h2>
 
         <div className="mt-4 min-w-0">
-          {(tab === 'works' || tab === 'favorites') && (
-            gridTasks.length === 0 ? (
+          {isWorks && (
+            <>
+            {/* 全部 / 收藏 页签：收藏就是打了星标的作品，不再单独占一个侧栏入口 */}
+            <div className="flex gap-1 rounded-full border border-[#eceaf6] bg-white p-1 w-fit">
+              {([
+                { key: 'all', label: `全部 ${doneTasks.length}` },
+                { key: 'fav', label: `收藏 ${favoriteTasks.length}` },
+              ]).map((item) => {
+                const active = (item.key === 'fav') === favOnly
+                return (
+                  <Link
+                    key={item.key}
+                    to={item.key === 'fav' ? '/me?tab=works&fav=1' : '/me?tab=works'}
+                    className={`rounded-full px-4 py-1.5 text-[13px] font-medium transition ${
+                      active ? 'bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] text-white shadow-sm' : 'text-[#6f6a94] hover:text-[#37335c]'
+                    }`}
+                  >
+                    {item.label}
+                  </Link>
+                )
+              })}
+            </div>
+            {gridTasks.length === 0 ? (
               <EmptyState
-                text={tab === 'works' ? '还没有作品，第一张图免费画' : '还没有收藏，看到喜欢的点颗心吧'}
-                cta={tab === 'works' ? '立即创作' : undefined}
+                text={favOnly ? '还没有收藏；打开任意作品，点「收藏」加个星标吧' : '还没有作品，第一张图免费画'}
+                cta={favOnly ? undefined : '立即创作'}
               />
             ) : (
-              <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-4">
+              <div className="mt-4 grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-4">
                 {gridTasks.map((task) => (
-                  <WorkThumb key={task.id} imageId={task.outputImages[0]} taskId={task.id} />
+                  <WorkThumb key={task.id} imageId={task.outputImages[0]} taskId={task.id} favorite={task.isFavorite} />
                 ))}
               </div>
-            )
+            )}
+            </>
           )}
 
           {tab === 'ledger' && (
@@ -187,8 +218,6 @@ export default function MePage() {
             <OrderNote />
             </>
           )}
-
-          {tab === 'orders' && <OrderNote />}
 
           {tab === 'settings' && (
             <div className="rounded-3xl border border-[#eceaf6] bg-white p-6 shadow-sm">

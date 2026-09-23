@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 
 import { handleAdminRoute } from './lib/adminRoutes.mjs'
 import { initCards } from './lib/cards.mjs'
+import { initGallery } from './lib/gallery.mjs'
 import { initCredits, grantSignupBonus } from './lib/credits.mjs'
 import {
   cancelEmailCode,
@@ -64,6 +65,7 @@ const config = initStore(DATA_DIR)
 initUsage(DATA_DIR)
 initCredits(DATA_DIR)
 initCards(DATA_DIR)
+initGallery(DATA_DIR)
 
 // 首次启动可用环境变量播种站长账号（role=admin），省掉手动初始化步骤。
 // 后台并入主前端后，管理员就是一条普通用户记录——凭用户名 + 密码在同一个入口登录，
@@ -174,6 +176,7 @@ const SAME_ORIGIN_API_PATHS = new Set([
   '/api/auth/reset-password',
   '/api/credits/redeem',
   '/api/wechat/login',
+  '/api/gallery',
 ])
 
 // ===== 邮箱验证码 =====
@@ -216,17 +219,28 @@ function buildVerificationEmail({ title, code, purpose, ttlMinutes }) {
   ].join('\n')
 
   const html = `<!DOCTYPE html>
-<html lang="zh-CN"><body style="margin:0;padding:24px;background:#f5f6f8;font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;color:#1f2329">
-  <div style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:14px;padding:32px 28px">
-    <p style="margin:0 0 4px;font-size:20px;font-weight:600">${escapeHtml(title)}</p>
-    <p style="margin:0 0 24px;font-size:14px;color:#8a9099">${action}验证码</p>
-    <div style="background:#f5f6f8;border-radius:10px;padding:18px 0;text-align:center">
-      <span style="font-size:34px;font-weight:700;letter-spacing:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${code}</span>
+<html lang="zh-CN"><body style="margin:0;padding:0;background:#f0eefb;font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;color:#37335c">
+  <div style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 6px 24px rgba(124,108,246,.12)">
+    <div style="background:linear-gradient(135deg,#7c6cf6,#a78bfa);padding:26px 28px;color:#ffffff">
+      <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+        <td style="vertical-align:middle">
+          <span style="display:inline-block;width:38px;height:38px;line-height:38px;text-align:center;border-radius:10px;background:rgba(255,255,255,.22);font-size:20px;font-weight:700">绘</span>
+        </td>
+        <td style="vertical-align:middle;padding-left:10px;font-size:19px;font-weight:700;letter-spacing:1px">${escapeHtml(title)}</td>
+      </tr></table>
+      <p style="margin:12px 0 0;font-size:13px;opacity:.92">${action}验证码</p>
     </div>
-    <p style="margin:20px 0 0;font-size:14px;color:#5c6169">验证码 ${ttlMinutes} 分钟内有效，请勿转发给任何人。</p>
-    <p style="margin:8px 0 0;font-size:13px;color:#8a9099">${escapeHtml(warn)}</p>
-    <hr style="border:none;border-top:1px solid #eceef1;margin:24px 0">
-    <p style="margin:0;font-size:13px;color:#8a9099">${escapeHtml(title)}</p>
+    <div style="padding:30px 28px 26px">
+      <p style="margin:0 0 18px;font-size:14px;color:#6f6a94">你正在${action}，请使用下面的验证码：</p>
+      <div style="background:#f5f4fb;border:1px dashed #d8d2f5;border-radius:12px;padding:20px 0;text-align:center">
+        <span style="font-size:36px;font-weight:700;letter-spacing:8px;color:#6b5ce7;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${code}</span>
+      </div>
+      <p style="margin:18px 0 0;font-size:13.5px;color:#5b5680">验证码 <strong>${ttlMinutes} 分钟</strong>内有效，请勿转发给任何人。</p>
+      <p style="margin:8px 0 0;font-size:13px;color:#a5a1c4">${escapeHtml(warn)}</p>
+    </div>
+    <div style="background:#faf9fe;border-top:1px solid #efedfd;padding:16px 28px;text-align:center">
+      <p style="margin:0;font-size:12px;color:#a5a1c4">${escapeHtml(title)} · 用 AI 绘出无限想象</p>
+    </div>
   </div>
 </body></html>`
 

@@ -4,9 +4,12 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore, submitTask, reuseConfig, removeTask } from '../../store'
 import AppShell from './AppShell'
 import { useFullImage, useThumbnail } from './useTaskImage'
+import { getImage } from '../../lib/db'
+import { isBackendMode, getBackendUser } from '../../lib/backend'
+import { publishWork } from '../../lib/galleryApi'
 import {
   IconArrowLeft, IconDownload, IconHeart, IconRefresh, IconCopy,
-  IconTrash, IconImage, IconSparkle,
+  IconTrash, IconImage, IconSparkle, IconUpload,
 } from '../icons'
 
 function Thumb({ imageId, active, onClick }: { imageId: string, active: boolean, onClick: () => void }) {
@@ -40,6 +43,8 @@ export default function ResultPage() {
   }, [tasks, searchParams])
 
   const [activeImageId, setActiveImageId] = useState<string | null>(null)
+  // 本次会话里已上传广场的作品：上传成功后按钮变成"已在广场"，避免重复上传
+  const [publishedIds, setPublishedIds] = useState<Set<string>>(new Set())
   const imageId = activeImageId && task?.outputImages.includes(activeImageId)
     ? activeImageId
     : task?.outputImages[0] ?? null
@@ -102,9 +107,35 @@ export default function ResultPage() {
     })
   }
 
-  const ACTIONS = [
+  // 上传到作品广场：需要登录账号（托管模式）+ 已完成的作品。
+  // 未上传的作品只存在这台浏览器里，上传后才会进服务器、公开给所有人看。
+  const canPublish = isBackendMode() && Boolean(getBackendUser()) && task.status === 'done'
+  const [publishing, setPublishing] = useState(false)
+  const published = publishedIds.has(task.id)
+
+  const publishToGallery = async () => {
+    if (publishing) return
+    setPublishing(true)
+    try {
+      const stored = await getImage(task.outputImages[0])
+      if (!stored?.dataUrl) throw new Error('图片读取失败，请稍后重试')
+      await publishWork({ image: stored.dataUrl, prompt: task.prompt, model: task.apiModel ?? '' })
+      publishedIds.add(task.id)
+      setPublishedIds(new Set(publishedIds))
+      showToast('已上传到作品广场，大家都能看到啦', 'success')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '上传失败，请稍后重试', 'error')
+    } finally {
+      setPublishing(false)
+    }
+  }
+
+  const ACTIONS: Array<{ icon: (props: { className?: string }) => React.ReactElement, label: string, onClick: () => void, disabled?: boolean, danger?: boolean }> = [
     { icon: IconDownload, label: '下载', onClick: download, disabled: !fullSrc },
     { icon: IconHeart, label: '收藏', onClick: () => openFavoritePicker([task.id]) },
+    ...(canPublish
+      ? [{ icon: IconUpload, label: published ? '已在广场' : '上传广场', onClick: () => void publishToGallery(), disabled: publishing || published }]
+      : []),
     { icon: IconRefresh, label: '再次生成', onClick: () => void regenerate() },
     { icon: IconCopy, label: '复制提示词', onClick: () => void copyPrompt() },
     { icon: IconTrash, label: '删除', onClick: confirmDelete, danger: true },

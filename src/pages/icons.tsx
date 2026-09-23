@@ -81,6 +81,12 @@ export const IconHeart = ({ className, filled }: IconProps & { filled?: boolean 
   </svg>
 )
 
+export const IconStar = ({ className, filled }: IconProps & { filled?: boolean }) => (
+  <svg viewBox="0 0 24 24" className={className} fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z" />
+  </svg>
+)
+
 export const IconEdit = ({ className }: IconProps) => (
   <Base className={className}>
     <path d="M4 20l1-4L16.5 4.5a2.12 2.12 0 0 1 3 3L8 19l-4 1z" />

@@ -90,7 +90,6 @@ try {
     ['侧栏 · AI 绘画', 'aside a[href="/studio"]', '/studio'],
     ['侧栏 · 作品广场', 'aside a[href="/gallery"]', '/gallery'],
     ['侧栏 · 我的作品', 'aside a[href="/me?tab=works"]', '/me?tab=works'],
-    ['侧栏 · 我的收藏', 'aside a[href="/me?tab=favorites"]', '/me?tab=favorites'],
     ['侧栏 · 积分中心', 'aside a[href="/me?tab=ledger"]', '/me?tab=ledger'],
     ['侧栏 · 个人中心', 'aside a[href="/me?tab=settings"]', '/me?tab=settings'],
     ['侧栏 · 帮助中心', 'aside a[href="/help"]', '/help'],
@@ -109,12 +108,23 @@ try {
 
   // 个人中心不能再出现"第二列菜单"：分区入口只归左侧主导航。
   // 这是用户报过的原话——「里面怎么又内嵌一个菜单栏」。
+  // 例外：「我的作品」里的 全部/收藏 页签是正文内容，不算第二列导航。
+  // favorites 是旧地址别名（收藏已并入我的作品），必须仍能打开。
   for (const tab of ['works', 'favorites', 'ledger', 'settings']) {
     await open(`/me?tab=${tab}`, 2400)
-    const insideMain = await evaluate('document.querySelectorAll(\'main a[href^="/me?tab="]\').length')
-    const inAside = await evaluate('document.querySelectorAll(\'aside a[href^="/me?tab="]\').length')
-    report(`个人中心「${tab}」无第二列菜单`, insideMain === 0 && inAside >= 4, `内容区入口=${insideMain} 侧栏入口=${inAside}`)
+    const insideMain = await evaluate(`document.querySelectorAll('main a[href^="/me?tab="]').length`)
+    const inAside = await evaluate(`document.querySelectorAll('aside a[href^="/me?tab="]').length`)
+    const isWorks = tab === 'works' || tab === 'favorites'
+    const ok = inAside === 3 && (isWorks ? insideMain === 2 : insideMain === 0)
+    report(`个人中心「${tab}」无第二列菜单`, ok, `内容区入口=${insideMain} 侧栏入口=${inAside}`)
   }
+
+  // 我的作品内嵌「全部 / 收藏」页签（收藏带星标，不再单独设侧栏入口）
+  await open('/me?tab=works', 2400)
+  const favTab = await evaluate('(() => { const el = Array.from(document.querySelectorAll("main a")).find((a) => a.innerText.includes("收藏")); return el ? el.getAttribute("href") : null })()')
+  report('我的作品含收藏页签', favTab === '/me?tab=works&fav=1', String(favTab))
+  await open('/me?tab=works&fav=1', 2400)
+  report('收藏页签可打开', (await browser.url()) === '/me?tab=works&fav=1', await browser.url())
 
   // 创作台模式切换
   await open('/studio', 2600)

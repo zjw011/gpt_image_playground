@@ -334,7 +334,8 @@ export async function handleRelay(req, res, ctx) {
         settleCredits(userId, charged, {
           images: creditCount,
           ref: channel.id,
-          note: channel.name,
+          // 流水说明要能独立看懂："出图 2 张"比一个渠道名直观得多
+          note: `出图 ${creditCount || 1} 张 · ${channel.name}`,
           reserved,
         })
         settled = true

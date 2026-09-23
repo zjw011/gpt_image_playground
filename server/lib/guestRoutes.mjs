@@ -9,6 +9,7 @@ import { isLocked, getLockRemainingSeconds, recordFailure, recordSuccess } from 
 import { handleRelay } from './relay.mjs'
 import { getConfig, getEnabledChannels, inviteStatus, isSmtpConfigured, toPublicChannel } from './store.mjs'
 import { handleWechatCallback, pollWechatLogin, serveFixedQrcode, serveSceneQrcode, startWechatLogin } from './wechatRoutes.mjs'
+import { handleGalleryRoute } from './galleryRoutes.mjs'
 
 /** 共享工作区标识：open / passcode 模式下所有人同一个本地仓库。 */
 const SHARED_WORKSPACE_ID = 'shared'
@@ -45,6 +46,11 @@ export async function handleGuestRoute(req, res, ctx) {
   // 微信登录相关的接口必须在门禁之外——它们就是用来穿过门禁的。
   if (ctx.path.startsWith('/api/wechat/')) {
     return handleWechatRoute(req, res, ctx, accessMode)
+  }
+
+  // 作品广场同样在门禁之外：浏览是公开的（未登录也能看），写操作在路由内部自行要求登录。
+  if (ctx.path.startsWith('/api/gallery')) {
+    return handleGalleryRoute(req, res, ctx)
   }
 
   const gateOpen = accessMode === 'open'
