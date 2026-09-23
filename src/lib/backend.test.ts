@@ -200,6 +200,24 @@ describe('积分字段的解析与本地覆盖', () => {
     expect(getCreditsView()?.ledger[0]).toMatchObject({ type: 'spend', ref: 'ch-1' })
   })
 
+  it('积分流水的负数变动必须保留（消耗显示为 -N 而不是被钳成 +0）', async () => {
+    stubBootstrap({
+      backendMode: true,
+      accessMode: 'wechat',
+      authenticated: true,
+      credits: {
+        enabled: true, costPerImage: 2, balance: 90, reserved: 0, available: 90, totalIn: 100, totalOut: 10,
+        ledger: [
+          { at: 1, type: 'signup', amount: 100, balanceAfter: 100, ref: '', note: '注册赠送' },
+          { at: 2, type: 'spend', amount: -10, balanceAfter: 90, ref: 'ch-1', note: '出图 1 张 · 渠道A' },
+        ],
+      },
+    })
+    await loadBackendBootstrap()
+    expect(getCreditsView()?.ledger[0]).toMatchObject({ type: 'signup', amount: 100 })
+    expect(getCreditsView()?.ledger[1]).toMatchObject({ type: 'spend', amount: -10, balanceAfter: 90 })
+  })
+
   it('余额字段残缺时当没有余额，而不是显示半真的数字', async () => {
     stubBootstrap({ backendMode: true, accessMode: 'wechat', authenticated: true, credits: { enabled: true, available: 26 } })
     await loadBackendBootstrap()
