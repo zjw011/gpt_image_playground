@@ -31,6 +31,7 @@ import {
   findUserByUsername,
   generateInviteCode,
   generatePasscode,
+  generateUserId,
   getConfig,
   hashPassword,
   isAgentTextChannel,
@@ -60,10 +61,6 @@ function genChannelId() {
   return `ch-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
 }
 
-function genUserId() {
-  return `u-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
-}
-
 function assertChannelInput(input, config, currentId) {
   const provider = String(input.provider ?? 'openai').trim()
   if (!provider) throw new HttpError(400, '必须选择服务商类型')
@@ -88,7 +85,8 @@ export async function handleAdminRoute(req, res, ctx) {
     const creditsRows = new Map(creditsSummary(userNames, { ledgerLimit: 1 }).users.map((row) => [row.id, row]))
 
     return sendJson(res, 200, {
-      initialized: Boolean(config.adminPasswordHash),
+      // 后台并入主前端后，"已初始化"= 存在一个启用的站长账号（不再有独立管理员口令）。
+      initialized: config.users.some((user) => user.role === 'admin' && user.enabled),
       authenticated: ctx.role === 'admin',
       ...(ctx.role === 'admin'
         ? {
@@ -143,6 +141,54 @@ export async function handleAdminRoute(req, res, ctx) {
       accessMode: config.site.accessMode,
       userCount: config.users.length,
       channelCount: config.channels.length,
+    })
+  }
+
+  // ===== 仪表盘：新后台首页 =====
+  // 把「出图」与「积分」两条线的关键数字合成一次请求，供浅色后台首屏渲染。
+  if (path === '/api/admin/dashboard' && method === 'GET') {
+    const config = getConfig()
+    const now = Date.now()
+    const day = (offset) => {
+      const d = new Date(now - offset * 86_400_000)
+      const month = String(d.getMonth() + 1).padStart(2, '0')
+      const date = String(d.getDate()).padStart(2, '0')
+      return `${d.getFullYear()}-${month}-${date}`
+    }
+
+    const overview = usageOverview(
+      new Map(config.channels.map((item) => [item.id, item.name])),
+      new Map(config.users.map((item) => [item.id, item.displayName || item.username])),
+      { range: 'today' },
+    )
+    const summary = creditsSummary(new Map(config.users.map((item) => [item.id, item.displayName || item.username])), { ledgerLimit: 8 })
+
+    // 近 14 天：出图趋势 + 积分消耗趋势对齐到同一组日期
+    const dayKeys = Array.from({ length: 14 }, (_, i) => day(i)).reverse()
+    const usageDays = new Map(overview.days.map((item) => [item.day, item]))
+    const creditDays = new Map(summary.days.map((item) => [item.day, item]))
+    const trend = dayKeys.map((key) => ({
+      day: key,
+      images: usageDays.get(key)?.total ?? 0,
+      spent: creditDays.get(key)?.spend ?? 0,
+    }))
+
+    return sendJson(res, 200, {
+      stats: {
+        imagesToday: overview.totals.total,
+        imagesOk: overview.totals.ok,
+        imagesFail: overview.totals.fail,
+        userCount: config.users.length,
+        channelCount: config.channels.length,
+        channelUp: config.channels.filter((channel) => channelHealth(channel.id).state !== 'down').length,
+        creditBalance: summary.totals.balance,
+        creditSpent: summary.totals.totalOut,
+        cardCount: cardsOverview().total,
+        cardUnused: cardsOverview().unused,
+      },
+      trend,
+      recentLedger: summary.ledger,
+      updatedAt: now,
     })
   }
 
@@ -343,7 +389,7 @@ export async function handleAdminRoute(req, res, ctx) {
     const password = provided || generatePasscode()
 
     const now = Date.now()
-    const id = genUserId()
+    const id = generateUserId()
     const user = normalizeUser({
       id,
       username,
@@ -469,6 +515,9 @@ export async function handleAdminRoute(req, res, ctx) {
   }
 
   // ===== 口令管理 =====
+  // 口令管理。
+  // target=guest 改共享访客口令；target=admin 改的是**当前登录管理员自己的账号密码**——
+  // 后台并入主前端后已经没有独立的"管理员口令"了，身份就是那条 role=admin 的用户记录。
   if (path === '/api/admin/password' && method === 'PUT') {
     const body = await readJsonBody(req)
     const target = body.target === 'guest' ? 'guest' : 'admin'
@@ -486,20 +535,33 @@ export async function handleAdminRoute(req, res, ctx) {
       return sendJson(res, 200, { ok: true, guestPasswordSet: false })
     }
 
-    // 访客口令按用户口令的宽松下限来；管理员口令仍要求 8 位。
-    const minLength = target === 'guest' ? MIN_USER_PASSWORD_LENGTH : 8
-    if (next.length < minLength) throw new HttpError(400, `口令至少 ${minLength} 个字符`)
-    if (target === 'admin' && !verifyPassword(String(body.currentPassword ?? ''), getConfig().adminPasswordHash)) {
-      throw new HttpError(403, '当前管理员口令不正确')
+    // 访客口令按用户口令的宽松下限来；管理员账号密码也走同一套下限。
+    if (next.length < MIN_USER_PASSWORD_LENGTH) {
+      throw new HttpError(400, `密码至少 ${MIN_USER_PASSWORD_LENGTH} 个字符`)
+    }
+
+    if (target === 'admin') {
+      const me = ctx.user
+      if (!me || me.role !== 'admin') throw new HttpError(403, '需要管理员登录')
+      if (!verifyPassword(String(body.currentPassword ?? ''), me.passwordHash)) {
+        throw new HttpError(403, '当前密码不正确')
+      }
+      updateConfig((config) => {
+        const idx = config.users.findIndex((item) => item.id === me.id)
+        if (idx >= 0) config.users[idx] = { ...config.users[idx], passwordHash: hashPassword(next), updatedAt: Date.now() }
+        return config
+      })
+      // 改完密码踢掉其它设备，但保留当前会话（调用方负责），否则管理员会被自己的操作登出。
+      ctx.onPasswordChanged('admin')
+      return sendJson(res, 200, { ok: true })
     }
 
     const hash = hashPassword(next)
     updateConfig((config) => {
-      if (target === 'admin') config.adminPasswordHash = hash
-      else config.guestPasswordHash = hash
+      config.guestPasswordHash = hash
       return config
     })
-    ctx.onPasswordChanged(target)
+    ctx.onPasswordChanged('guest')
     return sendJson(res, 200, { ok: true })
   }
 

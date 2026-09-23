@@ -2,13 +2,22 @@
 // 起因是 vite 的 base 是 './'，react-router 的 basename 一旦拿到相对路径就会整表失配——
 // 表现是「页面能看，但点哪儿都没反应」。这类问题靠肉眼 review 很容易漏，交给脚本点。
 //
-// 用法：先 npm run dev，另开终端执行
-//   node scripts/audit-menu.mjs
-// 需要本机装有 Chrome（路径可用 CHROME_PATH 覆盖）。退出码非 0 表示有失败项。
+// 脚本自己起一个 vite（纯前端模式：没有 dev-proxy.config.json，/api 拿不到 JSON，
+// 于是走"没有后端"的分支），跑完自己关掉。这样不会像以前那样——dev server 早就死了，
+// 脚本却还在对着 5173 一通点击，把"全部超时"报成一堆业务断言失败。
+//
+// 用法：node scripts/audit-menu.mjs
+// 需要本机装有 Chrome（可用 CHROME_PATH 覆盖）。退出码非 0 表示有失败项。
+import { spawn } from 'node:child_process'
+import { join, resolve } from 'node:path'
 import { launchChrome } from './lib/cdp.mjs'
+import { startDevServer } from './lib/devServer.mjs'
 
-const BASE = process.env.AUDIT_BASE_URL || 'http://localhost:5173'
+const PORT = Number(process.env.AUDIT_DEV_PORT || 5179)
+const BASE = process.env.AUDIT_BASE_URL || `http://127.0.0.1:${PORT}`
 const CDP_PORT = Number(process.env.AUDIT_CDP_PORT || 9411)
+const ROOT = resolve(import.meta.dirname, '..')
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 let failed = 0
 function report(label, ok, detail) {
@@ -17,16 +26,27 @@ function report(label, ok, detail) {
 }
 
 const consoleErrors = []
+let dev = null
 let browser
 try {
+  console.log(`启动 dev server（${BASE}）…`)
+  dev = await startDevServer({ port: PORT, root: ROOT })
+
   browser = await launchChrome({
     port: CDP_PORT,
     baseUrl: BASE,
     onConsoleError: (line) => consoleErrors.push(line),
   })
-  const { evaluate, open, click, clickByText, sleep } = browser
+  const { evaluate, open, click, clickByText, waitFor, sleep: wait } = browser
   const currentUrl = () => browser.url()
   const inAppShell = () => evaluate('!!document.querySelector("aside")')
+
+  // 预热：vite 首次访问要现场编译整个应用，先等首页真的渲染出来，
+  // 否则后面第一条断言会把"还在编译"误报成"元素不存在"。
+  await open('/', 500)
+  if (!(await waitFor('header nav a'))) {
+    report('首页渲染（预热）', false, '等了 8 秒仍没有导航元素')
+  }
 
   // 公开页导航：每项都应跳到对应路由
   for (const [label, selector, expected] of [
@@ -36,6 +56,7 @@ try {
     ['公开导航 · 帮助中心', 'nav a[href="/help"]', '/help'],
   ]) {
     await open('/')
+    await waitFor(selector, 6000)
     const state = await click(selector)
     const url = await currentUrl()
     report(label, state === 'clicked' && url === expected, `${state} -> ${url}（期望 ${expected}）`)
@@ -49,7 +70,7 @@ try {
   report('公开导航 · 入口跟随登录态', hasAuthEntry !== hasStudioEntry, `注册入口=${hasAuthEntry} 进入创作=${hasStudioEntry}`)
   if (hasStudioEntry) {
     const state = await evaluate('(() => { const el = Array.from(document.querySelectorAll("header a")).find((a) => a.innerText.includes("进入创作")); if (!el) return "missing"; el.click(); return "clicked" })()')
-    await sleep(1000)
+    await wait(1000)
     const url = await currentUrl()
     report('公开导航 · 进入创作跳转', state === 'clicked' && url === '/studio', `${state} -> ${url}`)
   } else {
@@ -69,8 +90,9 @@ try {
     ['侧栏 · AI 绘画', 'aside a[href="/studio"]', '/studio'],
     ['侧栏 · 作品广场', 'aside a[href="/gallery"]', '/gallery'],
     ['侧栏 · 我的作品', 'aside a[href="/me?tab=works"]', '/me?tab=works'],
+    ['侧栏 · 我的收藏', 'aside a[href="/me?tab=favorites"]', '/me?tab=favorites'],
     ['侧栏 · 积分中心', 'aside a[href="/me?tab=ledger"]', '/me?tab=ledger'],
-    ['侧栏 · 个人中心', 'aside a[href="/me"]', '/me'],
+    ['侧栏 · 个人中心', 'aside a[href="/me?tab=settings"]', '/me?tab=settings'],
     ['侧栏 · 帮助中心', 'aside a[href="/help"]', '/help'],
   ]) {
     await open('/studio', 2600)
@@ -85,6 +107,15 @@ try {
   await click('aside a[href="/studio"]')
   report('侧栏 Logo 留在应用内', (await currentUrl()) === '/studio', await currentUrl())
 
+  // 个人中心不能再出现"第二列菜单"：分区入口只归左侧主导航。
+  // 这是用户报过的原话——「里面怎么又内嵌一个菜单栏」。
+  for (const tab of ['works', 'favorites', 'ledger', 'settings']) {
+    await open(`/me?tab=${tab}`, 2400)
+    const insideMain = await evaluate('document.querySelectorAll(\'main a[href^="/me?tab="]\').length')
+    const inAside = await evaluate('document.querySelectorAll(\'aside a[href^="/me?tab="]\').length')
+    report(`个人中心「${tab}」无第二列菜单`, insideMain === 0 && inAside >= 4, `内容区入口=${insideMain} 侧栏入口=${inAside}`)
+  }
+
   // 创作台模式切换
   await open('/studio', 2600)
   for (const mode of ['图生图', '局部重绘', 'AI 扩图', '文生图']) {
@@ -97,12 +128,6 @@ try {
   await open('/gallery', 2600)
   for (const tab of ['推荐', '最新', '最热']) {
     report(`广场页签「${tab}」`, (await clickByText(tab)) === 'clicked')
-  }
-
-  // 个人中心页签
-  for (const tab of ['我的作品', '我的收藏', '积分记录', '订单记录', '账号设置']) {
-    await open('/me', 2600)
-    report(`个人中心页签「${tab}」`, (await clickByText(tab)) === 'clicked')
   }
 
   // 已下线的旧路由应回落到首页，而不是白屏
@@ -125,7 +150,7 @@ try {
       report(`无后端时 ${path} 给出说明`, (await currentUrl()) === path && text.includes('未启用账号系统'), await currentUrl())
     }
   } else {
-    report(`认证页说明（当前非纯前端模式，落在 ${loginPath}，跳过）`, true)
+    report(`认证页说明（当前落在 ${loginPath}，跳过）`, false, `期望 /login 上出现「未启用账号系统」，实际 ${loginPath}`)
   }
 
   // 落地页底部 CTA 也要跟登录态一致
@@ -139,6 +164,7 @@ try {
   console.log(`FAIL  脚本执行  | ${error.message}`)
 } finally {
   try { await browser?.close() } catch {}
+  try { await dev?.stop() } catch {}
   console.log(`\n失败 ${failed} 项`)
   process.exit(failed ? 1 : 0)
 }

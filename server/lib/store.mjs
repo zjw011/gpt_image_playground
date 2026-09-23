@@ -50,6 +50,14 @@ export function normalizeInviteCode(value) {
   return String(value ?? '').trim().toLowerCase().replace(/-/g, '')
 }
 
+/**
+ * 用户 id。用户名可改、邮箱可换，id 一旦生成就跟着作品走，所以必须随机且唯一。
+ * 前缀带时间戳只为排查时一眼看出创建顺序，不作为唯一性依据。
+ */
+export function generateUserId() {
+  return `u-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
+}
+
 let dataFile = ''
 let cache = null
 
@@ -214,6 +222,8 @@ export function normalizeUser(input, fallbackId) {
     username,
     displayName: normalizeString(record.displayName, '').trim(),
     passwordHash: normalizeString(record.passwordHash, ''),
+    // 站长角色：登录后由前端分流进管理后台。只有 role === 'admin' 的账号能碰 /api/admin/*。
+    role: record.role === 'admin' ? 'admin' : 'user',
     // 注册邮箱一律小写存储：A@qq.com 和 a@qq.com 必须落到同一个账号，
     // 否则同一台邮箱能反复注册出无数个小号来领注册赠送的积分。
     email: normalizeString(record.email, '').trim().toLowerCase(),
@@ -668,6 +678,8 @@ export function toPublicUser(user) {
     // 邮箱回给本人是合理的（用户中心要显示"绑定的是哪个邮箱"），
     // 但它只在本人的响应里出现，不会出现在任何列表接口中。
     email: user.email || '',
+    // 管理员身份要跟着本人走：登录响应和 bootstrap 都靠它分流后台入口。
+    role: user.role === 'admin' ? 'admin' : 'user',
   }
 }
 
@@ -680,6 +692,7 @@ export function toAdminUser(user) {
     email: user.email || '',
     emailVerified: Boolean(user.emailVerifiedAt),
     enabled: user.enabled,
+    role: user.role === 'admin' ? 'admin' : 'user',
     note: user.note,
     createdVia: user.createdVia,
     hasPassword: Boolean(user.passwordHash),

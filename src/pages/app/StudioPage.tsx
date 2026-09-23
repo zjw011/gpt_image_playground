@@ -47,7 +47,7 @@ function RecentThumb({ imageId, taskId }: { imageId: string, taskId: string }) {
   const src = useThumbnail(imageId)
   return (
     <Link
-      to={`/studio/result?task=${taskId}`}
+      to={`/result?task=${taskId}`}
       className="group relative aspect-square shrink-0 overflow-hidden rounded-xl border border-[#eceaf6] bg-white"
     >
       {src
@@ -116,7 +116,7 @@ export default function StudioPage() {
     // 提交没成功（缺渠道、缺提示词、遮罩待确认）就别跳结果页，
     // 否则用户会被扔到一个空结果页，以为按钮坏了。
     if (!await submitTask()) return
-    navigate('/studio/result')
+    navigate('/result')
   }
 
   return (

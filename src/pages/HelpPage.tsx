@@ -51,28 +51,34 @@ function HelpCenter() {
   }, [keyword])
 
   return (
-    <section className="mx-auto max-w-3xl px-5 pb-20 pt-14">
-      <div className="text-center">
-        <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-white shadow-lg shadow-[#7c6cf6]/30">
-          <IconHelp className="h-7 w-7" />
-        </span>
-        <h1 className="mt-5 text-3xl font-bold tracking-tight">帮助中心</h1>
-        <p className="mt-3 text-sm text-[#8a86ac]">常见问题与使用指南</p>
+    <section className="mx-auto max-w-3xl px-5 pb-16 pt-8">
+      {/* 头部收进一张卡片：图标、标题、搜索一路居中，视觉上有明确的起点 */}
+      <div className="relative overflow-hidden rounded-[28px] border border-[#eceaf6] bg-white px-6 py-10 text-center shadow-sm">
+        <div className="pointer-events-none absolute inset-x-0 -top-20 h-44 bg-gradient-to-b from-[#efedfd] to-transparent" />
+        <div className="relative">
+          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-white shadow-lg shadow-[#7c6cf6]/30">
+            <IconHelp className="h-7 w-7" />
+          </span>
+          <h1 className="mt-5 text-3xl font-bold tracking-tight">帮助中心</h1>
+          <p className="mt-3 text-sm text-[#8a86ac]">常见问题与使用指南</p>
 
-        <div className="relative mx-auto mt-7 max-w-md">
-          <IconSearch className="absolute left-4 top-1/2 h-4.5 w-4.5 -translate-y-1/2 text-[#b3aed0]" />
-          <input
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
-            placeholder="搜索问题，例如：积分"
-            className="w-full rounded-full border border-[#e4e1f2] bg-white py-3 pl-11 pr-5 text-sm shadow-sm outline-none transition placeholder:text-[#b3aed0] focus:border-[#7c6cf6] focus:ring-4 focus:ring-[#7c6cf6]/10"
-          />
+          <div className="relative mx-auto mt-7 max-w-md">
+            {/* 尺寸类必须落在 tailwind 的 spacing 刻度上——写 h-4.5 不会生成样式，
+                没有尺寸的内联 svg 会退回 300×150，把整个头部撑变形 */}
+            <IconSearch className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#b3aed0]" />
+            <input
+              value={keyword}
+              onChange={(event) => setKeyword(event.target.value)}
+              placeholder="搜索问题，例如：积分"
+              className="w-full rounded-full border border-[#e4e1f2] bg-[#faf9fe] py-3 pl-11 pr-5 text-sm outline-none transition placeholder:text-[#b3aed0] hover:border-[#c9c3ea] focus:border-[#7c6cf6] focus:bg-white focus:ring-4 focus:ring-[#7c6cf6]/10"
+            />
+          </div>
         </div>
       </div>
 
-      <div className="mt-10 space-y-8">
+      <div className="mt-8 space-y-7">
         {groups.length === 0 && (
-          <p className="rounded-2xl border border-[#eceaf6] bg-white py-14 text-center text-sm text-[#a5a1c4]">
+          <p className="rounded-3xl border border-[#eceaf6] bg-white py-16 text-center text-sm text-[#a5a1c4] shadow-sm">
             没有找到相关问题，换个关键词试试
           </p>
         )}
@@ -86,14 +92,25 @@ function HelpCenter() {
               {group.items.map((item) => {
                 const expanded = open === item.q
                 return (
-                  <div key={item.q} className={`overflow-hidden rounded-2xl border bg-white transition ${expanded ? 'border-[#cdc7ee] shadow-md shadow-[#7c6cf6]/8' : 'border-[#eceaf6]'}`}>
+                  <div
+                    key={item.q}
+                    className={`overflow-hidden rounded-2xl border bg-white transition ${
+                      expanded ? 'border-[#cdc7ee] shadow-lg shadow-[#7c6cf6]/10' : 'border-[#eceaf6] shadow-sm hover:border-[#dcd8f0]'
+                    }`}
+                  >
                     <button
                       type="button"
                       onClick={() => setOpen(expanded ? null : item.q)}
-                      className="flex w-full items-center justify-between px-5 py-4 text-left text-sm font-medium"
+                      className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left text-sm font-medium transition hover:bg-[#faf9fe]"
                     >
-                      {item.q}
-                      <span className={`ml-4 shrink-0 text-[#b3aed0] transition-transform ${expanded ? 'rotate-180' : ''}`}>▾</span>
+                      <span className={expanded ? 'text-[#6b5ce7]' : ''}>{item.q}</span>
+                      <span
+                        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] transition ${
+                          expanded ? 'rotate-180 bg-[#efedfd] text-[#6b5ce7]' : 'bg-[#f5f4fb] text-[#b3aed0]'
+                        }`}
+                      >
+                        ▾
+                      </span>
                     </button>
                     {expanded && (
                       <p className="border-t border-[#f4f2fe] px-5 py-4 text-[13px] leading-6 text-[#6f6a94]">

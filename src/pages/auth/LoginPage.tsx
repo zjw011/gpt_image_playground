@@ -1,14 +1,14 @@
 // 登录页。对应设计稿 3：账号密码登录 + 记住我 + 忘记密码 + 第三方登录入口。
+// 微信登录尚未对接（公众号/小程序都还没有），所以这里只保留入口并标注「开发中」。
 import { useState } from 'react'
 import { Link, Navigate } from 'react-router-dom'
-import { submitFrontLogin, getWechatConfig } from '../../lib/backend'
+import { submitFrontLogin } from '../../lib/backend'
 import { syncWorkspaceId } from '../../lib/workspace'
 import AuthLayout from './AuthLayout'
-import NoAccountSystemNotice from './NoAccountSystemNotice'
-import { useAuthBootstrap, enterStudio } from './useAuthBootstrap'
+import NoAccountSystemNotice, { WechatLoginUnavailable } from './NoAccountSystemNotice'
+import { useAuthBootstrap } from './useAuthBootstrap'
 import { TEXT_INPUT, PRIMARY_BTN, PageLoading } from '../theme'
 import { IconEye, IconLock, IconUser, IconWechat } from '../icons'
-import WechatGate from '../../components/WechatGate'
 
 const REMEMBER_KEY = 'huixiang.rememberedName'
 
@@ -21,29 +21,25 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const [wechatOpen, setWechatOpen] = useState(false)
+  const [wechatTip, setWechatTip] = useState(false)
 
   if (backend === undefined) return <PageLoading />
   // 没连后端：说清楚为什么没有登录，而不是把用户静默弹走
   if (!backend) return <NoAccountSystemNotice page="login" />
-  // 开放模式 / 已登录：登录页没有意义，直接去创作页
-  if (backend.accessMode === 'open' || backend.authenticated) {
-    return <Navigate to="/studio" replace />
+  // 已经登录（bootstrap 里带着用户）：登录页没有意义，按角色送回该去的地方。
+  // 注意判的是"有没有用户"，不是 authenticated——开放模式下 authenticated 恒为 true，
+  // 拿它当条件会让站长在这一页永远看不到登录表单，也就永远进不去后台。
+  if (backend.user) {
+    return <Navigate to={backend.user.role === 'admin' ? '/admin' : '/studio'} replace />
   }
 
-  const accounts = backend.accessMode === 'accounts'
-  const wechat = getWechatConfig()
+  const openMode = backend.accessMode === 'open'
+  // 账号登录在任何访问方式下都成立：访问方式决定"要不要身份"，不决定"能不能登录"。
+  // 开放模式下这一页就是站长登录入口（普通用户直接去创作，不需要账号）。
+  const accounts = backend.accessMode === 'accounts' || openMode
 
-  // 站点只开了微信扫码登录：整页就是二维码门禁
-  if (backend.accessMode === 'wechat' && !wechatOpen) {
-    return (
-      <WechatGate
-        title={backend.site.title}
-        hasQrcodeImage={backend.wechat.hasQrcodeImage}
-        onUnlocked={enterStudio}
-      />
-    )
-  }
+  // 站点被配成「微信扫码」但微信登录还没上线：别给一个永远扫不开的二维码。
+  if (backend.accessMode === 'wechat') return <WechatLoginUnavailable />
 
   const canSubmit = Boolean(password.trim()) && (!accounts || Boolean(username.trim())) && !submitting
 
@@ -59,7 +55,9 @@ export default function LoginPage() {
         else localStorage.removeItem(REMEMBER_KEY)
       }
       syncWorkspaceId(typeof result.workspaceId === 'string' ? result.workspaceId : null)
-      enterStudio()
+      // 管理员账号登录后直接进管理后台，普通用户进创作页。
+      const isAdminUser = result.user && result.user.role === 'admin'
+      window.location.assign(`${import.meta.env.BASE_URL}${isAdminUser ? 'admin' : 'studio'}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setSubmitting(false)
@@ -71,8 +69,8 @@ export default function LoginPage() {
       image="/art/auth-login.jpg"
       quote="灵感，从这里开始"
       quoteSub="Every idea starts here."
-      title="欢迎回来"
-      subtitle="继续使用 AI 创造美好"
+      title={openMode ? '站长登录' : '欢迎回来'}
+      subtitle={openMode ? '站点当前开放访问，用账号登录可进入管理后台' : '继续使用 AI 创造美好'}
     >
       <form onSubmit={submit}>
         {accounts && (
@@ -138,31 +136,46 @@ export default function LoginPage() {
         {notice && <p className="mt-5 rounded-xl bg-emerald-50 px-4 py-3 text-[12.5px] leading-5 text-emerald-700">{notice}</p>}
         {error && <p className="mt-5 rounded-xl bg-red-50 px-4 py-3 text-[12.5px] leading-5 text-red-600">{error}</p>}
 
+        {openMode && (
+          <p className="mt-5 rounded-xl bg-[#f4f2fe] px-4 py-3 text-[12.5px] leading-5 text-[#5b5680]">
+            本站当前开放访问，任何人都可以直接创作，不需要账号。
+            <Link to="/studio" className="ml-1 font-semibold text-[#6b5ce7] transition hover:text-[#5a4cd6]">
+              直接开始创作 →
+            </Link>
+          </p>
+        )}
+
         <button type="submit" disabled={!canSubmit} className={`${PRIMARY_BTN} mt-7 w-full !py-3.5`}>
           {submitting ? '登录中…' : '登录'}
         </button>
       </form>
 
-      {/* 第三方登录：微信没配置就整块不渲染，免得留一条空分隔线 */}
-      {wechat?.enabled && (
-        <div className="mt-8">
-          <div className="flex items-center gap-3 text-xs text-[#b3aed0]">
-            <span className="h-px flex-1 bg-[#e4e1f2]" />
-            或使用以下方式登录
-            <span className="h-px flex-1 bg-[#e4e1f2]" />
-          </div>
-          <div className="mt-4 flex justify-center gap-4">
-            <button
-              type="button"
-              onClick={() => setWechatOpen(true)}
-              title="微信登录"
-              className="flex h-11 w-11 items-center justify-center rounded-full border border-[#e4e1f2] bg-white text-[#22c55e] shadow-sm transition hover:border-[#22c55e]/40 hover:shadow"
-            >
-              <IconWechat className="h-5 w-5" />
-            </button>
-          </div>
+      {/* 第三方登录：微信还没对接，保留入口并标注「开发中」，点击给出说明而不是静默无反应 */}
+      <div className="mt-8">
+        <div className="flex items-center gap-3 text-xs text-[#b3aed0]">
+          <span className="h-px flex-1 bg-[#e4e1f2]" />
+          或使用以下方式登录
+          <span className="h-px flex-1 bg-[#e4e1f2]" />
         </div>
-      )}
+        <div className="mt-4 flex justify-center">
+          <button
+            type="button"
+            onClick={() => setWechatTip((value) => !value)}
+            title="微信登录（开发中）"
+            className="relative flex h-11 w-11 items-center justify-center rounded-full border border-[#e4e1f2] bg-white text-[#22c55e]/60 shadow-sm transition hover:border-[#22c55e]/40 hover:text-[#22c55e]"
+          >
+            <IconWechat className="h-5 w-5" />
+            <span className="absolute -right-1.5 -top-1.5 rounded-full bg-[#fff7ed] px-1.5 py-0.5 text-[10px] font-medium leading-none text-[#ea580c] ring-2 ring-white">
+              开发中
+            </span>
+          </button>
+        </div>
+        {wechatTip && (
+          <p className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-center text-[12.5px] leading-5 text-amber-700">
+            微信登录还在开发中，暂时用不了。当前请用用户名 + 密码登录，没有账号的话先去注册。
+          </p>
+        )}
+      </div>
 
       {backend.registrationOpen && (
         <p className="mt-8 text-center text-[13px] text-[#8a86ac]">
@@ -171,19 +184,6 @@ export default function LoginPage() {
             立即注册
           </Link>
         </p>
-      )}
-
-      {/* 微信扫码弹层（账号模式下作为第三方登录方式） */}
-      {wechatOpen && (
-        <div className="fixed inset-0 z-50 bg-[#3b2f6b]/40 backdrop-blur-sm" onClick={() => setWechatOpen(false)}>
-          <div className="h-full" onClick={(event) => event.stopPropagation()}>
-            <WechatGate
-              title={backend.site.title}
-              hasQrcodeImage={Boolean(wechat?.hasQrcodeImage)}
-              onUnlocked={enterStudio}
-            />
-          </div>
-        </div>
       )}
     </AuthLayout>
   )

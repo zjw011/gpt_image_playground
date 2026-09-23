@@ -9,9 +9,16 @@
 - 包管理器为 npm（有 `package-lock.json`），不要使用 yarn 或 pnpm。
 - 前台页面在 `src/pages/`：公开页（`LandingPage`/`PricingPage`/`HelpPage`）与认证页（`auth/`）不进应用引导流程；
   应用页（`app/`）统一由 `src/App.tsx` 做 bootstrap 与登录门禁，再由 `app/AppShell.tsx` 提供侧栏外壳。
+- 管理后台在 `src/pages/admin/`，**已并入主前端 SPA**，不再是 `server/admin/` 那套独立原生页面。
+  入口是 `/admin`，由 `AdminGuard` 按会话里的 `role` 放行；站长就是一条 `role: 'admin'` 的用户记录，
+  和普通用户走**同一个登录入口**（`POST /api/session`），前端拿到 role 后自己分流。
 - 路由表在 `src/router.tsx`。`vite.config` 的 `base` 是 `'./'`，**不能**直接当 react-router 的 basename——
   相对 basename 会让整张路由表一条都匹配不上（页面能看但点哪儿都不跳），必须走 `resolveRouterBasename()`。
+- **路由最多只能有一层**（`/admin`、`/me?tab=xxx` 这种）。产物按 `base:'./'` 构建，两层以上的路径
+  （`/admin/channels`、`/studio/result`）在浏览器里会把 `./assets/xxx.js` 解析成 `/admin/assets/xxx.js`，
+  直接白屏；只有单层路径才在根路径部署和子路径部署下都成立。分区分片一律用 `?tab=`。
 - 视觉基座在 `src/pages/theme.tsx`（配色、按钮、输入框、Logo、页脚、加载占位），图标在 `src/pages/icons.tsx`。
+  后台的配色不走 theme，是另一套浅白浅蓝（区别于前台的紫罗兰插画风）。
 - 插画素材在 `public/art/`，已按实际渲染尺寸压过，替换时别塞回原始大图。
 
 ## 常用命令
@@ -23,14 +30,19 @@
 | 构建 | `npm run build` |
 | 运行测试 | `npm test` |
 | 监听测试 | `npm run test:watch` |
-| 菜单跳转审计 | `npm run dev` 后另开终端 `npm run audit:menu` |
+| 菜单跳转审计 | `npm run audit:menu`（自带 dev server） |
+| 渲染体检 | `npm run audit:render`（自带 dev server） |
 | 托管模式审计 | `npm run audit:server`（会先构建，自己起后端） |
 
 - 测试使用 Vitest，已有多个 `*.test.ts` 文件。
 - 不要新增 lint/formatter 配置文件，除非明确要求。
-- 两个审计脚本用本机 Chrome 的 DevTools 协议真机点击，验证跳转、文案、开关联动。
-  改动导航、页面文案或后台管控相关的逻辑后跑一遍，比肉眼看代码可靠。
+- 三个审计脚本用本机 Chrome 的 DevTools 协议真机点击，验证跳转、文案、开关联动。
+  改动导航、路由、页面文案或后台管控相关的逻辑后跑一遍，比肉眼看代码可靠。
   需要本机装有 Chrome，路径可用 `CHROME_PATH` 覆盖。
+- **审计脚本必须自带被测服务**（`scripts/lib/devServer.mjs` / 自己 spawn 后端）。
+  以前写成"先手动 `npm run dev` 再跑脚本"，结果 dev server 早就退出了，脚本仍对着端口一通点击，
+  把连接失败报成一堆业务断言失败；更糟的是路由失配时每页都被弹回首页，断言照样全绿。
+  因此：每页都要断言**落在哪个路径**，不能只断言"页面上有字"。
 
 ## 代码风格（强制）
 
@@ -172,6 +184,12 @@ else params = baseParams
 - **用户侧 / 管理员侧的边界**：渠道、模型、密钥一律由管理员在后台维护。托管模式下（`isBackendManagedMode()`）
   用户侧不能出现任何新增/编辑/删除渠道的入口，设置弹窗里的「API 配置」要换成只读的「我的渠道」，
   校验提示也不能让用户去补一个他根本填不了的 API Key。只有纯前端（自备密钥）模式才允许用户自己填。
+- **后台并入主前端后的一条铁律**：管理员和普通用户共用 `gip_guest` 这一个 cookie。
+  任何"口令/密码被改动 → 销毁同角色会话"的逻辑都必须**保留操作者本人那一个会话**
+  （用 `destroySessionsByRoleExcept`），否则管理员改完密码会把自己当场登出。
+- **访问方式不等于登录方式**：`accessMode` 决定"要不要身份"（open/passcode/accounts/wechat），
+  但不能限制"能不能用账号登录"——否则默认的 open 模式下站长永远拿不到带 role 的会话，
+  后台就成了一个谁也进不去的页面。`handleFrontLogin` 里带用户名的请求永远走账号校验。
 
 ## 注意事项
 

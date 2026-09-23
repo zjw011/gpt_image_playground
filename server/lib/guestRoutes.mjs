@@ -55,7 +55,8 @@ export async function handleGuestRoute(req, res, ctx) {
   if (ctx.path === '/api/bootstrap' && req.method === 'GET') {
     return sendJson(res, 200, {
       backendMode: true,
-      initialized: Boolean(config.adminPasswordHash),
+      // "初始化好了"现在的含义是"存在一个启用的站长账号"，而不是"设过管理员口令"。
+      initialized: config.users.some((user) => user.role === 'admin' && user.enabled),
       accessMode,
       guestPasswordSet: Boolean(config.guestPasswordHash),
       userCount: config.users.filter((user) => user.enabled).length,
@@ -67,6 +68,8 @@ export async function handleGuestRoute(req, res, ctx) {
             displayName: ctx.user.wechatNickname || ctx.user.displayName || ctx.user.username,
             avatar: ctx.user.wechatAvatar || '',
             email: ctx.user.email || '',
+            // 管理员账号据此在前端分流进管理后台。
+            role: ctx.user.role === 'admin' ? 'admin' : 'user',
           }
         : null,
       workspaceId: getWorkspaceId(accessMode, ctx.user),

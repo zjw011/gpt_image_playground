@@ -48,6 +48,8 @@ export interface BackendUser {
   avatar?: string
   /** 注册邮箱。微信登录和后台手工建的账号没有这个字段。 */
   email?: string
+  /** 站长角色。role === 'admin' 的账号登录后由前端分流进管理后台。 */
+  role?: 'admin' | 'user'
 }
 
 /**
@@ -180,6 +182,11 @@ export function isGuestParamOverrideAllowed() {
 /** 多用户模式下 Header 要显示当前账号并提供退出入口。 */
 export function getBackendUser() {
   return bootstrap?.user ?? null
+}
+
+/** 当前登录者是不是站长。管理员账号登录后前端据此进入管理后台。 */
+export function isAdmin() {
+  return bootstrap?.user?.role === 'admin'
 }
 
 /** 站点名：托管模式下跟着后台的「站点标题」走，管理员改一处顶栏和标签页一起变。 */
@@ -370,6 +377,7 @@ function normalizeBootstrap(input: unknown): BackendBootstrap | null {
           displayName: typeof rawUser.displayName === 'string' ? rawUser.displayName : '',
           avatar: typeof rawUser.avatar === 'string' ? rawUser.avatar : '',
           email: typeof rawUser.email === 'string' ? rawUser.email : '',
+          role: rawUser.role === 'admin' ? 'admin' : 'user',
         }
       : null,
     workspaceId: typeof input.workspaceId === 'string' && input.workspaceId ? input.workspaceId : 'shared',

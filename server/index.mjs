@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 // 绘想后端服务：
-// - /admin        后台管理页（管理员口令）
-// - /api/admin/*  渠道与站点管理接口
+// - /api/admin/*  渠道与站点管理接口（凭 role=admin 的登录会话，不再有独立口令登录）
 // - /api/bootstrap /api/session  访客引导与口令门禁
 // - /api/relay/:channelId/*      凭据注入中继（访客看不到地址与密钥）
-// - 其余路径      托管 dist/ 静态前端
+// - 其余路径      托管 dist/ 静态前端；/admin 由 React 路由按角色渲染
 
 import { createServer } from 'node:http'
 import { existsSync } from 'node:fs'
@@ -22,13 +21,12 @@ import {
   verifyEmailCode,
 } from './lib/emailCodes.mjs'
 import { handleGuestRoute } from './lib/guestRoutes.mjs'
-import { clearCookie, getClientIp, HttpError, parseCookies, readJsonBody, sendError, sendJson, sendText, setCookie } from './lib/http.mjs'
+import { clearCookie, getClientIp, HttpError, parseCookies, sendError, sendJson, sendText, setCookie } from './lib/http.mjs'
 import { getLockRemainingSeconds, isLocked, recordFailure, recordSuccess } from './lib/rateLimit.mjs'
 import {
-  ADMIN_COOKIE,
   createSession,
   destroySession,
-  destroySessionsByRole,
+  destroySessionsByRoleExcept,
   destroySessionsByUser,
   getSession,
   GUEST_COOKIE,
@@ -39,6 +37,7 @@ import {
   findUserByEmail,
   findUserById,
   findUserByUsername,
+  generateUserId,
   getConfig,
   hashPassword,
   initStore,
@@ -60,24 +59,45 @@ const PORT = Number(process.env.PORT ?? 8080)
 const HOST = process.env.HOST ?? '0.0.0.0'
 const DATA_DIR = resolve(process.env.GIP_DATA_DIR ?? join(projectRoot, 'server-data'))
 const DIST_DIR = resolve(process.env.GIP_DIST_DIR ?? join(projectRoot, 'dist'))
-const ADMIN_DIR = join(serverDir, 'admin')
 
 const config = initStore(DATA_DIR)
 initUsage(DATA_DIR)
 initCredits(DATA_DIR)
 initCards(DATA_DIR)
 
-// 首次启动可用环境变量直接落初始口令，省掉手动初始化步骤。
-if (!config.adminPasswordHash && process.env.GIP_ADMIN_PASSWORD) {
-  const initial = process.env.GIP_ADMIN_PASSWORD
-  if (initial.length < 8) {
-    console.error('GIP_ADMIN_PASSWORD 至少需要 8 个字符，已忽略。')
-  } else {
-    updateConfig((next) => {
-      next.adminPasswordHash = hashPassword(initial)
-      return next
-    })
-    console.log('已使用 GIP_ADMIN_PASSWORD 初始化管理员口令。')
+// 首次启动可用环境变量播种站长账号（role=admin），省掉手动初始化步骤。
+// 后台并入主前端后，管理员就是一条普通用户记录——凭用户名 + 密码在同一个入口登录，
+// 前端拿到 role 后自动进 /admin。所以这里创建的是账号，不是"管理员口令"。
+// 只创建不覆盖：运维在后台改过密码之后，不该被环境变量顶回去。
+{
+  const initialAdminUser = (process.env.GIP_ADMIN_USER ?? 'admin').trim()
+  const initialAdminPassword = process.env.GIP_ADMIN_PASSWORD ?? ''
+  if (initialAdminPassword) {
+    if (!isValidUsername(initialAdminUser)) {
+      console.error('GIP_ADMIN_USER 不合法（字母或数字开头，2-32 位），已忽略。')
+    } else if (initialAdminPassword.length < MIN_USER_PASSWORD_LENGTH) {
+      console.error(`GIP_ADMIN_PASSWORD 至少需要 ${MIN_USER_PASSWORD_LENGTH} 个字符，已忽略。`)
+    } else if (findUserByUsername(initialAdminUser)) {
+      console.log(`站长账号「${initialAdminUser}」已存在，跳过创建。`)
+    } else {
+      const now = Date.now()
+      const id = generateUserId()
+      updateConfig((next) => {
+        next.users.push(normalizeUser({
+          id,
+          username: initialAdminUser,
+          displayName: initialAdminUser,
+          passwordHash: hashPassword(initialAdminPassword),
+          role: 'admin',
+          enabled: true,
+          createdVia: 'admin',
+          createdAt: now,
+          updatedAt: now,
+        }, id))
+        return next
+      })
+      console.log(`已创建站长账号「${initialAdminUser}」，登录后自动进入管理后台。`)
+    }
   }
 }
 
@@ -337,55 +357,28 @@ async function handleResetPassword(req, res, input) {
   return sendJson(res, 200, { ok: true, username: user.username })
 }
 
-async function handleAdminLogin(req, res) {
-  const ip = getClientIp(req)
-  const key = `admin:${ip}`
-  if (isLocked(key)) throw new HttpError(429, `尝试次数过多，请 ${getLockRemainingSeconds(key)} 秒后重试`)
-
-  const body = await readJsonBody(req)
-  const password = String(body.password ?? '')
-  const current = getConfig()
-
-  // 首次初始化：没有管理员口令时，第一个设置口令的人成为管理员。
-  if (!current.adminPasswordHash) {
-    if (password.length < 8) throw new HttpError(400, '管理员口令至少 8 个字符')
-    updateConfig((next) => {
-      next.adminPasswordHash = hashPassword(password)
-      return next
-    })
-    const session = createSession('admin')
-    setCookie(req, res, ADMIN_COOKIE, session.token, session.maxAgeSeconds)
-    recordSuccess(key)
-    return sendJson(res, 200, { ok: true, initialized: true })
-  }
-
-  if (!verifyPassword(password, current.adminPasswordHash)) {
-    recordFailure(key)
-    throw new HttpError(401, '管理员口令不正确')
-  }
-
-  const session = createSession('admin')
-  setCookie(req, res, ADMIN_COOKIE, session.token, session.maxAgeSeconds)
-  recordSuccess(key)
-  return sendJson(res, 200, { ok: true })
-}
-
 /**
- * 前台登录：passcode 模式只校验共享口令，accounts 模式校验用户名 + 该用户口令。
- * 两种模式共用同一个 cookie，会话里的 userId 决定前端落到哪个工作区。
- */async function handleFrontLogin(req, res, credentials) {
+ * 前台登录。三种身份共用一个入口和一个 cookie：
+ *   - 带了用户名 → 按账号密码校验（普通用户和 role=admin 的站长都走这条）
+ *   - 只有口令   → 共享口令模式（passcode），换一个不带 userId 的匿名会话
+ *   - 开放模式   → 无需登录
+ * 会话里的 userId 决定前端落到哪个工作区；role 决定能不能进后台。
+ */
+async function handleFrontLogin(req, res, credentials) {
   const ip = getClientIp(req)
   const key = `guest:${ip}`
   if (isLocked(key)) throw new HttpError(429, `尝试次数过多，请 ${getLockRemainingSeconds(key)} 秒后重试`)
 
   const current = getConfig()
   const mode = current.site.accessMode
-  if (mode === 'open') return sendJson(res, 200, { ok: true, gateDisabled: true })
-  // 微信登录模式没有口令入口：身份只能由扫码产生。
-  if (mode === 'wechat') throw new HttpError(403, '本站使用微信扫码登录，请扫码进入')
+  const username = String(credentials.username ?? '').trim()
 
-  if (mode === 'accounts') {
-    const user = findUserByUsername(credentials.username)
+  // 账号登录不依赖访问方式。
+  // 「访问方式」决定的是"要不要身份"，不是"能不能登录"——否则全新部署（默认 open）
+  // 里站长永远拿不到带 role 的会话，后台就成了一个谁也进不去的页面。
+  // 只要带了用户名，就走账号校验；对不上就是账号密码错，不再静默降级成口令校验。
+  if (username) {
+    const user = findUserByUsername(username)
     // 用户不存在与口令错误返回同一句话，避免后台用户名被逐个探测出来。
     if (!user || !user.passwordHash || !verifyPassword(credentials.password, user.passwordHash)) {
       recordFailure(key)
@@ -404,10 +397,14 @@ async function handleAdminLogin(req, res) {
     recordSuccess(key)
     return sendJson(res, 200, {
       ok: true,
-      user: { id: user.id, username: user.username, displayName: user.displayName },
+      user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role === 'admin' ? 'admin' : 'user' },
       workspaceId: user.id,
     })
   }
+
+  if (mode === 'open') return sendJson(res, 200, { ok: true, gateDisabled: true })
+  // 微信登录模式没有口令入口：身份只能由扫码产生。但带用户名的账号登录已经在上面的分支处理掉了。
+  if (mode === 'wechat') throw new HttpError(403, '本站使用微信扫码登录，请扫码进入')
 
   if (!current.guestPasswordHash) throw new HttpError(503, '管理员尚未设置访问口令')
   if (!verifyPassword(credentials.password, current.guestPasswordHash)) {
@@ -514,45 +511,27 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
   const path = url.pathname
   const cookies = parseCookies(req.headers.cookie)
-  const adminSession = getSession(cookies[ADMIN_COOKIE])
   const guestSession = getSession(cookies[GUEST_COOKIE])
-  const adminRole = adminSession?.role ?? null
   // 会话里只存 userId，用户可能已被删除或停用，所以每次请求都重新解析。
   const sessionUser = guestSession?.userId ? findUserById(guestSession.userId) : null
   const activeUser = sessionUser?.enabled ? sessionUser : null
+  // 管理权限只认账号角色：role === 'admin' 的登录用户即可触达 /api/admin/*。
+  // 不再存在独立的管理员口令会话——后台跟前台共用同一次登录。
+  const role = activeUser?.role === 'admin' ? 'admin' : guestSession?.role ?? null
 
   try {
-    if (path === '/api/admin/login') {
-      assertSameOrigin(req)
-      if (req.method !== 'POST') throw new HttpError(405, '方法不允许')
-      return await handleAdminLogin(req, res)
-    }
-
-    if (path === '/api/admin/logout') {
-      assertSameOrigin(req)
-      destroySession(cookies[ADMIN_COOKIE])
-      clearCookie(req, res, ADMIN_COOKIE)
-      return sendJson(res, 200, { ok: true })
-    }
-
     if (path.startsWith('/api/admin/')) {
       assertSameOrigin(req)
       return await handleAdminRoute(req, res, {
         path,
         search: url.search,
-        role: adminRole,
-        onPasswordChanged: (target) => {
-          if (target === 'admin') {
-            // 保留当前管理员会话，只踢掉其他会话。
-            const token = cookies[ADMIN_COOKIE]
-            destroySessionsByRole('admin')
-            if (token) {
-              const session = createSession('admin')
-              setCookie(req, res, ADMIN_COOKIE, session.token, session.maxAgeSeconds)
-            }
-            return
-          }
-          destroySessionsByRole('guest')
+        role,
+        // 改自己密码要用到"我是谁"，所以把当前账号一并传下去。
+        user: activeUser,
+        onPasswordChanged: () => {
+          // 保留操作者本人的会话：管理员和普通用户共用 guest cookie，
+          // 全量销毁会把他自己一起踢下线。其余设备/会话照旧失效。
+          destroySessionsByRoleExcept('guest', cookies[GUEST_COOKIE])
         },
         onUserInvalidated: (userId) => destroySessionsByUser(userId),
       })
@@ -565,7 +544,7 @@ const server = createServer(async (req, res) => {
       return await handleGuestRoute(req, res, {
         path,
         search: url.search,
-        role: adminRole === 'admin' ? 'admin' : guestSession?.role ?? null,
+        role,
         user: activeUser,
         login: (credentials) => handleFrontLogin(req, res, credentials),
         register: (input) => handleRegister(req, res, input),
@@ -579,14 +558,8 @@ const server = createServer(async (req, res) => {
       })
     }
 
-    // 后台管理页
-    if (path === '/admin' || path === '/admin/') {
-      return serveStatic(res, ADMIN_DIR, '/index.html', { spaFallback: true })
-    }
-    if (path.startsWith('/admin/')) {
-      if (serveStatic(res, ADMIN_DIR, path.slice('/admin'.length), { spaFallback: true })) return
-      return sendText(res, 404, '未找到')
-    }
+    // /admin 已并入主前端（React 路由按角色渲染后台），这里不再有独立后台页。
+    // 未匹配的路径交给 dist 的 SPA 回退处理。
 
     if (!existsSync(DIST_DIR)) {
       return sendText(
@@ -616,10 +589,9 @@ server.timeout = 0
 
 server.listen(PORT, HOST, () => {
   console.log(`绘想服务已启动：http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`)
-  console.log(`后台管理：http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}/admin`)
+  console.log(`后台管理：用 role=admin 的账号在首页登录，前端会自动进入（/admin）`)
   console.log(`配置目录：${DATA_DIR}`)
   console.log(`前端产物：${DIST_DIR}${existsSync(DIST_DIR) ? '' : '（不存在，需先 npm run build）'}`)
-  if (!getConfig().adminPasswordHash) console.log('尚未设置管理员口令，首次访问 /admin 时设置。')
 })
 
 // 用量统计按 5 秒防抖落盘，退出前补一次，否则最后几条会丢。

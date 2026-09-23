@@ -3,20 +3,23 @@
 // 纯前端（自备密钥）模式下必须保留设置，否则用户无处填 API Key。
 import { NavLink, Link, useLocation } from 'react-router-dom'
 import { useStore } from '../../store'
-import { getBackendUser, getCreditsConfig } from '../../lib/backend'
+import { getBackendUser, getCreditsConfig, isAdmin } from '../../lib/backend'
 import { isBackendManagedMode } from '../../lib/presetConfig'
 import { useCreditsStore } from '../../lib/creditsStore'
 import { Logo } from '../theme'
 import {
-  IconBrush, IconGrid, IconImage, IconCoin, IconUser, IconHelp, IconSettings, IconSparkle,
+  IconBrush, IconGrid, IconImage, IconHeart, IconCoin, IconUser, IconHelp, IconSettings, IconSparkle, IconShield,
 } from '../icons'
 
+// 分区切换全部由这一列侧栏承担：个人中心页里不再放第二列菜单，
+// 否则侧栏和个人中心各有一套入口，看着像两层导航。
 const NAV_ITEMS = [
   { label: 'AI 绘画', to: '/studio', icon: IconBrush, end: true },
   { label: '作品广场', to: '/gallery', icon: IconGrid },
   { label: '我的作品', to: '/me?tab=works', icon: IconImage, tab: 'works' },
+  { label: '我的收藏', to: '/me?tab=favorites', icon: IconHeart, tab: 'favorites' },
   { label: '积分中心', to: '/me?tab=ledger', icon: IconCoin, tab: 'ledger' },
-  { label: '个人中心', to: '/me', icon: IconUser, end: true },
+  { label: '个人中心', to: '/me?tab=settings', icon: IconUser, tab: 'settings' },
 ]
 
 /** 左侧导航栏 */
@@ -76,6 +79,13 @@ export function SideNav() {
               设置
             </button>
           )}
+          {/* 站长账号在前台也能一键回后台，不用手动敲 /admin */}
+          {isAdmin() && (
+            <Link to="/admin" className="flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium text-[#6f6a94] transition hover:bg-[#f5f4fb] hover:text-[#37335c]">
+              <IconShield className="h-[18px] w-[18px]" />
+              管理后台
+            </Link>
+          )}
         </div>
       </div>
 
@@ -117,7 +127,8 @@ export function UserChip() {
           {name.slice(0, 1)}
         </span>
       )}
-      <span className="text-sm font-medium text-[#37335c]">{name}</span>
+      {/* 昵称过长会把用户条挤出视口右边（截图里「本地创作者」被窗口切掉就是这个原因） */}
+      <span className="max-w-[7rem] truncate text-sm font-medium text-[#37335c]">{name}</span>
       {credits && (
         <span className="flex items-center gap-1 rounded-full bg-[#f4f2fe] px-2.5 py-0.5 text-xs font-semibold text-[#6b5ce7]">
           <IconCoin className="h-3.5 w-3.5" />
@@ -134,9 +145,11 @@ export default function AppShell({ title, children, wide }: { title?: string, ch
     <div className="flex min-h-screen bg-[#f5f4fb] text-[#37335c]">
       <SideNav />
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-[#eceaf6] bg-[#f5f4fb]/85 px-6 backdrop-blur-xl">
-          <h1 className="text-lg font-bold">{title}</h1>
-          <UserChip />
+        <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-4 border-b border-[#eceaf6] bg-[#f5f4fb]/85 px-6 backdrop-blur-xl">
+          <h1 className="min-w-0 truncate text-lg font-bold">{title}</h1>
+          <div className="shrink-0">
+            <UserChip />
+          </div>
         </header>
         <main className={`mx-auto w-full flex-1 px-6 py-6 ${wide ? 'max-w-7xl' : 'max-w-5xl'}`}>
           {children}

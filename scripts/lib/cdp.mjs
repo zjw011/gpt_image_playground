@@ -70,6 +70,23 @@ export async function launchChrome({ port, chromePath, onConsoleError, baseUrl }
   return {
     evaluate,
     sleep,
+    /**
+     * 等元素出现再继续。
+     *
+     * 为什么需要：vite 冷启动第一次访问要现场编译整个应用，几秒内 body 里什么都还没有。
+     * 以前固定 sleep 一段时间的写法会把"首次加载慢"误报成"按钮不存在"，白白制造假失败。
+     * @param {string} selector CSS 选择器
+     * @param {number} [timeout] 毫秒，默认 8 秒
+     */
+    waitFor: async (selector, timeout = 8000) => {
+      const deadline = Date.now() + timeout
+      while (Date.now() < deadline) {
+        const found = await evaluate(`!!document.querySelector(${JSON.stringify(selector)})`)
+        if (found) return true
+        await sleep(200)
+      }
+      return false
+    },
     /** @param {string} path 站内路径，会用 location.href 整页跳转（等价于直接输入地址） */
     open: async (path, wait = 2200) => {
       await evaluate(`location.href = ${JSON.stringify((baseUrl ?? '') + path)}`)

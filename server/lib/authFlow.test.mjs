@@ -17,6 +17,7 @@ import { join, resolve } from 'node:path'
 import { extractCode, extractMessageText, headerValue, decodeHeaderWord, startFakeSmtpServer } from './__fixtures__/fakeSmtp.mjs'
 
 const PROJECT_ROOT = resolve(import.meta.dirname, '..', '..')
+const ADMIN_USER = 'admin'
 const ADMIN_PASSWORD = 'admin-pass-2026'
 const SITE_TITLE = '绘想'
 const NEW_EMAIL = 'newuser@qq.com'
@@ -93,6 +94,7 @@ beforeAll(async () => {
       HOST: '127.0.0.1',
       GIP_DATA_DIR: dataDir,
       GIP_DIST_DIR: join(dataDir, 'no-dist'),
+      GIP_ADMIN_USER: ADMIN_USER,
       GIP_ADMIN_PASSWORD: ADMIN_PASSWORD,
       NODE_TLS_REJECT_UNAUTHORIZED: '',
     },
@@ -119,9 +121,15 @@ afterAll(async () => {
 describe('邮箱验证码注册全流程', () => {
   let verificationCode = ''
 
-  it('管理员登录，并先建一个占位账号', async () => {
-    const login = await api('/api/admin/login', { method: 'POST', body: { password: ADMIN_PASSWORD } })
+  it('站长账号登录，并先建一个占位账号', async () => {
+    // 后台并入主前端后没有独立的 /api/admin/login 了：站长就是一条 role=admin 的用户记录，
+    // 和普通用户走同一个 /api/session 入口，前端拿到 role 后自己分流到 /admin。
+    const login = await api('/api/session', {
+      method: 'POST',
+      body: { username: ADMIN_USER, password: ADMIN_PASSWORD },
+    })
     expect(login.status).toBe(200)
+    expect(login.body.user).toMatchObject({ username: ADMIN_USER, role: 'admin' })
 
     // 切到多用户模式要求"至少有一个启用的用户"，这个账号同时给后面的撞名测试用。
     const created = await api('/api/admin/users', {
@@ -255,8 +263,8 @@ describe('邮箱验证码注册全流程', () => {
     expect(result.body.error).toMatch(/验证码不正确/)
 
     const state = await api('/api/admin/state')
-    // 只有开头的占位账号 alice，没有多出一个用这个邮箱注册的账号。
-    expect(state.body.users.map((user) => user.username)).toEqual(['alice'])
+    // 名册里只有开机时播种的站长账号和开头的占位账号 alice，没有多出用这个邮箱注册的账号。
+    expect(state.body.users.map((user) => user.username).sort()).toEqual([ADMIN_USER, 'alice'].sort())
     expect(state.body.users.some((user) => user.email === NEW_EMAIL)).toBe(false)
   })
 

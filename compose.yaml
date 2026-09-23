@@ -19,7 +19,9 @@ services:
     environment:
       PORT: '8080'
       GIP_DATA_DIR: /data
-      # 仅在尚未设置管理员口令时生效，用于免交互初始化（至少 8 个字符）。
+      # 站长账号。仅在账号还不存在时创建，用于免交互初始化。
+      # 登录入口和普通用户是同一个，进去后前端按 role 自动跳管理后台。
+      GIP_ADMIN_USER: '${GIP_ADMIN_USER:-xiaole}'
       GIP_ADMIN_PASSWORD: '${GIP_ADMIN_PASSWORD:-}'
       # 访客口令，留空则不启用门禁（任何人都能打开前端使用你配置的渠道）。
       GIP_GUEST_PASSWORD: '${GIP_GUEST_PASSWORD:-}'

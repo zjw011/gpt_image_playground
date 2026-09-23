@@ -18,7 +18,7 @@ import { randomBytes } from 'node:crypto'
 import { grantSignupBonus, userCreditsView } from './credits.mjs'
 import { HttpError, readRawBody, sendBinary, sendJson, sendText, setCookie } from './http.mjs'
 import { GUEST_COOKIE, createSession } from './sessions.mjs'
-import { findUserById, findUserByOpenId, getConfig, normalizeUser, toPublicUser, updateConfig } from './store.mjs'
+import { findUserById, findUserByOpenId, generateUserId, getConfig, normalizeUser, toPublicUser, updateConfig } from './store.mjs'
 import {
   bindCodeToOpenid,
   bindSceneToOpenid,
@@ -44,10 +44,6 @@ import {
 
 /** 微信推送的 XML 很小，256KB 已经远远够用，设上限只是防滥用。 */
 const MAX_CALLBACK_BYTES = 256 * 1024
-
-function genUserId() {
-  return `u-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
-}
 
 /** 默认文案。管理员可以用后台的「关注回复文案」覆盖最常用的那一条。 */
 const DEFAULT_SUBSCRIBE_REPLY = '欢迎关注！请把电脑网页上显示的 6 位数字发给我，即可完成登录。'
@@ -158,7 +154,7 @@ async function ensureWechatUser(openid) {
     : null
 
   const now = Date.now()
-  const id = genUserId()
+  const id = generateUserId()
   const nickname = profile?.nickname || fallbackNickname(openid)
 
   updateConfig((config) => {

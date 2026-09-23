@@ -139,6 +139,97 @@ try {
 
     await stopServer()
   }
+
+  // ===== 后台入口：同一个登录入口，靠 role 分流 =====
+  // 这一组必须单独跑：要先真的登录（拿到带 userId 的会话），再断言页面。
+  {
+    const config = readConfig()
+    config.site.accessMode = 'accounts'
+    config.site.registrationEnabled = false
+    config.channels = []
+    writeConfig(config)
+    await startServer()
+
+    console.log('\n【后台入口与角色分流】')
+
+    // 未登录：/admin 不该渲染任何后台内容，应该被守卫送回登录页
+    await browser.open('/admin', 2400)
+    report('未登录访问 /admin 被送回登录页', (await browser.url()).startsWith('/login'), await browser.url())
+
+    // 用站长账号登录（服务器启动时由 GIP_ADMIN_PASSWORD 播种，用户名默认 admin）
+    const loginResult = await browser.evaluate(`(async () => {
+      const response = await fetch('/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'audit-admin-pass' }),
+      })
+      return { status: response.status, body: await response.json() }
+    })()`)
+    report('站长账号能登录且拿到 admin 角色', loginResult.status === 200 && loginResult.body?.user?.role === 'admin', `status=${loginResult.status} role=${loginResult.body?.user?.role}`)
+
+    await browser.open('/admin', 2600)
+    const dashboard = await browser.text()
+    report('登录后 /admin 渲染仪表盘', dashboard.includes('仪表盘') && dashboard.includes('渠道链路'), dashboard.slice(0, 60).replace(/\n/g, ' '))
+
+    // 侧栏每一项都要真的能打开，不能点进去空白。
+    // 关键词一律取页面正文里独有的词——不要用「渠道链路」「积分」这种侧栏里也有的，
+    // 否则视图根本没渲染、只渲染了壳，断言照样会绿。
+    for (const [tab, keyword] of [
+      ['channels', '新建渠道'],
+      ['usage', '累计请求'],
+      ['agent', 'Agent 接入方式'],
+      ['users', '新建用户'],
+      ['credits', '生成卡密'],
+      ['smtp', 'SMTP 发信配置'],
+      ['access', '随机生成'],
+      ['site', '保存设置'],
+    ]) {
+      await browser.open(`/admin?tab=${tab}`, 2600)
+      const text = await browser.text()
+      report(`/admin?tab=${tab} 有内容`, text.includes(keyword), text.includes(keyword) ? `已含「${keyword}」` : text.slice(0, 60).replace(/\n/g, ' '))
+    }
+
+    // 微信登录这一版只放占位入口，必须明确写着开发中
+    await browser.open('/admin?tab=wechat', 2400)
+    const wechat = await browser.text()
+    report('微信登录页显示开发中占位', wechat.includes('开发中') && wechat.includes('当前可用的登录方式'), wechat.slice(0, 60).replace(/\n/g, ' '))
+
+    // 认不出来的 tab 回仪表盘，而不是空白页
+    await browser.open('/admin?tab=nonsense', 2200)
+    const fallback = await browser.text()
+    report('未知 tab 回落到仪表盘', fallback.includes('仪表盘') && fallback.includes('今日出图'), fallback.slice(0, 40).replace(/\n/g, ' '))
+
+    // 普通用户不能进后台
+    const normalUser = await browser.evaluate(`(async () => {
+      const created = await fetch('/api/admin/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'audit-user', password: 'audit-user-pass' }),
+      })
+      if (!created.ok) return { created: created.status }
+      await fetch('/api/session', { method: 'DELETE' })
+      const login = await fetch('/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'audit-user', password: 'audit-user-pass' }),
+      })
+      return { created: created.status, login: login.status, body: await login.json() }
+    })()`)
+    report('普通用户账号可创建并可登录', normalUser.created === 200 && normalUser.login === 200 && normalUser.body?.user?.role === 'user', JSON.stringify(normalUser).slice(0, 120))
+
+    await browser.open('/admin', 2600)
+    const asUser = await browser.url()
+    report('普通用户访问 /admin 被送回创作页', asUser.startsWith('/studio'), asUser)
+
+    // 单层结果页：硬刷新（直接输地址）不能白屏——多层路径会白屏，这是防回归。
+    for (const path of ['/result', '/studio', '/gallery', '/me', '/recharge']) {
+      await browser.open(path, 2400)
+      const text = await browser.text()
+      report(`${path} 硬刷新有内容`, text.trim().length > 20, `${text.trim().length} 字`)
+    }
+
+    await stopServer()
+  }
 } catch (error) {
   failed++
   console.log(`FAIL  脚本执行  | ${error.message}`)

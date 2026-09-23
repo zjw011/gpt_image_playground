@@ -55,6 +55,19 @@ export function destroySessionsByRole(role) {
   }
 }
 
+/**
+ * 踢掉同角色的所有会话，但保留指定 token。
+ *
+ * 后台并入主前端后，管理员用的也是 guest cookie——如果照旧销毁全部 guest 会话，
+ * 管理员改完口令会把自己一起踢下线（或者前台用户发现"改个共享口令我自己掉线了"）。
+ * 所以"改口令"这类操作要显式保留操作者本人那一个会话。
+ */
+export function destroySessionsByRoleExcept(role, keepToken) {
+  for (const [token, session] of sessions) {
+    if (session.role === role && token !== keepToken) sessions.delete(token)
+  }
+}
+
 /** 某个用户被停用、改密码或删除时，踢掉他所有设备上的会话。 */
 export function destroySessionsByUser(userId) {
   if (!userId) return

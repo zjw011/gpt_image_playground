@@ -5,17 +5,16 @@ import { getBackendUser, getCreditsConfig, submitFrontLogout, type BackendLedger
 import { useCreditsStore } from '../../lib/creditsStore'
 import AppShell from './AppShell'
 import { useThumbnail } from './useTaskImage'
-import {
-  IconImage, IconHeart, IconCoin, IconWallet, IconUser,
-  IconLogout, IconSettings, IconSparkle,
-} from '../icons'
+import { IconImage, IconUser, IconLogout, IconSparkle } from '../icons'
 
+// 只保留合法取值和中文名（标题、空态要用）。入口清单在左侧导航里，
+// 这一页不再自己渲染一列菜单，免得和侧栏形成两层导航。
 const MENU = [
-  { key: 'works', label: '我的作品', icon: IconImage },
-  { key: 'favorites', label: '我的收藏', icon: IconHeart },
-  { key: 'ledger', label: '积分记录', icon: IconCoin },
-  { key: 'orders', label: '订单记录', icon: IconWallet },
-  { key: 'settings', label: '账号设置', icon: IconSettings },
+  { key: 'works', label: '我的作品' },
+  { key: 'favorites', label: '我的收藏' },
+  { key: 'ledger', label: '积分中心' },
+  { key: 'orders', label: '订单记录' },
+  { key: 'settings', label: '账号设置' },
 ] as const
 
 type MenuKey = (typeof MENU)[number]['key']
@@ -32,7 +31,7 @@ function WorkThumb({ imageId, taskId }: { imageId: string, taskId: string }) {
   const src = useThumbnail(imageId)
   return (
     <Link
-      to={`/studio/result?task=${taskId}`}
+      to={`/result?task=${taskId}`}
       className="group relative aspect-square overflow-hidden rounded-2xl border border-[#eceaf6] bg-[#faf9fe]"
     >
       {src
@@ -58,8 +57,17 @@ function EmptyState({ text, cta }: { text: string, cta?: string }) {
   )
 }
 
+/** 订单记录：在线支付还没接，先给个明确的空态，别让人对着空白页猜 */
+function OrderNote() {
+  return (
+    <div className="rounded-3xl border border-[#eceaf6] bg-white px-6 py-5 shadow-sm">
+      <h3 className="text-[14px] font-bold">订单记录</h3>
+      <p className="mt-1.5 text-[13px] text-[#8a86ac]">暂无订单，充值套餐上线后会显示在这里</p>
+    </div>
+  )
+}
+
 export default function MePage() {
-  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const tasks = useStore((s) => s.tasks)
   const showToast = useStore((s) => s.showToast)
@@ -81,11 +89,8 @@ export default function MePage() {
     window.location.assign(import.meta.env.BASE_URL)
   }
 
-  const switchTab = (key: MenuKey) => {
-    navigate(key === 'works' ? '/me?tab=works' : `/me?tab=${key}`, { replace: true })
-  }
-
   const gridTasks = tab === 'works' ? doneTasks : favoriteTasks
+  const currentLabel = MENU.find((item) => item.key === tab)?.label ?? '我的作品'
 
   return (
     <AppShell title="个人中心" wide>
@@ -123,36 +128,11 @@ export default function MePage() {
         </div>
       </div>
 
-      <div className="mt-5 flex gap-5">
-        {/* 菜单 */}
-        <div className="flex w-[190px] shrink-0 flex-col gap-1 self-start rounded-3xl border border-[#eceaf6] bg-white p-3 shadow-sm">
-          {MENU.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => switchTab(item.key)}
-              className={`flex items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-sm font-medium transition ${
-                tab === item.key ? 'bg-[#efedfd] text-[#6b5ce7]' : 'text-[#6f6a94] hover:bg-[#f5f4fb]'
-              }`}
-            >
-              <item.icon className="h-[17px] w-[17px]" />
-              {item.label}
-            </button>
-          ))}
-          {user && (
-            <button
-              type="button"
-              onClick={() => void logout()}
-              className="mt-1 flex items-center gap-2.5 rounded-xl border-t border-[#f1effa] px-3.5 py-2.5 pt-3.5 text-left text-sm font-medium text-red-400 transition hover:bg-red-50 hover:text-red-500"
-            >
-              <IconLogout className="h-[17px] w-[17px]" />
-              退出登录
-            </button>
-          )}
-        </div>
+      <div className="mt-6">
+        {/* 分区标题：入口都在左侧导航上，这里只标出当前看的是哪一栏 */}
+        <h2 className="text-[15px] font-bold">{currentLabel}</h2>
 
-        {/* 内容区 */}
-        <div className="min-w-0 flex-1">
+        <div className="mt-4 min-w-0">
           {(tab === 'works' || tab === 'favorites') && (
             gridTasks.length === 0 ? (
               <EmptyState
@@ -169,7 +149,8 @@ export default function MePage() {
           )}
 
           {tab === 'ledger' && (
-            !credits || !view || view.ledger.length === 0 ? (
+            <>
+            {!credits || !view || view.ledger.length === 0 ? (
               <EmptyState text={credits ? '还没有积分变动记录' : '本站未开启积分制'} />
             ) : (
               <div className="overflow-hidden rounded-3xl border border-[#eceaf6] bg-white shadow-sm">
@@ -200,10 +181,14 @@ export default function MePage() {
                   </tbody>
                 </table>
               </div>
-            )
+            )}
+
+            {/* 订单和积分都归「积分中心」这一栏，侧栏不用再多挂一个入口 */}
+            <OrderNote />
+            </>
           )}
 
-          {tab === 'orders' && <EmptyState text="暂无订单记录，充值套餐上线后会显示在这里" />}
+          {tab === 'orders' && <OrderNote />}
 
           {tab === 'settings' && (
             <div className="rounded-3xl border border-[#eceaf6] bg-white p-6 shadow-sm">
