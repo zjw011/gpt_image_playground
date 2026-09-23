@@ -23,6 +23,9 @@ interface CreditsState {
   showRedeem: boolean
   /** 余额不足时差多少，弹窗里直接告诉用户要补多少；0 表示不是被余额拦下的。 */
   shortfall: number
+  /** 最近一次「幸运免单」命中的时间戳；结果页据此挂庆祝横幅。 */
+  lastLuckyAt: number | null
+  markLucky: () => void
   setView: (view: BackendCreditsView | null) => void
   /** 只更新数字字段（生图回执只带余额，不带流水）。 */
   patch: (patch: Partial<BackendCreditsView>) => void
@@ -34,6 +37,8 @@ export const useCreditsStore = create<CreditsState>((set, get) => ({
   view: null,
   showRedeem: false,
   shortfall: 0,
+  lastLuckyAt: null,
+  markLucky: () => set({ lastLuckyAt: Date.now() }),
 
   setView: (view) => set({ view }),
 

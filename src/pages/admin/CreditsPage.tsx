@@ -87,6 +87,8 @@ export default function CreditsPage() {
   const [costPerImage, setCostPerImage] = useState('1')
   const [signupBonus, setSignupBonus] = useState('50')
   const [purchaseUrl, setPurchaseUrl] = useState('')
+  const [luckyEnabled, setLuckyEnabled] = useState(false)
+  const [luckyRate, setLuckyRate] = useState('10')
   // 充值套餐草稿：名称/价格/积分三列，随积分设置一起保存
   const [packs, setPacks] = useState<Array<{ name: string, price: string, credits: string }>>([])
 
@@ -127,6 +129,8 @@ export default function CreditsPage() {
       setCostPerImage(String(settings.costPerImage ?? 1))
       setSignupBonus(String(settings.signupBonus ?? 0))
       setPurchaseUrl(String(settings.purchaseUrl ?? ''))
+      setLuckyEnabled(settings.luckyEnabled === true)
+      setLuckyRate(String(settings.luckyRate ?? 10))
       const rawPacks = Array.isArray(settings.packs) ? settings.packs : []
       setPacks(rawPacks.map((pack) => ({
         name: String((pack as Record<string, unknown>).name ?? ''),
@@ -249,6 +253,8 @@ export default function CreditsPage() {
           costPerImage: Number(costPerImage) || 0,
           signupBonus: Number(signupBonus) || 0,
           purchaseUrl,
+          luckyEnabled,
+          luckyRate: Math.min(100, Math.max(0, Number(luckyRate) || 0)),
           packs: packs
             .map((pack) => ({ name: pack.name.trim(), price: pack.price.trim(), credits: Number(pack.credits) || 0 }))
             .filter((pack) => pack.name && pack.credits > 0),
@@ -560,6 +566,33 @@ export default function CreditsPage() {
               <span className="mb-1.5 block font-medium text-[#475569]">卡密购买链接（可选）</span>
               <input value={purchaseUrl} onChange={(e) => setPurchaseUrl(e.target.value)} className="w-full rounded-lg border border-[#e2e8f0] px-3 py-2 outline-none focus:border-[#3b82f6] focus:ring-2 focus:ring-[#3b82f6]/15" placeholder="https://…" />
             </label>
+          </div>
+
+          {/* 幸运免单：出图时按概率随机免扣积分，制造惊喜感 */}
+          <div className="mt-6 border-t border-[#f1f5f9] pt-5">
+            <div className="flex flex-wrap items-center gap-4">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={luckyEnabled} onChange={(e) => setLuckyEnabled(e.target.checked)} className="h-4 w-4 rounded accent-[#2563eb]" />
+                <span className="font-medium">幸运免单</span>
+                <span className="text-xs text-[#94a3b8]">出图完成时按概率随机免扣积分，给用户制造惊喜</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <span className="text-[#475569]">触发概率</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={luckyRate}
+                  disabled={!luckyEnabled}
+                  onChange={(e) => setLuckyRate(e.target.value)}
+                  className="w-24 rounded-lg border border-[#e2e8f0] px-3 py-2 text-sm outline-none focus:border-[#3b82f6] focus:ring-2 focus:ring-[#3b82f6]/15 disabled:bg-[#f8fafc] disabled:text-[#94a3b8]"
+                />
+                <span className="text-sm text-[#475569]">%</span>
+              </label>
+              <span className="rounded-full bg-[#fff7ed] px-3 py-1 text-xs font-medium text-[#ea580c]">
+                100% 时所有生图都不扣积分，慎用
+              </span>
+            </div>
           </div>
 
           {/* 充值套餐：价格随你定，用户在「积分充值」页看到的就是这几行 */}

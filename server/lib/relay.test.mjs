@@ -79,7 +79,14 @@ async function setup(channels, options = {}) {
     config.site.accessMode = 'wechat'
     config.site.failoverEnabled = true
     config.site.failoverMaxAttempts = options.maxAttempts ?? 0
-    config.site.credits = { ...config.site.credits, enabled: true, costPerImage: options.costPerImage ?? 1, channelRates: options.channelRates ?? {} }
+    config.site.credits = {
+      ...config.site.credits,
+      enabled: true,
+      costPerImage: options.costPerImage ?? 1,
+      channelRates: options.channelRates ?? {},
+      luckyEnabled: options.luckyEnabled ?? false,
+      luckyRate: options.luckyRate ?? 0,
+    }
     config.users = [normalizeUser({ id: USER_ID, username: 'wx_test', enabled: true, wechatOpenId: 'oTest' }, USER_ID)]
     config.channels = channels.map((item, idx) => normalizeChannel({ id: `ch-${idx + 1}`, model: 'gpt-image-2', ...item }, `ch-${idx + 1}`))
     return config
@@ -301,6 +308,38 @@ describe('按张扣费', () => {
     expect(response.headers.get('x-credits-charged')).toBe('6')
     expect(response.headers.get('x-credits-balance')).toBe('94')
     expect(getBalance(USER_ID)).toBe(94)
+  })
+
+  it('幸运免单命中：不扣积分并带 x-credits-lucky 头', async () => {
+    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    upstreams = [good]
+    // 概率 100%，必定命中
+    await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 3, luckyEnabled: true, luckyRate: 100 })
+
+    const response = await fetch(`http://127.0.0.1:${app.port}/api/relay/ch-1/images/generations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ n: 2, prompt: 'cat' }),
+    })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('x-credits-lucky')).toBe('1')
+    expect(response.headers.get('x-credits-charged')).toBeNull()
+    expect(getBalance(USER_ID)).toBe(100)
+  })
+
+  it('幸运免单未命中：正常扣费，不带 lucky 头', async () => {
+    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    upstreams = [good]
+    await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 3, luckyEnabled: true, luckyRate: 0 })
+
+    const response = await fetch(`http://127.0.0.1:${app.port}/api/relay/ch-1/images/generations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ n: 1, prompt: 'cat' }),
+    })
+    expect(response.headers.get('x-credits-lucky')).toBeNull()
+    expect(response.headers.get('x-credits-charged')).toBe('3')
+    expect(getBalance(USER_ID)).toBe(97)
   })
 
   it('失败时不带扣费回执头（用户不该看到余额莫名其妙变了）', async () => {

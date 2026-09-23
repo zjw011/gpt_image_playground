@@ -16,7 +16,7 @@ function headers(pairs: Record<string, string>) {
 describe('parseCreditsHeaders', () => {
   it('两个头都在时读出扣费与余额', () => {
     expect(parseCreditsHeaders(headers({ 'x-credits-balance': '94', 'x-credits-charged': '6' })))
-      .toEqual({ balance: 94, charged: 6 })
+      .toEqual({ balance: 94, charged: 6, lucky: false })
   })
 
   it('没有余额头就返回 null —— 这是最要命的一条', () => {
@@ -32,11 +32,11 @@ describe('parseCreditsHeaders', () => {
   })
 
   it('扣费头缺失时按 0 计，不会污染累计消耗', () => {
-    expect(parseCreditsHeaders(headers({ 'x-credits-balance': '10' }))).toEqual({ balance: 10, charged: 0 })
+    expect(parseCreditsHeaders(headers({ 'x-credits-balance': '10' }))).toEqual({ balance: 10, charged: 0, lucky: false })
   })
 
   it('余额可以是 0 —— 真的花光了和"没有头"是两回事', () => {
-    expect(parseCreditsHeaders(headers({ 'x-credits-balance': '0' }))).toEqual({ balance: 0, charged: 0 })
+    expect(parseCreditsHeaders(headers({ 'x-credits-balance': '0' }))).toEqual({ balance: 0, charged: 0, lucky: false })
   })
 })
 

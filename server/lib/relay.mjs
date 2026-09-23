@@ -218,10 +218,18 @@ export async function handleRelay(req, res, ctx) {
   const billable = isBillableRequest(req.method, requested, endpointPath)
   const creditCount = billable ? parseImageCount(head, req.headers['content-type']) : 0
   const costOf = (id) => actualCost(config.site, id, creditCount)
-  const chargeable = Boolean(config.site.credits.enabled) && Boolean(userId) && billable && creditCount > 0
+  const creditConfig = config.site.credits
+  const chargeable = Boolean(creditConfig.enabled) && Boolean(userId) && billable && creditCount > 0
+
+  // 幸运免单：出门前掷骰子，命中就这次不占积分、不扣积分（营销活动，概率后台可调）。
+  // 在占位之前决定，命中走的是"无占位 → 成功后不结算"的通路，不会产生退款流水。
+  const luckyFree = chargeable
+    && creditConfig.luckyEnabled === true
+    && creditConfig.luckyRate > 0
+    && Math.random() * 100 < creditConfig.luckyRate
 
   // 出门前先占住"最贵候选渠道"的价，避免并发把余额刷穿；失败了一分不扣。
-  const reserved = chargeable
+  const reserved = chargeable && !luckyFree
     ? Math.max(0, ...candidates.slice(0, budget).map((channel) => costOf(channel.id)))
     : 0
   if (reserved > 0) {
@@ -328,7 +336,8 @@ export async function handleRelay(req, res, ctx) {
       // 结算放在写响应头之前：上游已经给出 2xx，出图这件事就已经发生了，
       // 之后再断流也不该白送——否则"客户端中途关页面"就成了免费的旁路。
       // 顺带把扣费结果塞进响应头，前端不用再打一次接口就知道新余额。
-      const charged = chargeable && attempt.status >= 200 && attempt.status < 300 ? costOf(channel.id) : 0
+      const success = attempt.status >= 200 && attempt.status < 300
+      const charged = !luckyFree && chargeable && success ? costOf(channel.id) : 0
       const extraHeaders = {}
       if (charged > 0) {
         settleCredits(userId, charged, {
@@ -343,6 +352,11 @@ export async function handleRelay(req, res, ctx) {
         extraHeaders['x-credits-balance'] = String(getBalance(userId))
       } else {
         release()
+        // 幸运免单命中：告诉前端这次没扣分，界面好放庆祝提示
+        if (luckyFree && success) {
+          extraHeaders['x-credits-lucky'] = '1'
+          extraHeaders['x-credits-balance'] = String(getBalance(userId))
+        }
       }
 
       try {

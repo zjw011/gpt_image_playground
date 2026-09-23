@@ -133,6 +133,9 @@ function createEmptyConfig() {
         enabled: false,
         costPerImage: 1,
         signupBonus: 0,
+        // 幸运免单默认关、概率 10%：开了之后每次出图掷骰子，命中就不扣分
+        luckyEnabled: false,
+        luckyRate: 10,
         purchaseUrl: '',
         // 默认档位按 1 元 = 200 积分定价；后台「积分与卡密」可随时改
         packs: [
@@ -436,6 +439,9 @@ function normalizeCreditSettings(site) {
     costPerImage: normalizeInt(raw.costPerImage, 1, 0, 100_000),
     signupBonus: normalizeInt(raw.signupBonus, 0, 0, 1_000_000),
     purchaseUrl: normalizeString(raw.purchaseUrl, '').trim().slice(0, 500),
+    // 幸运免单：出图时按概率随机免扣积分（营销活动）
+    luckyEnabled: normalizeBool(raw.luckyEnabled, false),
+    luckyRate: normalizeInt(raw.luckyRate, 0, 0, 100),
     packs,
     channelRates,
   }

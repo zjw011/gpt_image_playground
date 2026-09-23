@@ -5,6 +5,7 @@ import { useStore, submitTask, reuseConfig, removeTask } from '../../store'
 import AppShell from './AppShell'
 import GeneratingQuote from '../../components/GeneratingQuote'
 import { useFullImage, useThumbnail } from './useTaskImage'
+import { useCreditsStore } from '../../lib/creditsStore'
 import { getImage } from '../../lib/db'
 import { isBackendMode, getBackendUser } from '../../lib/backend'
 import { publishWork } from '../../lib/galleryApi'
@@ -111,6 +112,13 @@ export default function ResultPage() {
   // 上传到作品广场：需要登录账号（托管模式）+ 已完成的作品。
   // 未上传的作品只存在这台浏览器里，上传后才会进服务器、公开给所有人看。
   const canPublish = isBackendMode() && Boolean(getBackendUser()) && task.status === 'done'
+
+  // 幸运免单：这张图完成的时间与最近一次免单命中相隔很近，就认定是这一单免的
+  const lastLuckyAt = useCreditsStore((s) => s.lastLuckyAt)
+  const luckyHit = task.status === 'done'
+    && task.finishedAt != null
+    && lastLuckyAt != null
+    && Math.abs(task.finishedAt - lastLuckyAt) < 30_000
   const [publishing, setPublishing] = useState(false)
   const published = publishedIds.has(task.id)
 
@@ -164,6 +172,15 @@ export default function ResultPage() {
                 </span>
               </div>
             </div>
+
+            {luckyHit && (
+              <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50 px-5 py-3.5">
+                <p className="text-sm font-semibold text-amber-700">
+                  🎉 恭喜你太幸运了！本次生图触发幸运免单，<span className="font-bold">不扣积分</span>
+                </p>
+                <span className="shrink-0 text-xs text-amber-600/80">运气也是一种实力</span>
+              </div>
+            )}
 
             <div className="flex min-h-[420px] items-center justify-center bg-[#faf9fe] p-5">
               {running ? (

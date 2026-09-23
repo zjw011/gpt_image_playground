@@ -11,6 +11,7 @@
 // 所以这一步既不会阻塞出图，也不会破坏流式渲染。
 
 import { applyCreditsBalance } from './backend'
+import { useStore } from '../store'
 import { useCreditsStore } from './creditsStore'
 
 let installed = false
@@ -30,6 +31,8 @@ export interface CreditsHeaderInfo {
   charged: number
   /** 扣完之后的余额。 */
   balance: number
+  /** 幸运免单命中：这次出图没有扣积分。 */
+  lucky: boolean
 }
 
 /** 从响应头读一个整数。头不存在或值不合法时返回 null，表示"这次没有信息"。 */
@@ -51,7 +54,11 @@ function readNumberHeader(headers: Headers, name: string) {
 export function parseCreditsHeaders(headers: Headers): CreditsHeaderInfo | null {
   const balance = readNumberHeader(headers, 'x-credits-balance')
   if (balance == null) return null
-  return { balance, charged: readNumberHeader(headers, 'x-credits-charged') ?? 0 }
+  return {
+    balance,
+    charged: readNumberHeader(headers, 'x-credits-charged') ?? 0,
+    lucky: headers.get('x-credits-lucky') === '1',
+  }
 }
 
 /** 把解析结果写进 store。 */
@@ -71,6 +78,12 @@ function readCreditsHeaders(response: Response) {
     // 累计消耗能顺手加上就加上；加不上也无所谓——下次兑换或刷新时会拿到准确值。
     ...(current && info.charged > 0 ? { totalOut: current.totalOut + info.charged } : {}),
   })
+
+  // 幸运免单命中：记下时间（结果页挂庆祝横幅用）+ 弹一次祝贺
+  if (info.lucky) {
+    useCreditsStore.getState().markLucky()
+    useStore.getState().showToast('🎉 恭喜你太幸运了！本次生图不扣积分', 'success')
+  }
 }
 
 /**
