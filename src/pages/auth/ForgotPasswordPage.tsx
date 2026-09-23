@@ -6,7 +6,7 @@ import AuthLayout from './AuthLayout'
 import NoAccountSystemNotice from './NoAccountSystemNotice'
 import { useAuthBootstrap } from './useAuthBootstrap'
 import { TEXT_INPUT, PRIMARY_BTN, PageLoading } from '../theme'
-import { IconArrowLeft, IconLock, IconMail } from '../icons'
+import { IconArrowLeft, IconLock, IconMail, IconEye } from '../icons'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const MIN_PASSWORD_LENGTH = 6
@@ -16,6 +16,7 @@ export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [done, setDone] = useState(false)
@@ -154,15 +155,25 @@ export default function ForgotPasswordPage() {
               <IconLock className="h-4 w-4 text-[#a5a1c4]" />
               新密码
             </span>
-            <input
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              type="password"
-              autoComplete="new-password"
-              disabled={blocked}
-              placeholder={`请设置新密码（${MIN_PASSWORD_LENGTH}-20位）`}
-              className={TEXT_INPUT}
-            />
+            <div className="relative">
+              <input
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="new-password"
+                disabled={blocked}
+                placeholder={`请设置新密码（${MIN_PASSWORD_LENGTH}-20位）`}
+                className={`${TEXT_INPUT} pr-11`}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((value) => !value)}
+                className={`absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 transition ${showPassword ? 'text-[#7c6cf6]' : 'text-[#a5a1c4] hover:text-[#6f6a94]'}`}
+                title={showPassword ? '隐藏密码' : '显示密码'}
+              >
+                <IconEye className="h-[18px] w-[18px]" />
+              </button>
+            </div>
           </label>
 
           {notice && <p className="mt-5 rounded-xl bg-emerald-50 px-4 py-3 text-[12.5px] leading-5 text-emerald-700">{notice}</p>}

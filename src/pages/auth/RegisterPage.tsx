@@ -7,7 +7,7 @@ import AuthLayout from './AuthLayout'
 import NoAccountSystemNotice from './NoAccountSystemNotice'
 import { useAuthBootstrap, enterStudio } from './useAuthBootstrap'
 import { TEXT_INPUT, PRIMARY_BTN, PageLoading } from '../theme'
-import { IconMail, IconLock, IconUser } from '../icons'
+import { IconMail, IconLock, IconUser, IconEye } from '../icons'
 
 /** 邮箱格式粗筛，真正的校验在服务端 */
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -21,6 +21,7 @@ export default function RegisterPage() {
   const [code, setCode] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [inviteCode, setInviteCode] = useState(invite)
   const [agreed, setAgreed] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -176,15 +177,25 @@ export default function RegisterPage() {
             <IconLock className="h-4 w-4 text-[#a5a1c4]" />
             设置密码
           </span>
-          <input
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            type="password"
-            autoComplete="new-password"
-            disabled={blocked}
-            placeholder={`请设置密码（${MIN_PASSWORD_LENGTH}-20位）`}
-            className={TEXT_INPUT}
-          />
+          <div className="relative">
+            <input
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              type={showPassword ? 'text' : 'password'}
+              autoComplete="new-password"
+              disabled={blocked}
+              placeholder={`请设置密码（${MIN_PASSWORD_LENGTH}-20位）`}
+              className={`${TEXT_INPUT} pr-11`}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((value) => !value)}
+              className={`absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 transition ${showPassword ? 'text-[#7c6cf6]' : 'text-[#a5a1c4] hover:text-[#6f6a94]'}`}
+              title={showPassword ? '隐藏密码' : '显示密码'}
+            >
+              <IconEye className="h-[18px] w-[18px]" />
+            </button>
+          </div>
         </label>
 
         {registration.requireInviteCode && (
