@@ -21,7 +21,13 @@ const MAX_PUBLISH_PER_WINDOW = 10
 const ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const EXT_BY_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }
 
-let dataDir = ''
+// 两个目录分开放，别再混：
+//   <数据目录>/gallery.json        元数据（作者、点赞、时间）
+//   <数据目录>/gallery/<id>.<ext>  图片文件
+// 之前两者都在 gallery/ 里，导致"读 A 写 B"外加孤儿清理把元数据自己删掉，
+// 用户上传的作品每次重启都会丢。
+let rootDir = ''
+let imagesDir = ''
 let items = []
 let byId = new Map()
 let byHash = new Map()
@@ -41,7 +47,7 @@ function checkPublishRate(userId) {
 }
 
 function file() {
-  return join(dataDir, 'gallery.json')
+  return join(rootDir, 'gallery.json')
 }
 
 function commit() {
@@ -68,9 +74,10 @@ const SEED_WORKS = [
 ]
 
 export function initGallery(dir) {
-  dataDir = join(dir, 'gallery')
-  mkdirSync(dataDir, { recursive: true })
-  const target = join(dir, 'gallery.json')
+  rootDir = dir
+  imagesDir = join(dir, 'gallery')
+  mkdirSync(imagesDir, { recursive: true })
+  const target = file()
   if (existsSync(target)) {
     try {
       const parsed = JSON.parse(readFileSync(target, 'utf-8'))
@@ -102,11 +109,13 @@ export function initGallery(dir) {
   }
   index()
   // 元数据丢失时按文件名无法还原作者等信息，孤儿图片文件宁可清掉也不展示"无主"作品
-  const known = new Set(items.map((item) => item.file))
-  for (const name of readdirSync(dataDir)) {
-    if (!known.has(name)) {
-      try { unlinkSync(join(dataDir, name)) } catch { /* 并发清理时可能已被删 */ }
-    }
+  const known = new Set(items.map((item) => item.file).filter(Boolean))
+  for (const name of readdirSync(imagesDir)) {
+    // 只清理"我们生成的图片文件"这一种形态：名字对不上的一律不碰。
+    // 否则元数据文件、.tmp 临时文件都会被它顺手删掉（这正是之前丢数据的原因之一）。
+    if (!/^w-[a-z0-9-]+\.(png|jpg|webp)$/.test(name)) continue
+    if (known.has(name)) continue
+    try { unlinkSync(join(imagesDir, name)) } catch { /* 并发清理时可能已被删 */ }
   }
 }
 
@@ -163,9 +172,9 @@ export function publishWork({ ownerId, ownerName, prompt, model, imageDataUrl })
   const now = Date.now()
   const id = `w-${now.toString(36)}-${randomBytes(3).toString('hex')}`
   const fileName = `${id}.${EXT_BY_MIME[mime]}`
-  const tmp = join(dataDir, `${fileName}.tmp`)
+  const tmp = join(imagesDir, `${fileName}.tmp`)
   writeFileSync(tmp, bytes)
-  renameSync(tmp, join(dataDir, fileName))
+  renameSync(tmp, join(imagesDir, fileName))
 
   const item = {
     id,
@@ -213,7 +222,7 @@ export function removeWork(itemId, { userId, isAdmin }) {
   if (!isAdmin && item.ownerId !== userId) return { ok: false, error: '只能删除自己的作品' }
   items = items.filter((candidate) => candidate.id !== itemId)
   index()
-  try { unlinkSync(join(dataDir, item.file)) } catch { /* 文件已不在就当删掉 */ }
+  try { unlinkSync(join(imagesDir, item.file)) } catch { /* 文件已不在就当删掉 */ }
   commit()
   return { ok: true }
 }
@@ -221,6 +230,6 @@ export function removeWork(itemId, { userId, isAdmin }) {
 export function getImagePath(itemId) {
   const item = byId.get(itemId)
   if (!item) return null
-  const path = join(dataDir, item.file)
+  const path = join(imagesDir, item.file)
   return existsSync(path) ? { path, mime: item.mime } : null
 }
