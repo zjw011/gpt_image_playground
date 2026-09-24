@@ -5,7 +5,7 @@ import { buildSettingsFromUrlParams, clearUrlSettingParams, getExplicitUrlSettin
 import { createDefaultOpenAIProfile, hasDefaultPresetConfig, isAgentTextApiProfile, normalizeSettings } from './lib/apiProfiles'
 import { getCustomProviderConfigUrl, hasEmbeddedDefaultConfig, loadCustomProviderSettingsFromUrl, loadEmbeddedDefaultConfig } from './lib/customProviderConfigUrl'
 import { getDefaultPresetProfileId, getPresetProfileIds, isPresetConfigOnlyEnabled, setBackendManagedMode, setPresetConfig } from './lib/presetConfig'
-import { backendAgentSettings, backendBootstrapToPresetConfig, loadBackendBootstrap, type BackendBootstrap } from './lib/backend'
+import { backendAgentSettings, backendBootstrapToPresetConfig, getBootstrapFailure, loadBackendBootstrap, type BackendBootstrap } from './lib/backend'
 import { syncWorkspaceId } from './lib/workspace'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import type { AppSettings } from './types'
@@ -19,6 +19,7 @@ import ImageContextMenu from './components/ImageContextMenu'
 import RedeemCardModal from './components/RedeemCardModal'
 import { FavoriteCollectionPickerModal, ManageCollectionsModal } from './components/FavoriteCollections'
 import { PageLoading } from './pages/theme'
+import BootstrapError from './components/BootstrapError'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
 
 let defaultConfigImportStarted = false
@@ -28,7 +29,7 @@ let defaultConfigImportStarted = false
 // 这里把整条链缓存成 Promise，重进 App 时直接复用现成结果，同步给组件状态，秒开。
 let appBootstrapPromise: Promise<BackendBootstrap | null> | null = null
 
-function startAppBootstrap(setBackend: (b: BackendBootstrap | null) => void) {
+function startAppBootstrap(setBackend: (b: BackendBootstrap | null) => void, setFailure: (message: string | null) => void) {
   if (appBootstrapPromise) return appBootstrapPromise
   defaultConfigImportStarted = true
   // 是否已经向组件通报过 bootstrap 结果：失败兜底时要据此决定是置 null 还是保留现状
@@ -62,8 +63,27 @@ function startAppBootstrap(setBackend: (b: BackendBootstrap | null) => void) {
       window.history.replaceState(null, '', nextUrl)
     }
 
-    const promise = loadBackendBootstrap()
+    // 部署窗口里第一次请求经常吃 502：先自己重试几轮，绝大多数用户不会看到失败页。
+    const loadWithRetry = async () => {
+      let data: BackendBootstrap | null = null
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        data = await loadBackendBootstrap()
+        if (getBootstrapFailure() === null) return data
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1200 * (attempt + 1)))
+      }
+      return data
+    }
+
+    const promise = loadWithRetry()
       .then((data) => {
+        // 三次都失败：明确告诉用户"站点在更新"，不要静默退回纯前端模式
+        const failure = getBootstrapFailure()
+        if (failure && !data) {
+          setFailure(failure)
+          setBackend(null)
+          return null
+        }
+        setFailure(null)
         // 工作区决定 localStorage 键与 IndexedDB 库名，而 store 已经用缓存的工作区水合过了。
         // 身份和上次不一致时只能刷新重来，否则会把上一个账号的数据显示给当前账号。
         if (syncWorkspaceId(data?.workspaceId)) {
@@ -160,11 +180,13 @@ function startAppBootstrap(setBackend: (b: BackendBootstrap | null) => void) {
 export default function App() {
   // null 表示尚未确定是否为后端托管模式，此期间不渲染主界面，避免闪现未锁定的设置。
   const [backend, setBackend] = useState<BackendBootstrap | null | undefined>(undefined)
+  // 引导彻底失败（站点在更新/连不上）：显示专门的重试页，而不是当成纯前端模式继续
+  const [bootstrapFailure, setBootstrapFailure] = useState<string | null>(null)
   useDockerApiUrlMigrationNotice()
   useGlobalClickSuppression()
 
   useEffect(() => {
-    void startAppBootstrap(setBackend).then((data) => {
+    void startAppBootstrap(setBackend, setBootstrapFailure).then((data) => {
       // 首次挂载时 startAppBootstrap 内部已经提前 set 过一次（bootstrap 一回来就渲染）；
       // SPA 里重进 App 时靠这里把缓存好的最终结果立刻吐出来，不再等网络。
       setBackend(data)
@@ -186,6 +208,7 @@ export default function App() {
     if (backend) document.title = backend.site.title
   }, [backend])
 
+  if (bootstrapFailure) return <BootstrapError message={bootstrapFailure} />
   if (backend === undefined) return <PageLoading text="正在进入绘想…" />
 
   // 登录门禁：新版登录/注册页在 /login、/register，未登录直接跳转过去。

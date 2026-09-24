@@ -1,6 +1,8 @@
 // 首页（未登录落地页）：主视觉插画 + 标语 + 特性卡片 + 作品流。对应设计稿 1。
 import { Link } from 'react-router-dom'
 import { PublicNav, SiteFooter, BRAND_SLOGAN } from './theme'
+import SafeImg from '../components/SafeImg'
+import { assetUrl } from '../lib/assetUrl'
 import { useInApp } from './useInApp'
 import { IconSparkle, IconBolt, IconCoin, IconShield, IconArrowRight, IconHeart, IconEye } from './icons'
 
@@ -61,7 +63,7 @@ export default function LandingPage() {
 
           <div className="relative">
             <div className="overflow-hidden rounded-[28px] shadow-2xl shadow-[#7c6cf6]/20 ring-1 ring-white/60">
-              <img src="/art/hero.jpg" alt="绘想 AI 主视觉" className="aspect-[3/2] w-full object-cover" />
+              <SafeImg src={assetUrl('/art/hero.jpg')} alt="绘想 AI 主视觉" loading="eager" className="aspect-[3/2] w-full object-cover" />
             </div>
             {/* 漂浮的提示词气泡，增加灵动感 */}
             <div className="absolute -bottom-4 left-6 rounded-2xl border border-white/70 bg-white/90 px-4 py-2.5 text-xs text-[#6f6a94] shadow-lg backdrop-blur">
@@ -101,7 +103,7 @@ export default function LandingPage() {
           {SHOWCASE.map((work) => (
             <Link key={work.title} to="/gallery" className="group overflow-hidden rounded-2xl border border-[#eceaf6] bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg">
               <div className="overflow-hidden">
-                <img src={work.img} alt={work.title} loading="lazy" className="aspect-square w-full object-cover transition duration-300 group-hover:scale-105" />
+                <img src={assetUrl(work.img)} alt={work.title} loading="lazy" className="aspect-square w-full object-cover transition duration-300 group-hover:scale-105" />
               </div>
               <div className="flex items-center justify-between px-3 py-2.5">
                 <span className="truncate text-xs font-medium">{work.title}</span>

@@ -6,6 +6,7 @@ import { getCreditsConfig } from '../../lib/backend'
 import { useCreditsStore } from '../../lib/creditsStore'
 import { useStore } from '../../store'
 import AppShell from './AppShell'
+import { assetUrl } from '../../lib/assetUrl'
 import { IconArrowRight, IconCheck, IconCoin, IconWechat, IconWallet } from '../icons'
 
 /** 后台没配套餐时的兜底展示 */
@@ -152,7 +153,7 @@ export default function RechargePage() {
 
           {/* 插画侧栏 */}
           <div className="relative hidden lg:block">
-            <img src="/art/recharge-cat.jpg" alt="" className="absolute inset-0 h-full w-full object-cover" />
+            <img src={assetUrl('/art/recharge-cat.jpg')} alt="" className="absolute inset-0 h-full w-full object-cover" />
             <div className="absolute inset-0 bg-gradient-to-t from-[#3b2f6b]/55 via-transparent to-transparent" />
             <p className="absolute bottom-8 left-7 right-7 text-lg font-bold leading-snug text-white drop-shadow">
               更多灵感，

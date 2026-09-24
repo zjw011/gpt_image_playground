@@ -52,6 +52,10 @@ export default defineConfig(async ({ command, mode }) => {
     base: './',
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
+      // 素材版本：给 /art/* 这类"文件名固定"的图片加查询参数用。
+      // 每次构建都会变，于是 CDN 与浏览器都必须回源取新图——
+      // 部署窗口里被边缘节点缓存住的失败响应不会再粘住用户。
+      __ASSET_VERSION__: JSON.stringify(`${pkg.version}-${Date.now().toString(36)}`),
       __DEV_PROXY_CONFIG__: JSON.stringify(devProxyConfig),
     },
     server: {

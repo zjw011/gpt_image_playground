@@ -173,6 +173,17 @@ export interface BackendInviteInfo {
 
 let bootstrap: BackendBootstrap | null = null
 
+// 引导失败的原因（网络错误 / 5xx）。必须和"本站就是纯前端部署"区分开：
+// 前者是更新窗口期的临时故障，后者是真实的部署形态。混在一起的结果是
+// 服务器重启那几秒里，用户会看到"设置菜单冒出来、渠道全没了"的纯前端模式，
+// 以为数据丢了——而且他会一直卡在那个状态里。
+let bootstrapFailure: string | null = null
+
+/** 最近一次引导为什么失败；null 表示没失败（或这次压根不是托管站点）。 */
+export function getBootstrapFailure() {
+  return bootstrapFailure
+}
+
 export function getBackendBootstrap() {
   return bootstrap
 }
@@ -453,15 +464,27 @@ function normalizeBootstrap(input: unknown): BackendBootstrap | null {
 export async function loadBackendBootstrap(): Promise<BackendBootstrap | null> {
   try {
     const response = await fetch('/api/bootstrap', { headers: { Accept: 'application/json' } })
-    if (!response.ok) return null
-    if (!(response.headers.get('content-type') ?? '').includes('application/json')) return null
+    if (!response.ok) {
+      // 5xx / 502 是"服务端暂时不可用"（部署重建窗口就长这样），要重试并明确报错；
+      // 404 则说明这个站点根本没有后端，是纯前端部署，不该当成故障。
+      bootstrapFailure = response.status >= 500 ? `服务器暂时不可用（HTTP ${response.status}）` : null
+      return null
+    }
+    if (!(response.headers.get('content-type') ?? '').includes('application/json')) {
+      // 拿到 HTML：静态托管的 SPA 回退，属于纯前端部署
+      bootstrapFailure = null
+      return null
+    }
+    bootstrapFailure = null
     const next = normalizeBootstrap(await response.json())
     bootstrap = next
     // 登录状态下 bootstrap 会顺带把余额下发，这里灌进 creditsStore 作为初始值。
     // 未登录 / 未启用积分时是 null，界面自然就不会显示积分入口。
     useCreditsStore.getState().setView(next ? creditsViewOf(next.credits) : null)
     return bootstrap
-  } catch {
+  } catch (error) {
+    // 网络层失败（断网、容器正在重启）也要能被上层看见
+    bootstrapFailure = error instanceof Error ? `连接服务器失败：${error.message}` : '连接服务器失败'
     return null
   }
 }

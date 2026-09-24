@@ -6,6 +6,7 @@ import {
   getCreditsConfig,
   getCreditsView,
   loadBackendBootstrap,
+  getBootstrapFailure,
   pickErrorCode,
   backendAgentSettings,
   backendChannelToApiProfile,
@@ -216,6 +217,90 @@ describe('积分字段的解析与本地覆盖', () => {
     await loadBackendBootstrap()
     expect(getCreditsView()?.ledger[0]).toMatchObject({ type: 'signup', amount: 100 })
     expect(getCreditsView()?.ledger[1]).toMatchObject({ type: 'spend', amount: -10, balanceAfter: 90 })
+  })
+
+  it('服务端 502（部署重建窗口）要能被识别成"暂时不可用"，而不是当成纯前端部署', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('bad gateway', { status: 502 })))
+    const data = await loadBackendBootstrap()
+    expect(data).toBeNull()
+    // 关键：必须留下失败记录，界面才能显示"站点正在更新"而不是静默降级成纯前端模式
+    expect(getBootstrapFailure()).toContain('502')
+  })
+
+  it('404 说明本站没有后端，属于纯前端部署，不该报故障', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })))
+    const data = await loadBackendBootstrap()
+    expect(data).toBeNull()
+    expect(getBootstrapFailure()).toBeNull()
+  })
+
+  it('拿到 HTML（静态托管的 SPA 回退）也算纯前端部署', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<!DOCTYPE html>', {
+      status: 200,
+      headers: { 'Content-Type': 'text/html' },
+    })))
+    const data = await loadBackendBootstrap()
+    expect(data).toBeNull()
+    expect(getBootstrapFailure()).toBeNull()
+  })
+
+  it('网络层异常（容器正在重启）记成失败', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    const data = await loadBackendBootstrap()
+    expect(data).toBeNull()
+    expect(getBootstrapFailure()).toContain('连接服务器失败')
+  })
+
+  it('引导成功后清掉上一次的失败记录', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('bad gateway', { status: 502 })))
+    await loadBackendBootstrap()
+    expect(getBootstrapFailure()).not.toBeNull()
+
+    stubBootstrap({ backendMode: true, accessMode: 'open', authenticated: true })
+    await loadBackendBootstrap()
+    expect(getBootstrapFailure()).toBeNull()
+  })
+
+  it('服务端 502（部署重建窗口）要能被识别成"暂时不可用"，而不是当成纯前端部署', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('bad gateway', { status: 502 })))
+    const data = await loadBackendBootstrap()
+    expect(data).toBeNull()
+    // 关键：必须留下失败记录，界面才能显示"站点正在更新"而不是静默降级成纯前端模式
+    expect(getBootstrapFailure()).toContain('502')
+  })
+
+  it('404 说明本站没有后端，属于纯前端部署，不该报故障', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })))
+    const data = await loadBackendBootstrap()
+    expect(data).toBeNull()
+    expect(getBootstrapFailure()).toBeNull()
+  })
+
+  it('拿到 HTML（静态托管的 SPA 回退）也算纯前端部署', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<!DOCTYPE html>', {
+      status: 200,
+      headers: { 'Content-Type': 'text/html' },
+    })))
+    const data = await loadBackendBootstrap()
+    expect(data).toBeNull()
+    expect(getBootstrapFailure()).toBeNull()
+  })
+
+  it('网络层异常（容器正在重启）记成失败', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    const data = await loadBackendBootstrap()
+    expect(data).toBeNull()
+    expect(getBootstrapFailure()).toContain('连接服务器失败')
+  })
+
+  it('引导成功后清掉上一次的失败记录', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('bad gateway', { status: 502 })))
+    await loadBackendBootstrap()
+    expect(getBootstrapFailure()).not.toBeNull()
+
+    stubBootstrap({ backendMode: true, accessMode: 'open', authenticated: true })
+    await loadBackendBootstrap()
+    expect(getBootstrapFailure()).toBeNull()
   })
 
   it('余额字段残缺时当没有余额，而不是显示半真的数字', async () => {

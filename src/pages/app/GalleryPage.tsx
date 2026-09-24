@@ -8,6 +8,8 @@ import { useStore } from '../../store'
 import { isBackendMode, getBackendUser } from '../../lib/backend'
 import { listGalleryWorks, toggleWorkLike, deleteWork, type GalleryItem } from '../../lib/galleryApi'
 import AppShell from './AppShell'
+import SafeImg from '../../components/SafeImg'
+import { assetUrl } from '../../lib/assetUrl'
 import { IconHeart, IconEye, IconSearch, IconSparkle, IconTrash } from '../icons'
 
 interface DemoWork {
@@ -210,7 +212,7 @@ export default function GalleryPage() {
             return (
               <div key={work.id} className="group overflow-hidden rounded-2xl border border-[#eceaf6] bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg hover:shadow-[#7c6cf6]/10">
                 <button type="button" onClick={() => setPreview(work)} className="relative block w-full overflow-hidden">
-                  <img src={serverItem ? work.imageUrl : work.img} alt={work.prompt} loading="lazy" className="aspect-square w-full object-cover transition duration-300 group-hover:scale-105" />
+                  <SafeImg src={serverItem ? work.imageUrl : assetUrl(work.img)} alt={work.prompt} className="aspect-square w-full object-cover transition duration-300 group-hover:scale-105" />
                   <span className="absolute inset-0 flex items-end bg-gradient-to-t from-black/55 via-transparent to-transparent p-3.5 opacity-0 transition group-hover:opacity-100">
                     <span className="line-clamp-2 text-left text-xs leading-5 text-white">{work.prompt}</span>
                   </span>
@@ -254,7 +256,7 @@ export default function GalleryPage() {
       {preview && (
         <div className="animate-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-[#3b2f6b]/45 p-6 backdrop-blur-sm" onClick={() => setPreview(null)}>
           <div className="animate-modal-in flex max-h-full w-full max-w-3xl overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
-            <img src={isServerItem(preview) ? preview.imageUrl : preview.img} alt={preview.prompt} className="hidden w-1/2 object-cover sm:block" />
+            <SafeImg src={isServerItem(preview) ? preview.imageUrl : assetUrl(preview.img)} alt={preview.prompt} loading="eager" className="hidden w-1/2 object-cover sm:block" />
             <div className="flex min-w-0 flex-1 flex-col p-6">
               <h3 className="text-lg font-bold">{isServerItem(preview) ? `${preview.ownerName} 的作品` : preview.title}</h3>
               <p className="mt-1 text-xs text-[#a5a1c4]">

@@ -7,6 +7,7 @@ import { useStore, submitTask, addImageFromFile } from '../../store'
 import { getCreditsConfig } from '../../lib/backend'
 import { useCreditsStore } from '../../lib/creditsStore'
 import AppShell from './AppShell'
+import { assetUrl } from '../../lib/assetUrl'
 import { useThumbnail } from './useTaskImage'
 import { IconImage, IconSparkle, IconUpload, IconBrush, IconArrowRight, IconPlus, IconMinus, IconEdit } from '../icons'
 
@@ -241,7 +242,7 @@ export default function StudioPage() {
                     active ? 'border-[#7c6cf6] shadow-md shadow-[#7c6cf6]/20' : 'border-transparent hover:border-[#dcd8f0]'
                   }`}
                 >
-                  <img src={style.img} alt={style.label} loading="lazy" className="h-[68px] w-full object-cover" />
+                  <img src={assetUrl(style.img)} alt={style.label} loading="lazy" className="h-[68px] w-full object-cover" />
                   <span className={`block px-2 py-1.5 text-center text-[11px] font-medium ${active ? 'text-[#6b5ce7]' : 'text-[#6f6a94]'}`}>
                     {style.label}
                   </span>
