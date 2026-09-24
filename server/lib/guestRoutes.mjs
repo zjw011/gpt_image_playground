@@ -10,6 +10,7 @@ import { handleRelay } from './relay.mjs'
 import { getConfig, getEnabledChannels, inviteStatus, isSmtpConfigured, toPublicChannel } from './store.mjs'
 import { handleWechatCallback, pollWechatLogin, serveFixedQrcode, serveSceneQrcode, startWechatLogin } from './wechatRoutes.mjs'
 import { handleGalleryRoute } from './galleryRoutes.mjs'
+import { inviteStats } from './referral.mjs'
 
 /** 共享工作区标识：open / passcode 模式下所有人同一个本地仓库。 */
 const SHARED_WORKSPACE_ID = 'shared'
@@ -117,6 +118,18 @@ export async function handleGuestRoute(req, res, ctx) {
       ...(gateOpen && config.site.credits.enabled && ctx.user
         ? { credits: { ...publicCredits(config.site), ...userCreditsView(ctx.user.id) } }
         : {}),
+      // 邀请返积分：开着的时候把邀请码与战绩下发给本人（只有本人能看到）
+      ...(gateOpen && ctx.user
+        ? {
+            invite: {
+              enabled: Boolean(config.site.referralEnabled),
+              reward: config.site.referralReward,
+              maxInvites: config.site.referralMaxInvites,
+              code: ctx.user.id,
+              ...inviteStats(ctx.user.id),
+            },
+          }
+        : {}),
     })
   }
 
@@ -137,6 +150,8 @@ export async function handleGuestRoute(req, res, ctx) {
       email: String(body.email ?? ''),
       code: String(body.code ?? ''),
       inviteCode: String(body.inviteCode ?? ''),
+      // 邀请链接里的推荐人 id（?ref=）
+      ref: String(body.ref ?? ''),
     })
   }
 

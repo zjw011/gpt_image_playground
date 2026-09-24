@@ -43,6 +43,13 @@ export interface AdminUser {
   totalOut: number
   createdAt: number
   lastSeenAt: number
+  /** 注册来源 IP（IPv6 已归并到 /64）；管理员手动建的账号为空 */
+  registerIp?: string
+  /** 同一注册 IP 下的账号数，>1 就是小号群的可疑信号 */
+  sameIpCount?: number
+  /** 邀请人（谁把这个号拉来的） */
+  invitedBy?: string
+  inviteRewarded?: boolean
   [key: string]: unknown
 }
 

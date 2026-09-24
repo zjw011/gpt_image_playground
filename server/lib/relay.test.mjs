@@ -67,6 +67,11 @@ let cookie = ''
 const USER_ID = 'u-test'
 
 /** 每个用例重建一套干净的数据目录与渠道配置。 */
+/** 复制一份用户记录并换成指定 id/用户名（测试里造"另一个人"用）。 */
+function cloneUser(user, id, username) {
+  return { ...user, id, username, displayName: username, wechatOpenId: '', email: '' }
+}
+
 async function setup(channels, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'gip-relay-'))
   initStore(dir)
@@ -340,6 +345,78 @@ describe('按张扣费', () => {
     expect(response.headers.get('x-credits-lucky')).toBeNull()
     expect(response.headers.get('x-credits-charged')).toBe('3')
     expect(getBalance(USER_ID)).toBe(97)
+  })
+
+  it('被邀请人第一次成功出图后，邀请人拿到邀请奖励（且只发一次）', async () => {
+    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    upstreams = [good]
+    await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 3 })
+
+    // 造一个邀请人，并把当前用户标成"他邀请来的"
+    const inviterId = 'u-inviter'
+    updateConfig((config) => {
+      config.site.referralEnabled = true
+      config.site.referralReward = 30
+      config.site.referralMaxInvites = 20
+      config.users = [
+        cloneUser(config.users[0], inviterId, 'inviter'),
+        { ...config.users[0], invitedBy: inviterId, inviteRewarded: false },
+      ]
+      return config
+    })
+    expect(getBalance(inviterId)).toBe(0)
+
+    await fetch(`http://127.0.0.1:${app.port}/api/relay/ch-1/images/generations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ n: 1, prompt: 'cat' }),
+    })
+    expect(getBalance(inviterId)).toBe(30)
+    expect(findUserById(USER_ID)?.inviteRewarded).toBe(true)
+
+    // 再出一张：不能重复发奖
+    await fetch(`http://127.0.0.1:${app.port}/api/relay/ch-1/images/generations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ n: 1, prompt: 'cat again' }),
+    })
+    expect(getBalance(inviterId)).toBe(30)
+  })
+
+  it('被邀请人第一次成功出图后，邀请人拿到邀请奖励（且只发一次）', async () => {
+    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    upstreams = [good]
+    await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 3 })
+
+    // 造一个邀请人，并把当前用户标成"他邀请来的"
+    const inviterId = 'u-inviter'
+    updateConfig((config) => {
+      config.site.referralEnabled = true
+      config.site.referralReward = 30
+      config.site.referralMaxInvites = 20
+      config.users = [
+        cloneUser(config.users[0], inviterId, 'inviter'),
+        { ...config.users[0], invitedBy: inviterId, inviteRewarded: false },
+      ]
+      return config
+    })
+    expect(getBalance(inviterId)).toBe(0)
+
+    await fetch(`http://127.0.0.1:${app.port}/api/relay/ch-1/images/generations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ n: 1, prompt: 'cat' }),
+    })
+    expect(getBalance(inviterId)).toBe(30)
+    expect(findUserById(USER_ID)?.inviteRewarded).toBe(true)
+
+    // 再出一张：不能重复发奖
+    await fetch(`http://127.0.0.1:${app.port}/api/relay/ch-1/images/generations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ n: 1, prompt: 'cat again' }),
+    })
+    expect(getBalance(inviterId)).toBe(30)
   })
 
   it('失败时不带扣费回执头（用户不该看到余额莫名其妙变了）', async () => {

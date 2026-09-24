@@ -1,7 +1,7 @@
 // 注册页。对应设计稿 2：邮箱验证码 + 用户名 + 密码 + 协议勾选，可选邀请码。
 import { useEffect, useState } from 'react'
 import { Link, Navigate } from 'react-router-dom'
-import { requestEmailCode, submitRegister, readInviteFromUrl } from '../../lib/backend'
+import { requestEmailCode, submitRegister, readInviteFromUrl, readInviteRef, clearInviteRef } from '../../lib/backend'
 import { syncWorkspaceId } from '../../lib/workspace'
 import AuthLayout from './AuthLayout'
 import NoAccountSystemNotice from './NoAccountSystemNotice'
@@ -91,7 +91,10 @@ export default function RegisterPage() {
         email: email.trim(),
         code: code.trim(),
         inviteCode: inviteCode.trim(),
+        // 从邀请链接带过来的推荐人；注册成功后就没用了
+        ref: readInviteRef(),
       })
+      clearInviteRef()
       syncWorkspaceId(typeof result.workspaceId === 'string' ? result.workspaceId : null)
       enterStudio()
     } catch (err) {

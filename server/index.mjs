@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { handleAdminRoute } from './lib/adminRoutes.mjs'
 import { initCards } from './lib/cards.mjs'
 import { initGallery } from './lib/gallery.mjs'
+import { countAccountsForIp, normalizeIp, resolveInviter } from './lib/referral.mjs'
 import { initCredits, grantSignupBonus } from './lib/credits.mjs'
 import {
   cancelEmailCode,
@@ -502,6 +503,15 @@ async function handleRegister(req, res, input) {
   if (!email) throw new HttpError(400, '请输入有效的邮箱地址')
   if (findUserByEmail(email)) throw new HttpError(409, '该邮箱已被注册，请直接登录')
 
+  // 同 IP 注册上限：只统计自助注册的账号，管理员手动建的号不占名额（那是救急通道）。
+  if (site.ipLimitEnabled) {
+    const already = countAccountsForIp(ip)
+    if (already >= site.ipMaxAccounts) {
+      recordFailure(key)
+      throw new HttpError(403, `同一网络下最多注册 ${site.ipMaxAccounts} 个账号；如需更多账号请联系管理员`)
+    }
+  }
+
   const username = String(input.username ?? '').trim()
   if (!isValidUsername(username)) {
     throw new HttpError(400, '用户名需为 2-32 位字母、数字、下划线、点或连字符，且以字母或数字开头')
@@ -522,6 +532,8 @@ async function handleRegister(req, res, input) {
 
   const now = Date.now()
   const id = `u-${now.toString(36)}-${randomBytes(3).toString('hex')}`
+  // 邀请人：链接里的 ref 必须指向真实存在且启用中的账号，解析不出来就当没填
+  const inviter = resolveInviter(input.ref)
   updateConfig((config) => {
     config.users.push(normalizeUser({
       id,
@@ -529,12 +541,14 @@ async function handleRegister(req, res, input) {
       email,
       passwordHash: hashPassword(password),
       enabled: true,
-      note: '邮箱注册',
+      note: inviter ? `邮箱注册 · 邀请人 ${inviter.username}` : '邮箱注册',
       createdVia: 'email',
       emailVerifiedAt: now,
       createdAt: now,
       updatedAt: now,
       lastSeenAt: now,
+      registerIp: normalizeIp(ip),
+      invitedBy: inviter && inviter.id !== id ? inviter.id : '',
     }, id))
     if (site.requireInviteCode) config.site.inviteUsedCount += 1
     return config

@@ -31,7 +31,7 @@ const MAX_AMOUNT = 100_000_000
  * - refund  出图失败退回
  * - admin   管理员人工调整（可正可负）
  */
-export const LEDGER_TYPES = new Set(['signup', 'redeem', 'spend', 'refund', 'admin'])
+export const LEDGER_TYPES = new Set(['signup', 'redeem', 'spend', 'refund', 'admin', 'referral'])
 
 let creditsFile = ''
 let cache = null

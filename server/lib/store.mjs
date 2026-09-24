@@ -95,6 +95,12 @@ function createEmptyConfig() {
       inviteMaxUses: 0,
       inviteUsedCount: 0,
       inviteExpiresAt: 0,
+      // 邀请返积分默认关（开了才会给奖励）；同 IP 注册上限默认也关
+      referralEnabled: false,
+      referralReward: 50,
+      referralMaxInvites: 20,
+      ipLimitEnabled: false,
+      ipMaxAccounts: 2,
       // 发验证码用的 SMTP。默认空配置，此时注册功能拿不到验证码，等于不可用。
       smtp: {
         enabled: false,
@@ -240,6 +246,11 @@ export function normalizeUser(input, fallbackId) {
     note: normalizeString(record.note, ''),
     // 区分账号是怎么来的，后台名册上要能一眼看出来。
     createdVia: normalizeCreatedVia(record.createdVia),
+    // 邀请关系：谁把这个账号拉来的、奖励是否已发（只在被邀请人真正出图后才发）
+    invitedBy: normalizeString(record.invitedBy, '').trim(),
+    inviteRewarded: normalizeBool(record.inviteRewarded, false),
+    // 注册来源 IP（IPv6 归并到 /64）。用于同 IP 注册上限与后台排查小号。
+    registerIp: normalizeString(record.registerIp, '').trim(),
     emailVerifiedAt: normalizeInt(record.emailVerifiedAt, 0, 0, Number.MAX_SAFE_INTEGER),
     createdAt: normalizeInt(record.createdAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
     updatedAt: normalizeInt(record.updatedAt, Date.now(), 0, Number.MAX_SAFE_INTEGER),
@@ -316,6 +327,15 @@ function normalizeRegistration(site, accessMode) {
     inviteMaxUses: normalizeInt(site.inviteMaxUses, 0, 0, 10_000),
     inviteUsedCount: normalizeInt(site.inviteUsedCount, 0, 0, Number.MAX_SAFE_INTEGER),
     inviteExpiresAt: expiresAt,
+    // 邀请返积分：奖励在「被邀请人第一次成功出图」时才发给邀请人，
+    // 这样注册小号拿不到任何东西，刷号没有收益。
+    referralEnabled: normalizeBool(site.referralEnabled, false),
+    referralReward: normalizeInt(site.referralReward, 50, 0, 1_000_000),
+    // 单个邀请人最多能拿多少次奖励，防大号批发
+    referralMaxInvites: normalizeInt(site.referralMaxInvites, 20, 0, 10_000),
+    // 同 IP 注册上限。NAT/学校/公司会误伤，所以默认关；开启时默认 2 个
+    ipLimitEnabled: normalizeBool(site.ipLimitEnabled, false),
+    ipMaxAccounts: normalizeInt(site.ipMaxAccounts, 2, 1, 100),
   }
 }
 
@@ -707,6 +727,10 @@ export function toAdminUser(user) {
     role: user.role === 'admin' ? 'admin' : 'user',
     note: user.note,
     createdVia: user.createdVia,
+    // 注册 IP 只给管理员看（用于排查小号），前台任何接口都不下发
+    registerIp: user.registerIp ?? '',
+    invitedBy: user.invitedBy ?? '',
+    inviteRewarded: Boolean(user.inviteRewarded),
     hasPassword: Boolean(user.passwordHash),
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,

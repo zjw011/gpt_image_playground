@@ -82,7 +82,7 @@ export interface BackendCreditsConfig {
   packs: BackendCreditPack[]
 }
 
-export type BackendLedgerType = 'signup' | 'redeem' | 'spend' | 'refund' | 'admin'
+export type BackendLedgerType = 'signup' | 'redeem' | 'spend' | 'refund' | 'admin' | 'referral'
 
 export interface BackendLedgerEntry {
   at: number
@@ -150,6 +150,8 @@ export interface BackendBootstrap {
   workspaceId: string
   /** 是否开放自助注册。只在 accounts 模式下可能为 true。 */
   registrationOpen: boolean
+  /** 邀请返积分（仅登录后下发；未开启或未登录为 null） */
+  invite?: BackendInviteInfo | null
   /** 注册的详细可用状态，注册页据此决定显示哪种提示。 */
   registration: BackendRegistration
   credits: BackendCredits
@@ -157,6 +159,16 @@ export interface BackendBootstrap {
   site: BackendSite
   channels: BackendChannel[]
   customProviders: CustomProviderDefinition[]
+}
+
+/** 邀请返积分：服务端只把「本人」的邀请码与战绩下发给本人。 */
+export interface BackendInviteInfo {
+  enabled: boolean
+  reward: number
+  maxInvites: number
+  code: string
+  invited: number
+  rewarded: number
 }
 
 let bootstrap: BackendBootstrap | null = null
@@ -200,6 +212,13 @@ export function getSiteTitle() {
  */
 export function isAgentAvailable() {
   return bootstrap === null || bootstrap.site.agentMode !== 'off'
+}
+
+/** 邀请信息。没开邀请返积分、未登录或非托管模式时返回 null。 */
+export function getInviteInfo(): BackendInviteInfo | null {
+  const raw = (bootstrap as unknown as { invite?: BackendInviteInfo } | null)?.invite
+  if (!raw || !raw.code) return null
+  return raw
 }
 
 /** 积分设置。非托管模式或后台没开积分制时为 null，界面据此隐藏所有积分入口。 */
@@ -294,7 +313,7 @@ function toSignedInt(value: unknown) {
 
 function normalizeLedger(input: unknown): BackendLedgerEntry[] {
   if (!Array.isArray(input)) return []
-  const types = new Set<BackendLedgerType>(['signup', 'redeem', 'spend', 'refund', 'admin'])
+  const types = new Set<BackendLedgerType>(['signup', 'redeem', 'spend', 'refund', 'admin', 'referral'])
   return input.filter(isRecord).map((entry) => ({
     at: toCount(entry.at),
     type: types.has(entry.type as BackendLedgerType) ? entry.type as BackendLedgerType : 'admin',
@@ -387,6 +406,19 @@ function normalizeBootstrap(input: unknown): BackendBootstrap | null {
       : null,
     workspaceId: typeof input.workspaceId === 'string' && input.workspaceId ? input.workspaceId : 'shared',
     registrationOpen: input.registrationOpen === true,
+    // 邀请信息：服务端只在登录后下发。字段不齐当没有，宁可不显示入口。
+    invite: (() => {
+      const raw = input.invite
+      if (!isRecord(raw) || typeof raw.code !== 'string' || !raw.code) return null
+      return {
+        enabled: raw.enabled === true,
+        reward: typeof raw.reward === 'number' && Number.isFinite(raw.reward) ? Math.max(0, Math.trunc(raw.reward)) : 0,
+        maxInvites: typeof raw.maxInvites === 'number' && Number.isFinite(raw.maxInvites) ? Math.max(0, Math.trunc(raw.maxInvites)) : 0,
+        code: raw.code,
+        invited: typeof raw.invited === 'number' && Number.isFinite(raw.invited) ? Math.max(0, Math.trunc(raw.invited)) : 0,
+        rewarded: typeof raw.rewarded === 'number' && Number.isFinite(raw.rewarded) ? Math.max(0, Math.trunc(raw.rewarded)) : 0,
+      }
+    })(),
     registration: normalizeRegistration(input.registration, {
       // 老版本后端没有 registration 字段，用 registrationOpen 兜底，
       // 免得前端因为一个字段缺失就把注册入口整个藏掉。
@@ -507,6 +539,8 @@ export async function submitRegister(input: {
   /** 邮箱验证码。 */
   code: string
   inviteCode?: string
+  /** 邀请链接里的推荐人 id（?ref=）。 */
+  ref?: string
 }) {
   const response = await fetch('/api/register', {
     method: 'POST',
@@ -554,6 +588,35 @@ export async function submitResetPassword(input: { email: string, code: string, 
 }
 
 /** 从 URL 读邀请码。管理员发出的邀请链接形如 `/?invite=xxxx-yyyyy`。 */
+// 邀请链接的 ref 要跨页面留存：用户点开会先落到登录页、再跳注册页，
+// 中途还可能刷新（拿验证码）。所以拿到就存本地，注册成功再清。
+const INVITE_REF_KEY = 'gpt-image-playground-invite-ref'
+
+/** 从 URL 里抓 ?ref= 并记下来（没有就保留上次记的）。 */
+export function captureInviteRef() {
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get('ref')?.trim() ?? ''
+    if (fromUrl) localStorage.setItem(INVITE_REF_KEY, fromUrl)
+  } catch { /* 隐私模式下 localStorage 不可用，那就只认本次 URL */ }
+}
+
+/** 读取待生效的邀请人 id。 */
+export function readInviteRef() {
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get('ref')?.trim() ?? ''
+    if (fromUrl) return fromUrl
+    return localStorage.getItem(INVITE_REF_KEY)?.trim() ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export function clearInviteRef() {
+  try {
+    localStorage.removeItem(INVITE_REF_KEY)
+  } catch { /* 清不掉也无所谓，下次注册会先覆盖 */ }
+}
+
 export function readInviteFromUrl() {
   try {
     return new URLSearchParams(window.location.search).get('invite')?.trim() ?? ''

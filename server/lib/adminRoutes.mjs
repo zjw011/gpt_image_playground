@@ -99,6 +99,10 @@ export async function handleAdminRoute(req, res, ctx) {
               ...toAdminUser(user),
               balance: creditsRows.get(user.id)?.balance ?? 0,
               totalOut: creditsRows.get(user.id)?.totalOut ?? 0,
+              // 同一注册 IP 有几个号：小号群一眼可见
+              sameIpCount: user.registerIp
+                ? config.users.filter((item) => item.registerIp && item.registerIp === user.registerIp).length
+                : 0,
             })),
             minUserPasswordLength: MIN_USER_PASSWORD_LENGTH,
             customProviders: config.customProviders,

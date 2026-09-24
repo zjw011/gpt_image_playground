@@ -3,7 +3,8 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore } from '../../store'
-import { getBackendUser, getCreditsConfig, submitFrontLogout, type BackendLedgerType } from '../../lib/backend'
+import { getBackendUser, getCreditsConfig, getInviteInfo, submitFrontLogout, type BackendLedgerType } from '../../lib/backend'
+import { copyTextToClipboard } from '../../lib/clipboard'
 import { useCreditsStore } from '../../lib/creditsStore'
 import AppShell from './AppShell'
 import { useThumbnail } from './useTaskImage'
@@ -23,6 +24,7 @@ const LEDGER_LABELS: Record<BackendLedgerType, string> = {
   spend: '生成消耗',
   refund: '失败退款',
   admin: '管理员调整',
+  referral: '邀请奖励',
 }
 
 function WorkThumb({ imageId, taskId, favorite }: { imageId: string, taskId: string, favorite?: boolean }) {
@@ -79,6 +81,7 @@ export default function MePage() {
   const showToast = useStore((s) => s.showToast)
   const user = getBackendUser()
   const credits = getCreditsConfig()
+  const invite = getInviteInfo()
   const view = useCreditsStore((s) => s.view)
 
   const rawTab = searchParams.get('tab') ?? 'works'
@@ -101,6 +104,13 @@ export default function MePage() {
   // 作品多了不能一把全渲染：每张缩略图都要从 IndexedDB 读一次，
   // 一次几百张会明显卡顿。先出 48 张，剩下的点「加载更多」。
   const [visibleCount, setVisibleCount] = useState(48)
+
+  // 邀请链接带上 ref（就是自己的用户 id），注册页会把它带上。
+  // BASE_URL 是 './' 这类相对值，必须交给 URL 解析而不是字符串拼接
+  // （直接拼会拼出 "host./register" 这种非法地址）。
+  const inviteLink = invite
+    ? new URL(`register?ref=${encodeURIComponent(invite.code)}`, new URL(import.meta.env.BASE_URL, window.location.origin)).toString()
+    : ''
 
   const isWorks = tab === 'works'
   const gridTasks = isWorks ? (favOnly ? favoriteTasks : doneTasks) : doneTasks
@@ -199,6 +209,55 @@ export default function MePage() {
 
           {tab === 'ledger' && (
             <>
+            {/* 邀请返积分：奖励在被邀请人第一次出图后才发，所以这里明说"出图才算" */}
+            {invite?.enabled && (
+              <div className="mb-4 rounded-3xl border border-[#eceaf6] bg-gradient-to-br from-[#f8f7fe] to-white p-6 shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h3 className="text-[15px] font-bold">邀请好友，双方都有积分</h3>
+                    <p className="mt-1.5 text-[13px] leading-6 text-[#8a86ac]">
+                      好友通过你的链接注册并<span className="font-medium text-[#6b5ce7]">成功生成第一张图</span>后，
+                      你将获得 <strong className="text-[#6b5ce7]">{invite.reward}</strong> 积分
+                      {invite.maxInvites > 0 ? `（最多 ${invite.maxInvites} 位）` : ''}。
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 gap-6 text-center">
+                    <div>
+                      <p className="text-xl font-bold">{invite.invited}</p>
+                      <p className="mt-0.5 text-xs text-[#a5a1c4]">已邀请</p>
+                    </div>
+                    <div>
+                      <p className="text-xl font-bold text-[#6b5ce7]">{invite.rewarded}</p>
+                      <p className="mt-0.5 text-xs text-[#a5a1c4]">已获奖励</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <input
+                    readOnly
+                    value={inviteLink}
+                    onFocus={(event) => event.currentTarget.select()}
+                    className="min-w-0 flex-1 rounded-xl border border-[#e4e1f2] bg-white px-3.5 py-2.5 text-[13px] text-[#5b5680] outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      // copyTextToClipboard 失败时抛错（而不是返回 false）
+                      try {
+                        await copyTextToClipboard(inviteLink)
+                        showToast('邀请链接已复制，发给好友即可', 'success')
+                      } catch {
+                        showToast('复制失败，请手动选择复制', 'error')
+                      }
+                    }}
+                    className="shrink-0 rounded-full bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] px-5 py-2.5 text-[13px] font-semibold text-white shadow-md shadow-[#7c6cf6]/25 transition hover:from-[#6b5ce7] hover:to-[#9678f5]"
+                  >
+                    复制邀请链接
+                  </button>
+                </div>
+              </div>
+            )}
+
             {!credits || !view || view.ledger.length === 0 ? (
               <EmptyState text={credits ? '还没有积分变动记录' : '本站未开启积分制'} />
             ) : (

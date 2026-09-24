@@ -15,6 +15,8 @@ export default function SitePage() {
   const [form, setForm] = useState({
     title: '', accessMode: 'accounts', registrationEnabled: true,
     requireInviteCode: false, inviteCode: '',
+    referralEnabled: false, referralReward: '50', referralMaxInvites: '20',
+    ipLimitEnabled: false, ipMaxAccounts: '2',
     failoverEnabled: true,
   })
   const [error, setError] = useState<string | null>(null)
@@ -31,6 +33,11 @@ export default function SitePage() {
         registrationEnabled: site.registrationEnabled === true,
         requireInviteCode: site.requireInviteCode === true,
         inviteCode: String(site.inviteCode ?? ''),
+        referralEnabled: site.referralEnabled === true,
+        referralReward: String(site.referralReward ?? 50),
+        referralMaxInvites: String(site.referralMaxInvites ?? 20),
+        ipLimitEnabled: site.ipLimitEnabled === true,
+        ipMaxAccounts: String(site.ipMaxAccounts ?? 2),
         failoverEnabled: site.failoverEnabled !== false,
       })
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) }
@@ -47,6 +54,11 @@ export default function SitePage() {
         registrationEnabled: form.registrationEnabled,
         requireInviteCode: form.requireInviteCode,
         failoverEnabled: form.failoverEnabled,
+        referralEnabled: form.referralEnabled,
+        referralReward: Number(form.referralReward) || 0,
+        referralMaxInvites: Number(form.referralMaxInvites) || 0,
+        ipLimitEnabled: form.ipLimitEnabled,
+        ipMaxAccounts: Number(form.ipMaxAccounts) || 2,
       })
       toast('站点设置已保存')
       await load(true)
@@ -101,6 +113,63 @@ export default function SitePage() {
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.failoverEnabled} onChange={(e) => setForm({ ...form, failoverEnabled: e.target.checked })} className="h-4 w-4 rounded accent-[#2563eb]" />
               渠道故障转移
+            </label>
+          </div>
+        </div>
+
+        {/* 邀请返积分：奖励只在被邀请人真正出图后才发 */}
+        <div className="mt-5 border-t border-[#f1f5f9] pt-5">
+          <h4 className="text-sm font-semibold">邀请返积分</h4>
+          <p className="mt-1 text-xs text-[#94a3b8]">
+            用户可在「积分中心」拿到自己的邀请链接。奖励在<span className="font-medium text-[#475569]">被邀请人成功生成第一张图</span>后才发给邀请人——
+            只注册不出图的小号拿不到任何积分。
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-4">
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={form.referralEnabled} onChange={(e) => setForm({ ...form, referralEnabled: e.target.checked })} className="h-4 w-4 rounded accent-[#2563eb]" />
+              开启邀请奖励
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-[#475569]">邀请人获得</span>
+              <input
+                type="number" min="0" value={form.referralReward} disabled={!form.referralEnabled}
+                onChange={(e) => setForm({ ...form, referralReward: e.target.value })}
+                className="w-28 rounded-lg border border-[#e2e8f0] px-3 py-2 text-sm outline-none focus:border-[#3b82f6] disabled:bg-[#f8fafc] disabled:text-[#94a3b8]"
+              />
+              <span className="text-[#475569]">积分 / 人</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-[#475569]">最多奖励</span>
+              <input
+                type="number" min="0" value={form.referralMaxInvites} disabled={!form.referralEnabled}
+                onChange={(e) => setForm({ ...form, referralMaxInvites: e.target.value })}
+                className="w-24 rounded-lg border border-[#e2e8f0] px-3 py-2 text-sm outline-none focus:border-[#3b82f6] disabled:bg-[#f8fafc] disabled:text-[#94a3b8]"
+              />
+              <span className="text-[#475569]">人（0 = 不限）</span>
+            </label>
+          </div>
+        </div>
+
+        {/* 同 IP 注册上限 */}
+        <div className="mt-5 border-t border-[#f1f5f9] pt-5">
+          <h4 className="text-sm font-semibold">同 IP 注册限制</h4>
+          <p className="mt-1 text-xs text-[#94a3b8]">
+            注册时会记录来源 IP（IPv6 按 /64 归并）。管理员手动创建的账号不受限制，是救急通道。
+            注意：学校、公司、家庭共用网络会误伤，拿不准就先别开。
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-4">
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={form.ipLimitEnabled} onChange={(e) => setForm({ ...form, ipLimitEnabled: e.target.checked })} className="h-4 w-4 rounded accent-[#2563eb]" />
+              限制同 IP 注册数量
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-[#475569]">每个 IP 最多</span>
+              <input
+                type="number" min="1" max="100" value={form.ipMaxAccounts} disabled={!form.ipLimitEnabled}
+                onChange={(e) => setForm({ ...form, ipMaxAccounts: e.target.value })}
+                className="w-24 rounded-lg border border-[#e2e8f0] px-3 py-2 text-sm outline-none focus:border-[#3b82f6] disabled:bg-[#f8fafc] disabled:text-[#94a3b8]"
+              />
+              <span className="text-[#475569]">个账号</span>
             </label>
           </div>
         </div>

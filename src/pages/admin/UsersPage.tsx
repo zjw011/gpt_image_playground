@@ -148,6 +148,7 @@ export default function UsersPage() {
                 <th className="px-5 py-3.5 font-medium">角色</th>
                 <th className="px-5 py-3.5 font-medium">积分</th>
                 <th className="px-5 py-3.5 font-medium">来源</th>
+                <th className="px-5 py-3.5 font-medium">注册 IP</th>
                 <th className="px-5 py-3.5 font-medium">状态</th>
                 <th className="px-5 py-3.5 text-right font-medium">操作</th>
               </tr>
@@ -166,6 +167,18 @@ export default function UsersPage() {
                   </td>
                   <td className="px-5 py-3 font-semibold text-[#2563eb]">{u.balance.toLocaleString()}</td>
                   <td className="px-5 py-3 text-[#64748b]">{u.createdVia}</td>
+                  <td className="px-5 py-3">
+                    {u.registerIp ? (
+                      <span className="flex items-center gap-1.5 font-mono text-xs text-[#64748b]">
+                        {u.registerIp}
+                        {(u.sameIpCount ?? 0) > 1 && (
+                          <span className="rounded-full bg-amber-50 px-1.5 py-0.5 font-sans text-[10px] font-medium text-amber-600" title={`同一 IP 下有 ${u.sameIpCount} 个账号`}>
+                            {u.sameIpCount} 个号
+                          </span>
+                        )}
+                      </span>
+                    ) : <span className="text-xs text-[#cbd5e1]">—</span>}
+                  </td>
                   <td className="px-5 py-3">
                     <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${u.enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-500'}`}>
                       {u.enabled ? '正常' : '停用'}

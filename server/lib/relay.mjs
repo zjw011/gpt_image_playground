@@ -20,6 +20,7 @@ import {
   parseImageCount,
 } from './billing.mjs'
 import { getBalance, releaseReservation, reserveCredits, settleCredits } from './credits.mjs'
+import { maybeRewardInviter } from './referral.mjs'
 import { HttpError } from './http.mjs'
 import { findChannel, getConfig } from './store.mjs'
 import { attemptUpstream, buildUpstreamUrl, forwardableHeaders } from './upstream.mjs'
@@ -357,6 +358,13 @@ export async function handleRelay(req, res, ctx) {
           extraHeaders['x-credits-lucky'] = '1'
           extraHeaders['x-credits-balance'] = String(getBalance(userId))
         }
+      }
+
+      // 邀请奖励：这是"被邀请人第一次成功出图"，到这一步才给邀请人发积分。
+      // 幂等，重复调用不会重复发；配置关掉、超上限都会自己跳过。
+      if (success && userId) {
+        const referral = maybeRewardInviter(userId)
+        if (referral.rewarded) console.log(`[referral] ${userId} 首图成功，奖励邀请人 ${referral.inviterId} ${referral.reward} 积分`)
       }
 
       try {
