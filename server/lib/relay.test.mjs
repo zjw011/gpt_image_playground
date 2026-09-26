@@ -109,11 +109,12 @@ async function setup(channels, options = {}) {
 }
 
 function relay(path, init = {}) {
+  const { headers, ...rest } = init
   return fetch(`http://127.0.0.1:${app.port}/api/relay/${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: cookie, ...(init.headers ?? {}) },
+    headers: { 'Content-Type': 'application/json', Cookie: cookie, ...headers },
     body: JSON.stringify({ model: 'gpt-image-2', prompt: 'cat' }),
-    ...init,
+    ...rest,
   })
 }
 
@@ -142,6 +143,46 @@ describe('渠道故障转移', () => {
     expect(getUpstreamTimeoutMs({ timeout: 15 }, true)).toBe(300_000)
     expect(getUpstreamTimeoutMs({ timeout: 900 }, true)).toBe(900_000)
     expect(getUpstreamTimeoutMs({ timeout: 15 }, false)).toBe(15_000)
+  })
+
+  it('同步生图长时间无响应头时发送空白心跳并保留最终 JSON', async () => {
+    const slow = await startUpstream((req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(IMAGE_RESPONSE)
+      }, 80)
+    })
+    upstreams = [slow]
+    await setup([{ name: '慢渠道', baseUrl: `${slow.url}/v1`, apiKey: 'k1' }])
+
+    const response = await relay('ch-1/images/generations', {
+      headers: { 'X-GIP-Keepalive': '1' },
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('x-gip-heartbeat')).toBe('1')
+    expect(await response.json()).toEqual({ data: [{ b64_json: 'AAAA' }] })
+    expect(getBalance(USER_ID)).toBe(99)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
+  it('心跳已经开始后仍用完整 JSON 返回最终渠道错误且不扣积分', async () => {
+    const slowFailure = await startUpstream((req, res) => {
+      setTimeout(() => res.writeHead(500).end('upstream down'), 80)
+    })
+    upstreams = [slowFailure]
+    await setup([{ name: '慢故障渠道', baseUrl: `${slowFailure.url}/v1`, apiKey: 'k1' }])
+
+    const response = await relay('ch-1/images/generations', {
+      headers: { 'X-GIP-Keepalive': '1' },
+    })
+    const payload = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('x-gip-heartbeat')).toBe('1')
+    expect(payload.error.message).toContain('所有渠道均失败')
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(0)
   })
 
   it('旧客户端发送 size:auto 时服务端改成显式尺寸再请求兼容渠道', async () => {

@@ -6,10 +6,34 @@ import { maybeAppendStreamingHint } from './imageApiShared'
 import { getImageRequestTimeoutMs } from './openaiCompatibleImageApi'
 
 describe('image request timeout', () => {
+  afterEach(() => vi.restoreAllMocks())
+
   it('托管中继忽略浏览器残留的 15 秒超时，直连配置仍尊重用户设置', () => {
     const profile = DEFAULT_SETTINGS.profiles[0]
     expect(getImageRequestTimeoutMs({ ...profile, timeout: 15, baseUrl: 'https://site.example/api/relay/ch-1/' })).toBe(300_000)
     expect(getImageRequestTimeoutMs({ ...profile, timeout: 15, baseUrl: 'https://api.example.com/v1' })).toBe(15_000)
+  })
+
+  it('托管中继请求启用响应心跳，并识别 HTTP 200 中的最终错误', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      `  \n${JSON.stringify({ error: { message: '所有渠道均失败：上游请求超时' } })}`,
+      { status: 200, headers: { 'Content-Type': 'application/x-ndjson', 'X-GIP-Heartbeat': '1' } },
+    ))
+
+    await expect(callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        baseUrl: '/api/relay/ch-1/',
+        apiKey: 'backend-managed',
+        streamImages: false,
+      },
+      prompt: 'cat',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toThrow('所有渠道均失败：上游请求超时')
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect(new Headers((init as RequestInit).headers).get('x-gip-keepalive')).toBe('1')
   })
 })
 

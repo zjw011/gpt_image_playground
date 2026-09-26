@@ -24,6 +24,7 @@ import {
 } from './imageApiShared'
 import { isEventStreamResponse, readJsonServerSentEvents } from './serverSentEvents'
 import { prependCodexCliSizePrompt } from './size'
+import { fetchCredits } from './backend'
 
 /** 托管中继由服务端负责最终超时，浏览器不能沿用 IndexedDB 里遗留的十几秒配置。 */
 export function getImageRequestTimeoutMs(profile: ApiProfile) {
@@ -96,6 +97,7 @@ function normalizeImageApiPayload(value: unknown): ImageApiResponse {
 function createRequestHeaders(profile: ApiProfile): Record<string, string> {
   return {
     Authorization: `Bearer ${profile.apiKey}`,
+    ...(profile.baseUrl.includes('/api/relay/') ? { 'X-GIP-Keepalive': '1' } : {}),
   }
 }
 
@@ -110,6 +112,24 @@ function getStringValue(source: Record<string, unknown>, key: string): string | 
 
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function getPayloadErrorMessage(payload: unknown): string | null {
+  if (!isRecordValue(payload)) return null
+  if (typeof payload.error === 'string' && payload.error.trim()) return payload.error
+  if (isRecordValue(payload.error) && typeof payload.error.message === 'string' && payload.error.message.trim()) {
+    return payload.error.message
+  }
+  return typeof payload.message === 'string' && payload.message.trim() ? payload.message : null
+}
+
+async function syncHeartbeatCredits(response: Response) {
+  if (response.headers.get('x-gip-heartbeat') !== '1') return
+  try {
+    await fetchCredits()
+  } catch {
+    // 保活响应无法在结算后追加余额响应头；刷新失败不应影响已经成功的图片。
+  }
 }
 
 function getNumberValue(source: Record<string, unknown>, key: string): number | undefined {
@@ -230,6 +250,8 @@ function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime:
 }
 
 async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
+  const payloadError = getPayloadErrorMessage(payload)
+  if (payloadError) throw new Error(payloadError)
   const data = payload.data
   if (!Array.isArray(data) || !data.length) {
     const err = new Error('接口没有返回图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。')
@@ -626,7 +648,9 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
       return parseImagesApiStreamResponse(response, mime, opts.onPartialImage, controller.signal)
     }
 
-    return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
+    const result = await parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
+    await syncHeartbeatCredits(response)
+    return result
   } finally {
     clearTimeout(timeoutId)
   }
@@ -1064,11 +1088,13 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
     }
 
     const payload = await response.json() as ResponsesApiResponse
+    const payloadError = getPayloadErrorMessage(payload)
+    if (payloadError) throw new Error(payloadError)
     const imageResults = parseResponsesImageResults(payload, mime)
     const actualParams = mergeActualParams(
       imageResults[0]?.actualParams ?? {},
     )
-    return {
+    const result = {
       images: imageResults.map((result) => result.image),
       actualParams,
       actualParamsList: imageResults.map((result) =>
@@ -1076,6 +1102,8 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       ),
       revisedPrompts: imageResults.map((result) => result.revisedPrompt),
     }
+    await syncHeartbeatCredits(response)
+    return result
   } finally {
     clearTimeout(timeoutId)
   }

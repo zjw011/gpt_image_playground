@@ -39,9 +39,59 @@ const ERROR_SNIPPET_BYTES = 2_048
 const SUCCESS_PEEK_BYTES = 256 * 1024
 /** 同步生图可能长时间没有任何响应字节，至少等 5 分钟再判定渠道超时。 */
 const MIN_GENERATION_TIMEOUT_MS = 300_000
+/** 边缘代理常在 15～60 秒无响应时断开；在它之前开始发送 JSON 空白心跳。 */
+const RESPONSE_HEARTBEAT_DELAY_MS = process.env.NODE_ENV === 'test' ? 20 : 5_000
+const RESPONSE_HEARTBEAT_INTERVAL_MS = process.env.NODE_ENV === 'test' ? 20 : 10_000
+const RESPONSE_HEARTBEAT_CHUNK = `${' '.repeat(4 * 1024)}\n`
 
 export function getUpstreamTimeoutMs(channel, billable) {
   return Math.max(billable ? MIN_GENERATION_TIMEOUT_MS : 10_000, channel.timeout * 1000)
+}
+
+/**
+ * 同步生图在上游返回响应头之前可能安静几十秒。前置 CDN/Nginx 会把这种连接误判为空闲，
+ * 所以新客户端明确请求保活时，先返回 200，再定期写合法的 JSON 前导空白。
+ * response.json() 会忽略这些空白，业务响应格式不变；流式 SSE 不走这里。
+ */
+function createJsonHeartbeat(res, enabled) {
+  let started = false
+  let interval = null
+  const write = () => {
+    if (res.destroyed || res.writableEnded) return
+    if (!started) {
+      started = true
+      res.writeHead(200, {
+        'Content-Type': 'application/x-ndjson; charset=utf-8',
+        'Cache-Control': 'no-store, no-transform',
+        'X-Accel-Buffering': 'no',
+        'X-GIP-Heartbeat': '1',
+      })
+    }
+    res.write(RESPONSE_HEARTBEAT_CHUNK)
+  }
+  const delay = enabled ? setTimeout(() => {
+    write()
+    interval = setInterval(write, RESPONSE_HEARTBEAT_INTERVAL_MS)
+    interval.unref?.()
+  }, RESPONSE_HEARTBEAT_DELAY_MS) : null
+  delay?.unref?.()
+
+  const stop = () => {
+    if (delay) clearTimeout(delay)
+    if (interval) clearInterval(interval)
+  }
+  res.once('close', stop)
+
+  return {
+    get started() { return started },
+    stop,
+    finishError(message) {
+      stop()
+      if (!started || res.destroyed || res.writableEnded) return false
+      res.end(JSON.stringify({ error: { message } }))
+      return true
+    },
+  }
 }
 
 /**
@@ -305,7 +355,9 @@ function resolveTarget(req, channel, endpointPath, search) {
  */
 function adoptResponse(res, upstreamRes, extraHeaders, headChunks = [], complete = false) {
   return new Promise((resolve, reject) => {
-    res.writeHead(upstreamRes.statusCode ?? 502, { ...forwardableHeaders(upstreamRes), ...extraHeaders })
+    if (!res.headersSent) {
+      res.writeHead(upstreamRes.statusCode ?? 502, { ...forwardableHeaders(upstreamRes), ...extraHeaders })
+    }
     for (const chunk of headChunks) res.write(chunk)
     if (complete) {
       res.end()
@@ -360,6 +412,8 @@ export async function handleRelay(req, res, ctx) {
   const costOf = (id) => actualCost(config.site, id, creditCount)
   const creditConfig = config.site.credits
   const chargeable = Boolean(creditConfig.enabled) && Boolean(userId) && billable && creditCount > 0
+  const wantsHeartbeat = req.headers['x-gip-keepalive'] === '1'
+  const streamingRequest = /["']stream["']\s*:\s*true/i.test(head.toString('utf-8'))
 
   // 幸运免单：出门前掷骰子，命中就这次不占积分、不扣积分（营销活动，概率后台可调）。
   // 在占位之前决定，命中走的是"无占位 → 成功后不结算"的通路，不会产生退款流水。
@@ -384,6 +438,8 @@ export async function handleRelay(req, res, ctx) {
       })
     }
   }
+
+  const heartbeat = createJsonHeartbeat(res, billable && wantsHeartbeat && !streamingRequest)
 
   let settled = false
   const release = () => {
@@ -481,6 +537,15 @@ export async function handleRelay(req, res, ctx) {
       // 之后再断流也不该白送——否则"客户端中途关页面"就成了免费的旁路。
       // 顺带把扣费结果塞进响应头，前端不用再打一次接口就知道新余额。
       const success = attempt.status >= 200 && attempt.status < 300
+      if (!success && heartbeat.started) {
+        const snippet = await readErrorSnippet(attempt.upstreamRes).catch(() => '')
+        attempt.upstream.destroy()
+        const message = `HTTP ${attempt.status}${snippet ? `：${snippet.slice(0, 160)}` : ''}`
+        track(false, attempt.status, message)
+        release()
+        heartbeat.finishError(message)
+        return { status: attempt.status }
+      }
       const inspected = success && billable && ['openai', 'sb2api-async'].includes(channel.provider)
         ? await inspectSuccessfulPayload(attempt.upstreamRes)
         : { valid: true, chunks: [], complete: false }
@@ -527,6 +592,7 @@ export async function handleRelay(req, res, ctx) {
       }
 
       try {
+        heartbeat.stop()
         const result = await adoptResponse(res, attempt.upstreamRes, extraHeaders, inspected.chunks, inspected.complete)
         track(result.status >= 200 && result.status < 300, result.status, result.status >= 200 && result.status < 300 ? '' : `上游返回 HTTP ${result.status}`)
         return result
@@ -543,6 +609,10 @@ export async function handleRelay(req, res, ctx) {
     throw new HttpError(502, `所有渠道均失败：${failures.join('；') || '没有可用渠道'}`)
   } catch (err) {
     release()
+    const message = err instanceof Error ? err.message : '服务器内部错误'
+    if (heartbeat.finishError(message)) return { status: err instanceof HttpError ? err.status : 502 }
     throw err
+  } finally {
+    heartbeat.stop()
   }
 }
