@@ -47,6 +47,8 @@ export default function ResultPage() {
   const [activeImageId, setActiveImageId] = useState<string | null>(null)
   // 本次会话里已上传广场的作品：上传成功后按钮变成"已在广场"，避免重复上传
   const [publishedIds, setPublishedIds] = useState<Set<string>>(new Set())
+  const [publishing, setPublishing] = useState(false)
+  const lastLuckyAt = useCreditsStore((s) => s.lastLuckyAt)
   const imageId = activeImageId && task?.outputImages.includes(activeImageId)
     ? activeImageId
     : task?.outputImages[0] ?? null
@@ -119,12 +121,10 @@ export default function ResultPage() {
   const canPublish = isBackendMode() && Boolean(getBackendUser()) && task.status === 'done'
 
   // 幸运免单：这张图完成的时间与最近一次免单命中相隔很近，就认定是这一单免的
-  const lastLuckyAt = useCreditsStore((s) => s.lastLuckyAt)
   const luckyHit = task.status === 'done'
     && task.finishedAt != null
     && lastLuckyAt != null
     && Math.abs(task.finishedAt - lastLuckyAt) < 30_000
-  const [publishing, setPublishing] = useState(false)
   const published = publishedIds.has(task.id)
 
   const publishToGallery = async () => {
