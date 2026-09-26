@@ -58,7 +58,7 @@ describe('recordChannelCall', () => {
     const raw = readFileSync(join(dir, 'usage.json'), 'utf-8')
     expect(existsSync(join(dir, 'usage.json'))).toBe(true)
     expect(Object.keys(JSON.parse(raw))).toEqual(['version', 'channels', 'users', 'days', 'events', 'updatedAt'])
-    expect(Object.keys(JSON.parse(raw).events[0]).sort()).toEqual(['at', 'channelId', 'error', 'fault', 'latencyMs', 'ok', 'status', 'userId'])
+    expect(Object.keys(JSON.parse(raw).events[0]).sort()).toEqual(['aborted', 'at', 'channelId', 'error', 'fault', 'latencyMs', 'ok', 'status', 'userId'])
   })
 
   it('明细条数有上限，不会让文件无限膨胀', () => {
@@ -201,13 +201,14 @@ describe('健康度的误报防线', () => {
     expect(channelHealth('ch-1').state).toBe('healthy')
   })
 
-  it('访客自己取消的请求完全不记，不该污染成功率', () => {
+  it('客户端提前断开的请求会进入用量，但不会把渠道判成故障', () => {
     freshDir()
     for (let i = 0; i < 4; i += 1) {
       recordChannelCall({ channelId: 'ch-1', ok: false, status: 0, latencyMs: 30, aborted: true, error: 'socket hang up' })
     }
-    expect(channelHealth('ch-1').state).toBe('unknown')
-    expect(usageSummary(new Map([['ch-1', 'A']])).totals).toEqual({ total: 0, ok: 0, fail: 0 })
+    expect(channelHealth('ch-1').state).toBe('healthy')
+    expect(usageSummary(new Map([['ch-1', 'A']])).totals).toEqual({ total: 4, ok: 0, fail: 4 })
+    expect(usageSummary(new Map([['ch-1', 'A']])).events.every((item) => item.aborted)).toBe(true)
   })
 
   it('400 和真故障混在一起时，只有真故障推进连续计数', () => {
@@ -405,12 +406,13 @@ describe('usageOverview', () => {
     expect(usageOverview(CHANNELS, USERS, { range: 'month', now }).totals.total).toBe(1)
   })
 
-  it('访客取消的请求不进概览——它连统计都没进', () => {
+  it('客户端提前断开的请求进入概览，但不影响渠道故障判定', () => {
     freshDir()
     const now = Date.now()
     at(now)
     recordChannelCall({ channelId: 'ch-a', ok: false, status: 0, latencyMs: 10, at: now, aborted: true })
-    expect(usageOverview(CHANNELS, USERS, { range: 'today', now }).totals).toEqual({ total: 1, ok: 1, fail: 0 })
+    expect(usageOverview(CHANNELS, USERS, { range: 'today', now }).totals).toEqual({ total: 2, ok: 1, fail: 1 })
+    expect(channelHealth('ch-a').state).toBe('healthy')
   })
 
   it('还没有任何数据时返回结构完整的空壳，前端不用做兜底', () => {

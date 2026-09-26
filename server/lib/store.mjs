@@ -555,6 +555,9 @@ export function verifyPassword(password, stored) {
 
 // ===== 对外投影 =====
 
+/** 同步生图常见要几十秒到数分钟，不能把后台遗留的短超时继续下发给浏览器。 */
+const MIN_PUBLIC_IMAGE_TIMEOUT_SECONDS = 300
+
 /** 前端可见的渠道投影：不含 apiKey，也不含真实 baseUrl。 */
 export function toPublicChannel(channel) {
   return {
@@ -564,7 +567,7 @@ export function toPublicChannel(channel) {
     provider: channel.provider,
     model: channel.model,
     apiMode: channel.apiMode,
-    timeout: channel.timeout,
+    timeout: Math.max(MIN_PUBLIC_IMAGE_TIMEOUT_SECONDS, channel.timeout),
     codexCli: channel.codexCli,
     responseFormatB64Json: channel.responseFormatB64Json,
     streamImages: channel.streamImages,

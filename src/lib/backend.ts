@@ -7,6 +7,8 @@ import { useCreditsStore } from './creditsStore'
 
 /** 占位密钥：只为通过前端的必填校验，真实凭据由服务端注入后覆盖。 */
 export const BACKEND_MANAGED_API_KEY = 'backend-managed'
+/** 托管模式的同步生图至少等待 5 分钟，避免旧渠道配置的短超时提前掐断任务。 */
+export const BACKEND_IMAGE_MIN_TIMEOUT = 300
 
 export interface BackendChannel {
   id: string
@@ -302,7 +304,9 @@ function normalizeChannel(input: unknown, idx: number): BackendChannel | null {
     provider: typeof input.provider === 'string' && input.provider.trim() ? input.provider : 'openai',
     model: typeof input.model === 'string' && input.model.trim() ? input.model : 'gpt-image-2',
     apiMode: input.apiMode === 'responses' ? 'responses' : 'images',
-    timeout: typeof input.timeout === 'number' && Number.isFinite(input.timeout) ? input.timeout : 600,
+    timeout: typeof input.timeout === 'number' && Number.isFinite(input.timeout)
+      ? Math.max(BACKEND_IMAGE_MIN_TIMEOUT, input.timeout)
+      : 600,
     codexCli: input.codexCli === true,
     responseFormatB64Json: input.responseFormatB64Json === true,
     streamImages: input.streamImages === true,
@@ -503,7 +507,7 @@ export function backendChannelToApiProfile(channel: BackendChannel): ApiProfile 
     baseUrl: getRelayBaseUrl(channel.id),
     apiKey: BACKEND_MANAGED_API_KEY,
     model: channel.model,
-    timeout: channel.timeout,
+    timeout: Math.max(BACKEND_IMAGE_MIN_TIMEOUT, channel.timeout),
     apiMode: channel.apiMode,
     reasoningEffort: channel.reasoningEffort as ApiProfile['reasoningEffort'],
     codexCli: channel.codexCli,
@@ -794,4 +798,3 @@ export function formatCardCodeInput(value: string) {
   const rest = cleaned.slice(3).match(/.{1,4}/g)
   return rest ? `${head}-${rest.join('-')}` : head
 }
-

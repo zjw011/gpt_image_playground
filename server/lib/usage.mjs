@@ -158,6 +158,7 @@ function normalizeUsage(input) {
         error: typeof raw.error === 'string' ? raw.error.slice(0, 200) : '',
         // 老数据没有 fault 字段，按状态码补判，这样升级后历史记录也能参与健康度。
         fault: raw.ok === true ? false : typeof raw.fault === 'boolean' ? raw.fault : isChannelFault(raw.status),
+        aborted: raw.aborted === true,
       }))
   }
 
@@ -232,18 +233,16 @@ function dayKey(at) {
  * @param entry.latencyMs 从发起到结束的耗时
  * @param entry.userId    多用户模式下的用户 id，其他模式为空串
  * @param entry.error     失败原因，只留前 200 字
- * @param entry.aborted   访客主动断开（点停止、关页面）——完全不该记，见下
+ * @param entry.aborted   客户端提前断开；仍计入请求量，但不把渠道判成故障
  */
 export function recordChannelCall(entry) {
   if (!cache || !entry?.channelId) return
-  // 用户自己取消的请求不是任何人的错，记进去只会污染成功率。
-  if (entry.aborted === true) return
 
   const at = toInt(entry.at, Date.now()) || Date.now()
   const ok = entry.ok === true
   const latencyMs = toInt(entry.latencyMs)
   // 失败是否算渠道的锅。请求内容被拒、限流这类失败照样统计，但不参与健康度判定。
-  const fault = !ok && isChannelFault(entry.status)
+  const fault = !ok && entry.aborted !== true && isChannelFault(entry.status)
 
   const channel = cache.channels[entry.channelId] ?? {
     total: 0, ok: 0, fail: 0, latencySum: 0, consecutiveFailures: 0, lastOkAt: 0, lastFailAt: 0, lastError: '',
@@ -296,6 +295,7 @@ export function recordChannelCall(entry) {
     at,
     error: ok ? '' : String(entry.error ?? '').slice(0, 200),
     fault,
+    aborted: entry.aborted === true,
   })
   if (cache.events.length > MAX_EVENTS) cache.events.splice(0, cache.events.length - MAX_EVENTS)
 

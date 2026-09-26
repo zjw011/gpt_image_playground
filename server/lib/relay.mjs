@@ -37,6 +37,12 @@ const MAX_BUFFERED_BODY_BYTES = 32 * 1024 * 1024
 const ERROR_SNIPPET_BYTES = 2_048
 // 成功响应通常很大（Base64 图片），这里只检查开头；错误网关伪装成 200 的 JSON 一般很小。
 const SUCCESS_PEEK_BYTES = 256 * 1024
+/** 同步生图可能长时间没有任何响应字节，至少等 5 分钟再判定渠道超时。 */
+const MIN_GENERATION_TIMEOUT_MS = 300_000
+
+export function getUpstreamTimeoutMs(channel, billable) {
+  return Math.max(billable ? MIN_GENERATION_TIMEOUT_MS : 10_000, channel.timeout * 1000)
+}
 
 /**
  * 旧版前端会把默认尺寸发成 auto，但部分 OpenAI 兼容网关只接受 1024x1024 这类显式值。
@@ -413,6 +419,11 @@ export async function handleRelay(req, res, ctx) {
       }
 
       let attempt
+      const controller = new AbortController()
+      const abortUpstream = () => {
+        if (!res.writableEnded) controller.abort()
+      }
+      res.once('close', abortUpstream)
       try {
         const requestBody = rewindable
           ? normalizeImageRequestBody(bufferedBody, req.headers['content-type'], channel, endpointPath)
@@ -420,10 +431,11 @@ export async function handleRelay(req, res, ctx) {
         attempt = await attemptUpstream(req, target.upstreamUrl, {
           authHeader: target.authHeader,
           dropHeaders: target.dropHeaders,
-          timeoutMs: Math.max(10_000, channel.timeout * 1000),
+          timeoutMs: getUpstreamTimeoutMs(channel, billable),
           body: requestBody,
           headChunks: rewindable ? [] : drained.chunks,
           extraHeaders: requestBody ? { 'content-length': String(requestBody.length) } : undefined,
+          signal: controller.signal,
         })
       } catch (err) {
         const message = err instanceof Error ? err.message : '转发失败'
@@ -435,6 +447,8 @@ export async function handleRelay(req, res, ctx) {
           return { status: 0 }
         }
         continue
+      } finally {
+        res.off('close', abortUpstream)
       }
 
       // 渠道自身故障（密钥失效、欠费、地址错、上游 5xx、超时）才算"该换"，换下一条。

@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { generateInviteCode, generatePasscode, getConfig, initStore, inviteStatus, isValidUsername, normalizeInviteCode, toAdminUser, updateConfig } from './store.mjs'
+import { generateInviteCode, generatePasscode, getConfig, initStore, inviteStatus, isValidUsername, normalizeInviteCode, toAdminUser, toPublicChannel, updateConfig } from './store.mjs'
 
 /** 用给定配置内容初始化一个临时数据目录。传 null 表示不写配置文件（首次启动）。 */
 function initWith(config) {
@@ -165,6 +165,13 @@ describe('toAdminUser', () => {
     expect(projected.hasPassword).toBe(true)
     expect('passwordHash' in projected).toBe(false)
     expect(JSON.stringify(projected)).not.toContain('scrypt')
+  })
+})
+
+describe('toPublicChannel', () => {
+  it('给旧前端下发的同步生图超时至少为 5 分钟', () => {
+    expect(toPublicChannel({ timeout: 15 }).timeout).toBe(300)
+    expect(toPublicChannel({ timeout: 900 }).timeout).toBe(900)
   })
 })
 

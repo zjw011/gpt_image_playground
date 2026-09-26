@@ -105,6 +105,11 @@ describe('backendChannelToApiProfile', () => {
     expect(profile.transparentBackgroundMethod).toBe('local')
     expect(profile.description).toBe('备用线路')
   })
+
+  it('托管渠道的短超时会提升到 5 分钟，避免生图仍在进行时前端先失败', () => {
+    expect(backendChannelToApiProfile(createChannel({ timeout: 15 })).timeout).toBe(300)
+    expect(backendChannelToApiProfile(createChannel({ timeout: 900 })).timeout).toBe(900)
+  })
 })
 
 describe('backendAgentSettings', () => {

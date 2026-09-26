@@ -18,7 +18,8 @@ import { handleGuestRoute } from './guestRoutes.mjs'
 import { generationGate } from './generationGate.mjs'
 import { GUEST_COOKIE, createSession } from './sessions.mjs'
 import { findUserById, getConfig, initStore, normalizeChannel, normalizeUser, updateConfig } from './store.mjs'
-import { initUsage } from './usage.mjs'
+import { initUsage, usageSummary } from './usage.mjs'
+import { getUpstreamTimeoutMs } from './relay.mjs'
 
 /** 起一个假上游。handler 决定它对每个请求怎么回应。 */
 function startUpstream(handler) {
@@ -137,6 +138,12 @@ afterEach(async () => {
 })
 
 describe('渠道故障转移', () => {
+  it('生图请求至少等待 5 分钟，普通接口仍采用渠道配置', () => {
+    expect(getUpstreamTimeoutMs({ timeout: 15 }, true)).toBe(300_000)
+    expect(getUpstreamTimeoutMs({ timeout: 900 }, true)).toBe(900_000)
+    expect(getUpstreamTimeoutMs({ timeout: 15 }, false)).toBe(15_000)
+  })
+
   it('旧客户端发送 size:auto 时服务端改成显式尺寸再请求兼容渠道', async () => {
     let seenBody = null
     let seenLength = null
@@ -477,6 +484,32 @@ describe('按张扣费', () => {
     const response = await relay('ch-1/images/generations')
     expect(response.headers.get('x-credits-charged')).toBeNull()
     expect(getBalance(USER_ID)).toBe(100)
+  })
+
+  it('浏览器提前断开后上游才完成，后台仍保留这次真实调用记录', async () => {
+    let markReceived
+    const received = new Promise((resolve) => { markReceived = resolve })
+    const slow = await startUpstream((req, res) => {
+      markReceived()
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(IMAGE_RESPONSE)
+      }, 80)
+    })
+    upstreams = [slow]
+    await setup([{ name: '慢渠道', baseUrl: `${slow.url}/v1`, apiKey: 'k1' }])
+
+    const controller = new AbortController()
+    const pending = relay('ch-1/images/generations', { signal: controller.signal })
+    await received
+    controller.abort()
+    await expect(pending).rejects.toThrow()
+    await new Promise((resolve) => setTimeout(resolve, 150))
+
+    const summary = usageSummary(new Map([['ch-1', '慢渠道']]))
+    expect(summary.totals).toEqual({ total: 1, ok: 0, fail: 1 })
+    expect(summary.events[0].aborted).toBe(true)
+    expect(summary.channels[0].state).toBe('healthy')
   })
 
   it('上游用 200 返回错误 JSON 时继续切换且不扣失败渠道的积分', async () => {
