@@ -488,12 +488,14 @@ describe('按张扣费', () => {
 
   it('浏览器提前断开后上游才完成，后台仍保留这次真实调用记录', async () => {
     let markReceived
+    let upstreamCompleted = false
     const received = new Promise((resolve) => { markReceived = resolve })
     const slow = await startUpstream((req, res) => {
       markReceived()
       setTimeout(() => {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(IMAGE_RESPONSE)
+        upstreamCompleted = true
       }, 80)
     })
     upstreams = [slow]
@@ -510,6 +512,7 @@ describe('按张扣费', () => {
     expect(summary.totals).toEqual({ total: 1, ok: 0, fail: 1 })
     expect(summary.events[0].aborted).toBe(true)
     expect(summary.channels[0].state).toBe('healthy')
+    expect(upstreamCompleted).toBe(true)
   })
 
   it('上游用 200 返回错误 JSON 时继续切换且不扣失败渠道的积分', async () => {

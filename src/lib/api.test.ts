@@ -3,6 +3,15 @@ import { DEFAULT_PARAMS } from '../types'
 import { DEFAULT_SETTINGS } from './apiProfiles'
 import { callImageApi } from './api'
 import { maybeAppendStreamingHint } from './imageApiShared'
+import { getImageRequestTimeoutMs } from './openaiCompatibleImageApi'
+
+describe('image request timeout', () => {
+  it('托管中继忽略浏览器残留的 15 秒超时，直连配置仍尊重用户设置', () => {
+    const profile = DEFAULT_SETTINGS.profiles[0]
+    expect(getImageRequestTimeoutMs({ ...profile, timeout: 15, baseUrl: 'https://site.example/api/relay/ch-1/' })).toBe(300_000)
+    expect(getImageRequestTimeoutMs({ ...profile, timeout: 15, baseUrl: 'https://api.example.com/v1' })).toBe(15_000)
+  })
+})
 
 describe('API error hints', () => {
   it.each([false, true])('uses the transparent background hint when streaming is %s', (streamImages) => {

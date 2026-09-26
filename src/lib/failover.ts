@@ -47,7 +47,10 @@ export function withFailoverStreamingDisabled(profile: ApiProfile, willFailover:
 
 /** 看门狗预算：多渠道尝试的总耗时可能远超单个渠道的 timeout。 */
 export function getFailoverTimeoutBudget(candidates: ApiProfile[]): number {
-  return candidates.reduce((sum, profile) => sum + Math.max(0, profile.timeout), 0)
+  return candidates.reduce((sum, profile) => {
+    const timeout = profile.baseUrl.includes('/api/relay/') ? Math.max(300, profile.timeout) : profile.timeout
+    return sum + Math.max(0, timeout)
+  }, 0)
 }
 
 export function createFailoverAttempt(profile: ApiProfile, err: unknown): NonNullable<TaskRecord['failoverAttempts']>[number] {

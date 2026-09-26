@@ -232,6 +232,23 @@ function readErrorSnippet(upstreamRes) {
   })
 }
 
+/** 浏览器断开后把已经发出的上游响应读完，不能反向取消仍在生成的付费任务。 */
+function discardResponse(upstreamRes) {
+  if (upstreamRes.readableEnded || upstreamRes.destroyed) return Promise.resolve()
+  return new Promise((resolve) => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      resolve()
+    }
+    upstreamRes.once('end', finish)
+    upstreamRes.once('close', finish)
+    upstreamRes.once('error', finish)
+    upstreamRes.resume()
+  })
+}
+
 function resolveFalTargetUrl(req, channel) {
   const raw = req.headers[FAL_TARGET_URL_HEADER]
   const target = Array.isArray(raw) ? raw[0] : raw
@@ -419,11 +436,6 @@ export async function handleRelay(req, res, ctx) {
       }
 
       let attempt
-      const controller = new AbortController()
-      const abortUpstream = () => {
-        if (!res.writableEnded) controller.abort()
-      }
-      res.once('close', abortUpstream)
       try {
         const requestBody = rewindable
           ? normalizeImageRequestBody(bufferedBody, req.headers['content-type'], channel, endpointPath)
@@ -435,7 +447,6 @@ export async function handleRelay(req, res, ctx) {
           body: requestBody,
           headChunks: rewindable ? [] : drained.chunks,
           extraHeaders: requestBody ? { 'content-length': String(requestBody.length) } : undefined,
-          signal: controller.signal,
         })
       } catch (err) {
         const message = err instanceof Error ? err.message : '转发失败'
@@ -447,8 +458,6 @@ export async function handleRelay(req, res, ctx) {
           return { status: 0 }
         }
         continue
-      } finally {
-        res.off('close', abortUpstream)
       }
 
       // 渠道自身故障（密钥失效、欠费、地址错、上游 5xx、超时）才算"该换"，换下一条。
@@ -481,6 +490,12 @@ export async function handleRelay(req, res, ctx) {
         failures.push(`${channel.name}：${message}`)
         track(false, 502, message)
         continue
+      }
+      if (clientGone || res.destroyed) {
+        if (!inspected.complete) await discardResponse(attempt.upstreamRes)
+        track(false, attempt.status, '浏览器或前置反向代理提前断开，上游任务未取消')
+        release()
+        return { status: attempt.status }
       }
       const charged = !luckyFree && chargeable && success ? costOf(channel.id) : 0
       const extraHeaders = {}

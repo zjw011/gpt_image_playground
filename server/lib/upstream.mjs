@@ -179,10 +179,6 @@ export function attemptUpstream(req, upstreamUrl, options) {
 
     upstream.on('timeout', () => upstream.destroy(new Error('上游请求超时')))
     upstream.on('error', reject)
-    const onAbort = () => upstream.destroy(new Error('客户端提前断开'))
-    options.signal?.addEventListener('abort', onAbort, { once: true })
-    upstream.on('close', () => options.signal?.removeEventListener('abort', onAbort))
-    if (options.signal?.aborted) onAbort()
 
     if (options.body) {
       upstream.end(options.body)

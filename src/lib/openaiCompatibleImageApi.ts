@@ -25,6 +25,14 @@ import {
 import { isEventStreamResponse, readJsonServerSentEvents } from './serverSentEvents'
 import { prependCodexCliSizePrompt } from './size'
 
+/** 托管中继由服务端负责最终超时，浏览器不能沿用 IndexedDB 里遗留的十几秒配置。 */
+export function getImageRequestTimeoutMs(profile: ApiProfile) {
+  const seconds = profile.baseUrl.includes('/api/relay/')
+    ? Math.max(300, profile.timeout)
+    : profile.timeout
+  return seconds * 1000
+}
+
 function getStreamPartialImages(profile: ApiProfile): number {
   return profile.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES
 }
@@ -492,7 +500,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
   const paths = createOpenAICompatiblePaths()
 
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const timeoutId = setTimeout(() => controller.abort(), getImageRequestTimeoutMs(profile))
 
   try {
     let response: Response
@@ -909,7 +917,7 @@ async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile,
   const isEdit = inputImageDataUrls.length > 0
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const controller = new AbortController()
-  let timeoutId: ReturnType<typeof setTimeout> | null = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  let timeoutId: ReturnType<typeof setTimeout> | null = setTimeout(() => controller.abort(), getImageRequestTimeoutMs(profile))
 
   try {
     const proxyConfig = readClientDevProxyConfig()
@@ -1012,7 +1020,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const requestHeaders = createRequestHeaders(profile)
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const timeoutId = setTimeout(() => controller.abort(), getImageRequestTimeoutMs(profile))
 
   try {
     if (opts.maskDataUrl) {

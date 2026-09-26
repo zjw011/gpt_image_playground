@@ -85,6 +85,11 @@ describe('getFailoverTimeoutBudget', () => {
   it('累加所有候选渠道的超时预算', () => {
     expect(getFailoverTimeoutBudget([createProfile('a', { timeout: 60 }), createProfile('b', { timeout: 120 })])).toBe(180)
   })
+
+  it('托管中继即使残留 15 秒配置，也至少给每条渠道 5 分钟', () => {
+    const profile = createProfile('a', { timeout: 15, baseUrl: 'https://site.example/api/relay/ch-1/' })
+    expect(getFailoverTimeoutBudget([profile])).toBe(300)
+  })
 })
 
 describe('formatFailoverError', () => {
