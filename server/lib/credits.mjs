@@ -7,8 +7,10 @@
 // 另一个约束是**零运行时依赖**：不引入任何三方库，金额一律用整数积分，
 // 不做浮点运算，避免 0.1+0.2 那种经典问题。
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+
+import { readDurableJson, writeDurableJson } from './durableJson.mjs'
 
 /** 流水只留最近这些条。够后台翻"最近发生了什么"，又不会让文件无限膨胀。 */
 const MAX_LEDGER = 800
@@ -138,30 +140,14 @@ export function initCredits(dataDir) {
   creditsFile = join(dataDir, 'credits.json')
   mkdirSync(dirname(creditsFile), { recursive: true })
   cache = existsSync(creditsFile)
-    ? (() => {
-        try {
-          return normalizeCredits(JSON.parse(readFileSync(creditsFile, 'utf-8')))
-        } catch (err) {
-          // 账本读坏了不能从零开始——那等于把所有人的余额清零。
-          // 但要保住旧文件：重命名成 .corrupt 再以空账本启动，管理员还能人工抢救。
-          console.error('积分账本读取失败，已备份为 credits.json.corrupt：', err)
-          try {
-            renameSync(creditsFile, `${creditsFile}.corrupt`)
-          } catch {
-            // 备份失败就继续，至少让服务能起来。
-          }
-          return emptyCredits()
-        }
-      })()
+    ? normalizeCredits(readDurableJson(creditsFile, '积分账本').value)
     : emptyCredits()
   return cache
 }
 
 function writeCreditsFile() {
   if (!creditsFile || !cache) return
-  const tmp = `${creditsFile}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(cache, null, 2), { encoding: 'utf-8', mode: 0o600 })
-  renameSync(tmp, creditsFile)
+  writeDurableJson(creditsFile, cache, true)
 }
 
 /** 只要账本被改过就写盘。所有写操作的最后一步都是它。 */

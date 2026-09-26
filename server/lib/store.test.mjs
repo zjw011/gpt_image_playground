@@ -66,6 +66,14 @@ describe('accessMode 迁移', () => {
   })
 })
 
+describe('配置损坏保护', () => {
+  it('拒绝以空配置覆盖无法解析的账号与渠道数据', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gip-store-corrupt-'))
+    writeFileSync(join(dir, 'config.json'), '{broken', 'utf-8')
+    expect(() => initStore(dir)).toThrow(/站点配置损坏/)
+  })
+})
+
 describe('users 清洗', () => {
   it('丢弃用户名非法与重复的条目，并按 id/用户名去重（大小写不敏感）', () => {
     const config = initWith({

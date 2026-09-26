@@ -13,12 +13,20 @@ services:
     image: gpt-image-playground-server
     container_name: gpt-image-playground
     restart: unless-stopped
+    init: true
+    stop_grace_period: 130s
     ports:
       # 配好 HTTPS 反代后建议改成 '127.0.0.1:8080:8080'，只让反代能访问。
       - '${GIP_PORT:-8080}:8080'
     environment:
       PORT: '8080'
       GIP_DATA_DIR: /data
+      # 只有服务位于可信反代之后时才设为 1；直连公网时必须保持 0，防止伪造 IP 绕过限流。
+      GIP_TRUST_PROXY: '${GIP_TRUST_PROXY:-0}'
+      GIP_GENERATION_GLOBAL_CONCURRENCY: '${GIP_GENERATION_GLOBAL_CONCURRENCY:-30}'
+      GIP_GENERATION_USER_CONCURRENCY: '${GIP_GENERATION_USER_CONCURRENCY:-2}'
+      GIP_GENERATION_PER_MINUTE: '${GIP_GENERATION_PER_MINUTE:-12}'
+      GIP_SHUTDOWN_GRACE_SECONDS: '${GIP_SHUTDOWN_GRACE_SECONDS:-120}'
       # 站长账号。仅在账号还不存在时创建，用于免交互初始化。
       # 登录入口和普通用户是同一个，进去后前端按 role 自动跳管理后台。
       GIP_ADMIN_USER: '${GIP_ADMIN_USER:-xiaole}'

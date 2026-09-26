@@ -63,6 +63,9 @@ export function createFailoverAttempt(profile: ApiProfile, err: unknown): NonNul
 /** 全部候选都失败时的汇总错误文案。 */
 export function formatFailoverError(attempts: NonNullable<TaskRecord['failoverAttempts']>, lastError: string): string {
   if (attempts.length <= 1) return lastError
-  const lines = attempts.map((attempt, idx) => `${idx + 1}. ${attempt.profileName}：${attempt.error.split('\n')[0]}`)
+  const lines = attempts.map((attempt, idx) => {
+    const summary = attempt.error.split('\n').map((line) => line.trim()).find(Boolean) || '未知错误'
+    return `${idx + 1}. ${attempt.profileName}：${summary}`
+  })
   return `已尝试 ${attempts.length} 个渠道，全部失败：\n${lines.join('\n')}\n\n最后一个渠道的完整错误：\n${lastError}`
 }

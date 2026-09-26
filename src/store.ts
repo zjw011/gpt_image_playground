@@ -3726,7 +3726,6 @@ async function runTaskWithProfile(
       falRecoverable: false,
       customRecoverable: false,
     })
-    useStore.getState().setDetailTaskId(taskId)
     return { kind: 'settled' }
   } finally {
     // 释放输入图片的内存缓存（已持久化到 IndexedDB，后续按需从 DB 加载）
@@ -4589,4 +4588,3 @@ export async function addImageFromUrl(src: string): Promise<void> {
   cacheImage(id, dataUrl)
   useStore.getState().addInputImage({ id, dataUrl })
 }
-

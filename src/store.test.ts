@@ -5325,7 +5325,7 @@ describe('reused task API profile', () => {
     const state = useStore.getState()
     expect(state.settings.activeProfileId).toBe(openaiProfile.id)
     expect(state.reusedTaskApiProfileId).toBeNull()
-    expect(state.params).toMatchObject({ n: 8, size: 'auto', quality: 'auto' })
+    expect(state.params).toMatchObject({ n: 8, size: '1024x1024', quality: 'auto' })
   })
 
   it('asks whether to submit with current API profile when the reused API profile is missing', async () => {

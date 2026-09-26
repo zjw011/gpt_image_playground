@@ -8,8 +8,10 @@
 // 好在写频率极低（只在生成/兑换/作废时），全量重写完全无压力。
 
 import { randomInt } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+
+import { readDurableJson, writeDurableJson } from './durableJson.mjs'
 
 /**
  * 卡密总量上限。
@@ -134,20 +136,7 @@ export function initCards(dataDir) {
   cardsFile = join(dataDir, 'cards.json')
   mkdirSync(dirname(cardsFile), { recursive: true })
   cache = existsSync(cardsFile)
-    ? (() => {
-        try {
-          return normalizeCards(JSON.parse(readFileSync(cardsFile, 'utf-8')))
-        } catch (err) {
-          // 与积分账本同理：读坏了不清零，先备份再以空库启动，让管理员有机会人工抢救。
-          console.error('卡密库读取失败，已备份为 cards.json.corrupt：', err)
-          try {
-            renameSync(cardsFile, `${cardsFile}.corrupt`)
-          } catch {
-            // 备份失败也继续，至少让服务能起来。
-          }
-          return emptyCards()
-        }
-      })()
+    ? normalizeCards(readDurableJson(cardsFile, '卡密库').value)
     : emptyCards()
   rebuildIndex()
   return cache
@@ -155,9 +144,7 @@ export function initCards(dataDir) {
 
 function writeCardsFile() {
   if (!cardsFile || !cache) return
-  const tmp = `${cardsFile}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(cache), { encoding: 'utf-8', mode: 0o600 })
-  renameSync(tmp, cardsFile)
+  writeDurableJson(cardsFile, cache)
 }
 
 function commit() {

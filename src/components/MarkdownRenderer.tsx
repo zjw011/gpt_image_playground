@@ -1,6 +1,8 @@
 import { memo, useEffect, useState } from 'react'
 import type { Components, MathPlugin, StreamdownTranslations } from 'streamdown'
 import type { Components as ReactMarkdownComponents } from 'react-markdown'
+import 'streamdown/styles.css'
+import 'katex/dist/katex.min.css'
 
 type MarkdownRendererProps = {
   content: string

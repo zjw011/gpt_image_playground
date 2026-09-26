@@ -188,7 +188,7 @@ describe('持久化', () => {
     expect(listLedger('u-1')[1].ref).toBe('GIP-AAAA-BBBB-CCCC')
   })
 
-  it('账本文件损坏时备份原文件而不是清零余额，避免静默丢掉用户资产', () => {
+  it('账本文件损坏时自动恢复最近备份，不清零用户资产', () => {
     const dir = freshDir()
     initCredits(dir)
     addCredits('u-1', 100)
@@ -196,7 +196,7 @@ describe('持久化', () => {
 
     initCredits(dir)
     expect(existsSync(join(dir, 'credits.json.corrupt'))).toBe(true)
-    expect(getBalance('u-1')).toBe(0)
+    expect(getBalance('u-1')).toBe(100)
   })
 
   it('清洗非法数值：负数、小数、字符串都收敛成合法积分', () => {

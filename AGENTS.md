@@ -203,10 +203,13 @@ else params = baseParams
 
 ## 交付约定
 
-改动推送后，回复末尾附上服务器更新命令，不要给多个方案让用户自己挑：
+每次产生实质代码或配置变更后，在 `docs/maintenance-log.md` 顶部记录本次变化、验证结果和可复用经验。
+
+每次项目维护回复的末尾都附上服务器更新命令，不要给多个方案让用户自己挑，也不要在命令后继续补充内容：
 
 ```bash
-git pull && docker compose up -d --build
+cd /www/wwwroot/gpt_image_playground
+git fetch origin && git merge origin/feat/huixiang-rebuild && docker compose up -d --build
 ```
 
 即使本次只改了 `server/`（理论上 `docker compose restart` 就够），也照样给这一条——统一一条命令，用户不必判断该用哪个。

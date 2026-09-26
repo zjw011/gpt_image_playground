@@ -3,6 +3,7 @@ import { getActiveApiProfile, isOpenAICompatibleProvider } from './apiProfiles'
 import { normalizeCodexCliImageSize, normalizeImageSize } from './size'
 
 export const DEFAULT_FAL_IMAGE_SIZE = '1360x1024'
+export const DEFAULT_OPENAI_IMAGE_SIZE = '1024x1024'
 export const MAX_FAL_OUTPUT_IMAGES = 4
 export const MAX_OPENAI_OUTPUT_IMAGES = 10
 
@@ -26,6 +27,12 @@ export function normalizeParamsForSettings(
   if (isOpenAICompatibleProvider(settings, activeProfile.provider) && activeProfile.codexCli) {
     nextParams.size = normalizeCodexCliImageSize(nextParams.size)
     nextParams.quality = DEFAULT_PARAMS.quality
+  }
+
+  // 新创作台只展示明确比例，视觉上的默认项是 1:1；继续发送 auto 不但与界面不一致，
+  // 部分 OpenAI 兼容网关还会直接报“尺寸必须为宽x高”。Codex CLI 是例外，它有自己的约束。
+  if (isOpenAICompatibleProvider(settings, activeProfile.provider) && !activeProfile.codexCli && nextParams.size === 'auto') {
+    nextParams.size = DEFAULT_OPENAI_IMAGE_SIZE
   }
 
   if (activeProfile.provider === 'fal') {

@@ -2,8 +2,10 @@
 // 选 JSON 而非 SQLite 是为了零原生依赖，渠道数量级在几十条，读写全量完全够用。
 
 import { randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+
+import { readDurableJson, writeDurableJson } from './durableJson.mjs'
 
 const CONFIG_VERSION = 2
 const SCRYPT_KEYLEN = 64
@@ -167,18 +169,11 @@ function readConfigFile() {
     return config
   }
 
-  try {
-    return normalizeConfig(JSON.parse(readFileSync(dataFile, 'utf-8')))
-  } catch (err) {
-    console.error('配置文件读取失败，将使用空配置：', err)
-    return createEmptyConfig()
-  }
+  return normalizeConfig(readDurableJson(dataFile, '站点配置').value)
 }
 
 function writeConfigFile(config) {
-  const tmp = `${dataFile}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: 0o600 })
-  renameSync(tmp, dataFile)
+  writeDurableJson(dataFile, config, true)
 }
 
 function isRecord(value) {

@@ -47,6 +47,8 @@ export function sendFile(res, filePath, options = {}) {
     'Content-Type': MIME_TYPES[extname(filePath).toLowerCase()] ?? 'application/octet-stream',
     'Content-Length': stats.size,
     'Cache-Control': options.cacheControl ?? 'no-cache',
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
     ...(options.headers ?? {}),
   })
   createReadStream(filePath).pipe(res)

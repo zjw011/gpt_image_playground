@@ -21,7 +21,8 @@ import {
 } from './billing.mjs'
 import { getBalance, releaseReservation, reserveCredits, settleCredits } from './credits.mjs'
 import { maybeRewardInviter } from './referral.mjs'
-import { HttpError } from './http.mjs'
+import { getClientIp, HttpError } from './http.mjs'
+import { generationGate } from './generationGate.mjs'
 import { findChannel, getConfig } from './store.mjs'
 import { attemptUpstream, buildUpstreamUrl, forwardableHeaders } from './upstream.mjs'
 import { isChannelFault, recordChannelCall } from './usage.mjs'
@@ -34,6 +35,96 @@ const MAX_BUFFERED_BODY_BYTES = 32 * 1024 * 1024
 
 /** 失败响应只留这么多字节用于排查，多了会把错误信息淹没。 */
 const ERROR_SNIPPET_BYTES = 2_048
+// 成功响应通常很大（Base64 图片），这里只检查开头；错误网关伪装成 200 的 JSON 一般很小。
+const SUCCESS_PEEK_BYTES = 256 * 1024
+
+/**
+ * 旧版前端会把默认尺寸发成 auto，但部分 OpenAI 兼容网关只接受 1024x1024 这类显式值。
+ * 兼容逻辑放在服务端再兜一层，避免浏览器缓存旧脚本时把同一个参数错误扩散到所有备用渠道。
+ */
+function normalizeImageRequestBody(body, contentType, channel, endpointPath) {
+  if (!body || !['openai', 'sb2api-async'].includes(channel.provider)) return body
+  if (!String(contentType ?? '').toLowerCase().includes('application/json')) return body
+
+  try {
+    const payload = JSON.parse(body.toString('utf-8'))
+    let changed = false
+
+    if (/^images\/(?:generations|edits)$/.test(endpointPath) && payload.size === 'auto') {
+      payload.size = '1024x1024'
+      changed = true
+    }
+
+    if (endpointPath === 'responses' && Array.isArray(payload.tools)) {
+      payload.tools = payload.tools.map((tool) => {
+        if (tool?.type !== 'image_generation' || tool.size !== 'auto') return tool
+        changed = true
+        return { ...tool, size: '1024x1024' }
+      })
+    }
+
+    return changed ? Buffer.from(JSON.stringify(payload)) : body
+  } catch {
+    // 非法 JSON 交给上游返回原本的参数错误，中继不擅自改写。
+    return body
+  }
+}
+
+function hasImageOrTaskPayload(text) {
+  return /"b64_json"\s*:\s*"[^"]+/i.test(text)
+    || /"url"\s*:\s*"(?:https?:|data:image\/)/i.test(text)
+    || /"type"\s*:\s*"image_generation_call"[\s\S]*?"result"\s*:\s*"[^"]+/i.test(text)
+    || /"task_id"\s*:\s*"[^"]+/i.test(text)
+}
+
+/**
+ * 兼容网关偶尔会用 HTTP 200 包一段错误 JSON。过去这里只看状态码就扣积分，
+ * 前端随后解析不到图片，用户看到失败却已经被扣费。先窥视响应开头：小响应直到结束
+ * 都没有图片/异步任务字段就判为渠道故障；大响应超过检查窗口时保守放行。
+ */
+function inspectSuccessfulPayload(upstreamRes) {
+  const contentType = String(upstreamRes.headers['content-type'] ?? '').toLowerCase()
+  if (contentType && !contentType.includes('json')) {
+    return Promise.resolve({ valid: true, chunks: [], complete: false })
+  }
+
+  return new Promise((resolve) => {
+    const chunks = []
+    let size = 0
+    let done = false
+
+    const cleanup = () => {
+      upstreamRes.off('data', onData)
+      upstreamRes.off('end', onEnd)
+      upstreamRes.off('close', onEnd)
+      upstreamRes.off('error', onError)
+    }
+    const finish = (valid, message = '', complete = false) => {
+      if (done) return
+      done = true
+      cleanup()
+      upstreamRes.pause()
+      resolve({ valid, chunks, message, complete })
+    }
+    const text = () => Buffer.concat(chunks).toString('utf-8')
+    const onData = (chunk) => {
+      chunks.push(chunk)
+      size += chunk.length
+      if (hasImageOrTaskPayload(text())) return finish(true)
+      if (size >= SUCCESS_PEEK_BYTES) finish(true)
+    }
+    const onEnd = () => {
+      const body = text()
+      finish(hasImageOrTaskPayload(body), body.trim().slice(0, ERROR_SNIPPET_BYTES), true)
+    }
+    const onError = () => finish(false, '上游成功响应读取失败')
+
+    upstreamRes.on('data', onData)
+    upstreamRes.on('end', onEnd)
+    upstreamRes.on('close', onEnd)
+    upstreamRes.on('error', onError)
+  })
+}
 
 export function parseRelayPath(path) {
   const rest = String(path).slice('/api/relay/'.length)
@@ -189,9 +280,15 @@ function resolveTarget(req, channel, endpointPath, search) {
  * extraHeaders 用来附加我们自己的回执头（本次扣了多少、扣完还剩多少）。
  * 同源请求下 JS 读得到这些头，前端据此即时刷新余额，省掉一次额外的查询。
  */
-function adoptResponse(res, upstreamRes, extraHeaders) {
+function adoptResponse(res, upstreamRes, extraHeaders, headChunks = [], complete = false) {
   return new Promise((resolve, reject) => {
     res.writeHead(upstreamRes.statusCode ?? 502, { ...forwardableHeaders(upstreamRes), ...extraHeaders })
+    for (const chunk of headChunks) res.write(chunk)
+    if (complete) {
+      res.end()
+      resolve({ status: upstreamRes.statusCode ?? 0 })
+      return
+    }
     upstreamRes.pipe(res)
     upstreamRes.on('end', () => resolve({ status: upstreamRes.statusCode ?? 0 }))
     upstreamRes.on('error', reject)
@@ -201,6 +298,24 @@ function adoptResponse(res, upstreamRes, extraHeaders) {
 export async function handleRelay(req, res, ctx) {
   const config = getConfig()
   const { channelId, endpointPath } = parseRelayPath(ctx.path)
+
+  if (req.method === 'POST') {
+    const identity = ctx.user?.id || getClientIp(req)
+    const slot = generationGate.acquire(identity)
+    if (!slot.ok) {
+      const message = slot.reason === 'rate'
+        ? '生成请求过于频繁，请稍后再试'
+        : slot.reason === 'global'
+          ? '当前生成任务较多，请稍后再试'
+          : '你已有生成任务正在处理，请等待完成后再试'
+      throw new HttpError(429, message, {
+        code: slot.reason === 'rate' ? 'generation-rate-limited' : 'generation-busy',
+        retryAfterSeconds: slot.retryAfterSeconds,
+      })
+    }
+    res.once('finish', slot.release)
+    res.once('close', slot.release)
+  }
 
   const requested = findChannel(channelId)
   if (!requested) throw new HttpError(404, '渠道不存在或已下线')
@@ -212,7 +327,8 @@ export async function handleRelay(req, res, ctx) {
 
   // 请求体读进来才能重放给下一条渠道；读不下就退回流式单渠道。
   const drained = await drainBody(req, MAX_BUFFERED_BODY_BYTES)
-  const head = Buffer.concat(drained.chunks).subarray(0, BILLING_PEEK_BYTES)
+  const bufferedBody = drained.complete ? Buffer.concat(drained.chunks) : null
+  const head = (bufferedBody ?? Buffer.concat(drained.chunks)).subarray(0, BILLING_PEEK_BYTES)
   const rewindable = drained.complete
 
   const userId = ctx.user?.id ?? ''
@@ -298,12 +414,16 @@ export async function handleRelay(req, res, ctx) {
 
       let attempt
       try {
+        const requestBody = rewindable
+          ? normalizeImageRequestBody(bufferedBody, req.headers['content-type'], channel, endpointPath)
+          : null
         attempt = await attemptUpstream(req, target.upstreamUrl, {
           authHeader: target.authHeader,
           dropHeaders: target.dropHeaders,
           timeoutMs: Math.max(10_000, channel.timeout * 1000),
-          body: rewindable ? Buffer.concat(drained.chunks) : null,
+          body: requestBody,
           headChunks: rewindable ? [] : drained.chunks,
+          extraHeaders: requestBody ? { 'content-length': String(requestBody.length) } : undefined,
         })
       } catch (err) {
         const message = err instanceof Error ? err.message : '转发失败'
@@ -338,6 +458,16 @@ export async function handleRelay(req, res, ctx) {
       // 之后再断流也不该白送——否则"客户端中途关页面"就成了免费的旁路。
       // 顺带把扣费结果塞进响应头，前端不用再打一次接口就知道新余额。
       const success = attempt.status >= 200 && attempt.status < 300
+      const inspected = success && billable && ['openai', 'sb2api-async'].includes(channel.provider)
+        ? await inspectSuccessfulPayload(attempt.upstreamRes)
+        : { valid: true, chunks: [], complete: false }
+      if (!inspected.valid) {
+        attempt.upstream.destroy()
+        const message = `HTTP 502：上游返回成功状态，但没有可识别的图片或任务数据${inspected.message ? `：${inspected.message}` : ''}`
+        failures.push(`${channel.name}：${message}`)
+        track(false, 502, message)
+        continue
+      }
       const charged = !luckyFree && chargeable && success ? costOf(channel.id) : 0
       const extraHeaders = {}
       if (charged > 0) {
@@ -368,7 +498,7 @@ export async function handleRelay(req, res, ctx) {
       }
 
       try {
-        const result = await adoptResponse(res, attempt.upstreamRes, extraHeaders)
+        const result = await adoptResponse(res, attempt.upstreamRes, extraHeaders, inspected.chunks, inspected.complete)
         track(result.status >= 200 && result.status < 300, result.status, result.status >= 200 && result.status < 300 ? '' : `上游返回 HTTP ${result.status}`)
         return result
       } catch (err) {

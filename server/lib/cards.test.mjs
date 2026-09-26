@@ -250,7 +250,7 @@ describe('概览与持久化', () => {
     expect(listBatches()[0]).toMatchObject({ id: batchId, note: '持久化' })
   })
 
-  it('库文件损坏时备份原文件而不是清空，避免静默丢掉未兑付的卡密', () => {
+  it('库文件损坏时自动恢复最近备份，不清空未兑付卡密', () => {
     const dir = freshDir()
     generateCards({ credits: 100, count: 2 })
 
@@ -259,7 +259,7 @@ describe('概览与持久化', () => {
 
     initCards(dir)
     expect(existsSync(join(dir, 'cards.json.corrupt'))).toBe(true)
-    expect(listCards().total).toBe(0)
+    expect(listCards().total).toBe(2)
   })
 
   it('清洗非法数据：重复码与空码被丢弃，非法状态退回未使用', () => {

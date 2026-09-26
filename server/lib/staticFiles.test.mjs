@@ -62,6 +62,8 @@ describe('serveStatic', () => {
     const res = createRes()
     expect(serveStatic(res, root, '/', { spaFallback: true })).toBe(true)
     expect(res.headers['Content-Type']).toBe('text/html; charset=utf-8')
+    expect(res.headers['Referrer-Policy']).toBe('no-referrer')
+    expect(res.headers['X-Content-Type-Options']).toBe('nosniff')
   })
 
   it('marks hashed assets as immutable', () => {

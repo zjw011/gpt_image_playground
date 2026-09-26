@@ -4,7 +4,7 @@
 // 而启动时的孤儿清理又会把"不在已知列表里"的文件删掉——于是每次重启
 // 元数据都被删、用户上传的作品全部消失。下面每个用例都在防它复发。
 import { beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdtempSync, readdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -60,6 +60,15 @@ describe('作品广场持久化', () => {
     // 图片目录里只应该有图片，不该混进 gallery.json
     const files = readdirSync(join(dir, 'gallery'))
     expect(files.some((name) => name.endsWith('.json'))).toBe(false)
+  })
+
+  it('元数据损坏时恢复备份且不删除仍可恢复的图片', () => {
+    const result = publishWork({ ownerId: USER, ownerName: '测试', prompt: 'x', model: 'm', imageDataUrl: pngDataUrl() })
+    const imagePath = getImagePath(result.item.id).path
+    writeFileSync(join(dir, 'gallery.json'), '{broken', 'utf-8')
+
+    expect(() => initGallery(dir)).not.toThrow()
+    expect(existsSync(imagePath)).toBe(true)
   })
 
   it('点赞数据同样会持久化', () => {

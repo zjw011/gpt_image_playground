@@ -15,6 +15,7 @@ import { initCards } from './cards.mjs'
 import { addCredits, getBalance, getReserved, initCredits, resetReservations } from './credits.mjs'
 import { sendError } from './http.mjs'
 import { handleGuestRoute } from './guestRoutes.mjs'
+import { generationGate } from './generationGate.mjs'
 import { GUEST_COOKIE, createSession } from './sessions.mjs'
 import { findUserById, getConfig, initStore, normalizeChannel, normalizeUser, updateConfig } from './store.mjs'
 import { initUsage } from './usage.mjs'
@@ -65,6 +66,7 @@ let upstreams = []
 let app = null
 let cookie = ''
 const USER_ID = 'u-test'
+const IMAGE_RESPONSE = JSON.stringify({ data: [{ b64_json: 'AAAA' }] })
 
 /** 每个用例重建一套干净的数据目录与渠道配置。 */
 /** 复制一份用户记录并换成指定 id/用户名（测试里造"另一个人"用）。 */
@@ -126,6 +128,7 @@ function multipartBody(n, boundary = '----BoundaryTest') {
 beforeEach(() => {
   upstreams = []
   app = null
+  generationGate.reset()
 })
 
 afterEach(async () => {
@@ -134,6 +137,49 @@ afterEach(async () => {
 })
 
 describe('渠道故障转移', () => {
+  it('旧客户端发送 size:auto 时服务端改成显式尺寸再请求兼容渠道', async () => {
+    let seenBody = null
+    let seenLength = null
+    const good = await startUpstream((req, res, body) => {
+      seenBody = JSON.parse(body.toString('utf-8'))
+      seenLength = Number(req.headers['content-length'])
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(IMAGE_RESPONSE)
+    })
+    upstreams = [good]
+    await setup([{ name: '兼容渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1', provider: 'openai' }])
+
+    const response = await relay('ch-1/images/generations', {
+      body: JSON.stringify({ model: 'gpt-image-2', prompt: 'cat', size: 'auto' }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(seenBody.size).toBe('1024x1024')
+    expect(seenLength).toBe(Buffer.byteLength(JSON.stringify(seenBody)))
+  })
+
+  it('Responses 生图工具的 size:auto 同样会在服务端兼容', async () => {
+    let seenBody = null
+    const good = await startUpstream((req, res, body) => {
+      seenBody = JSON.parse(body.toString('utf-8'))
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ output: [{ type: 'image_generation_call', result: 'AAAA' }] }))
+    })
+    upstreams = [good]
+    await setup([{ name: 'Responses 渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1', provider: 'openai' }])
+
+    const response = await relay('ch-1/responses', {
+      body: JSON.stringify({
+        model: 'gpt-image-2',
+        input: 'cat',
+        tools: [{ type: 'image_generation', size: 'auto' }],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(seenBody.tools[0].size).toBe('1024x1024')
+  })
+
   it('第一条渠道欠费时静默切到下一条，用户只看到成功', async () => {
     const bad = await startUpstream((req, res) => {
       res.writeHead(402, { 'Content-Type': 'application/json' })
@@ -162,7 +208,7 @@ describe('渠道故障转移', () => {
     const dead = { url: 'http://127.0.0.1:1' }
     const good = await startUpstream((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: true }))
+      res.end(IMAGE_RESPONSE)
     })
     upstreams = [good]
     await setup([
@@ -209,7 +255,7 @@ describe('渠道故障转移', () => {
     })
     const second = await startUpstream((req, res) => {
       secondCalled = true
-      res.writeHead(200).end('{}')
+      res.writeHead(200).end(IMAGE_RESPONSE)
     })
     upstreams = [bad, second]
     await setup([
@@ -230,7 +276,7 @@ describe('渠道故障转移', () => {
     const bad = await startUpstream((req, res) => res.writeHead(503).end('down'))
     const second = await startUpstream((req, res) => {
       secondCalled = true
-      res.writeHead(200).end('{}')
+      res.writeHead(200).end(IMAGE_RESPONSE)
     })
     upstreams = [bad, second]
     await setup([
@@ -273,7 +319,11 @@ describe('按张扣费', () => {
   it('multipart 里声明 3 张就扣 3 份', async () => {
     const good = await startUpstream((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ data: [1, 2, 3] }))
+      res.end(JSON.stringify({ data: [
+        { b64_json: 'AAAA' },
+        { b64_json: 'BBBB' },
+        { b64_json: 'CCCC' },
+      ] }))
     })
     upstreams = [good]
     await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 2 })
@@ -288,7 +338,7 @@ describe('按张扣费', () => {
   })
 
   it('JSON 请求体里 n=4 就扣 4 份', async () => {
-    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
     upstreams = [good]
     await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 3 })
 
@@ -301,7 +351,7 @@ describe('按张扣费', () => {
   })
 
   it('扣费结果通过响应头回执，前端不用再查一次余额', async () => {
-    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
     upstreams = [good]
     await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 3 })
 
@@ -316,7 +366,7 @@ describe('按张扣费', () => {
   })
 
   it('幸运免单命中：不扣积分并带 x-credits-lucky 头', async () => {
-    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
     upstreams = [good]
     // 概率 100%，必定命中
     await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 3, luckyEnabled: true, luckyRate: 100 })
@@ -333,7 +383,7 @@ describe('按张扣费', () => {
   })
 
   it('幸运免单未命中：正常扣费，不带 lucky 头', async () => {
-    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
     upstreams = [good]
     await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 3, luckyEnabled: true, luckyRate: 0 })
 
@@ -348,7 +398,7 @@ describe('按张扣费', () => {
   })
 
   it('被邀请人第一次成功出图后，邀请人拿到邀请奖励（且只发一次）', async () => {
-    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
     upstreams = [good]
     await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 3 })
 
@@ -384,7 +434,7 @@ describe('按张扣费', () => {
   })
 
   it('被邀请人第一次成功出图后，邀请人拿到邀请奖励（且只发一次）', async () => {
-    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
     upstreams = [good]
     await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 3 })
 
@@ -429,9 +479,46 @@ describe('按张扣费', () => {
     expect(getBalance(USER_ID)).toBe(100)
   })
 
+  it('上游用 200 返回错误 JSON 时继续切换且不扣失败渠道的积分', async () => {
+    const fakeSuccess = await startUpstream((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: { message: 'upstream failed after accepting request' } }))
+    })
+    const good = await startUpstream((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ data: [{ b64_json: 'AAAA' }] }))
+    })
+    upstreams = [fakeSuccess, good]
+    await setup([
+      { name: '伪成功渠道', baseUrl: `${fakeSuccess.url}/v1`, apiKey: 'k1' },
+      { name: '正常渠道', baseUrl: `${good.url}/v1`, apiKey: 'k2' },
+    ], { costPerImage: 3 })
+
+    const response = await relay('ch-1/images/generations')
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ data: [{ b64_json: 'AAAA' }] })
+    expect(getBalance(USER_ID)).toBe(97)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
+  it('所有渠道都返回无图片的 200 时不扣积分', async () => {
+    const fakeSuccess = await startUpstream((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end('{}')
+    })
+    upstreams = [fakeSuccess]
+    await setup([{ name: '伪成功渠道', baseUrl: `${fakeSuccess.url}/v1`, apiKey: 'k1' }], { costPerImage: 3 })
+
+    const response = await relay('ch-1/images/generations')
+    expect(response.status).toBe(502)
+    expect(await response.text()).toContain('没有可识别的图片')
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
   it('渠道倍率生效：落地在贵渠道就按贵的算', async () => {
     const cheap = await startUpstream((req, res) => res.writeHead(503).end('down'))
-    const pricey = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    const pricey = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
     upstreams = [cheap, pricey]
     await setup([
       { name: '便宜但挂了', baseUrl: `${cheap.url}/v1`, apiKey: 'k1' },
@@ -446,7 +533,7 @@ describe('按张扣费', () => {
   })
 
   it('预扣按最贵候选，落到便宜渠道时差额不会白扣', async () => {
-    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
     upstreams = [good]
     await setup([{ name: '便宜', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 2 })
 
@@ -461,7 +548,7 @@ describe('按张扣费', () => {
     let called = false
     const good = await startUpstream((req, res) => {
       called = true
-      res.writeHead(200).end('{}')
+      res.writeHead(200).end(IMAGE_RESPONSE)
     })
     upstreams = [good]
     await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 5, balance: 3 })
@@ -487,7 +574,7 @@ describe('按张扣费', () => {
   })
 
   it('关掉积分制后完全不计费，回到免费模式', async () => {
-    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
     upstreams = [good]
     await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 5 })
     updateConfig((config) => {
@@ -501,7 +588,7 @@ describe('按张扣费', () => {
   })
 
   it('计费开启但没登录时不做扣费（open / passcode 模式下本就没有账号）', async () => {
-    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
     upstreams = [good]
     await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }])
 
@@ -533,7 +620,7 @@ describe('中继的基本防护', () => {
     let seenHeaders = null
     const upstream = await startUpstream((req, res) => {
       seenHeaders = req.headers
-      res.writeHead(200).end('{}')
+      res.writeHead(200).end(IMAGE_RESPONSE)
     })
     upstreams = [upstream]
     await setup([{ name: '渠道', baseUrl: `${upstream.url}/v1`, apiKey: 'super-secret-key' }])
@@ -547,7 +634,7 @@ describe('中继的基本防护', () => {
   })
 
   it('渠道配置里没有积分字段也能正常工作（老配置向后兼容）', async () => {
-    const good = await startUpstream((req, res) => res.writeHead(200).end('{}'))
+    const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
     upstreams = [good]
     await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 1 })
 

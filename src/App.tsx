@@ -9,7 +9,6 @@ import { backendAgentSettings, backendBootstrapToPresetConfig, getBootstrapFailu
 import { syncWorkspaceId } from './lib/workspace'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import type { AppSettings } from './types'
-import DetailModal from './components/DetailModal'
 import Lightbox from './components/Lightbox'
 import SettingsModal from './components/SettingsModal'
 import ConfirmDialog from './components/ConfirmDialog'
@@ -36,45 +35,45 @@ function startAppBootstrap(setBackend: (b: BackendBootstrap | null) => void, set
   let announced: BackendBootstrap | null | undefined
 
   const searchParams = new URLSearchParams(window.location.search)
-    const customProviderConfigUrl = getCustomProviderConfigUrl()
-    const embeddedDefaultConfig = hasEmbeddedDefaultConfig()
-    const loadDefaultConfig = () => embeddedDefaultConfig
-      ? Promise.resolve().then(() => loadEmbeddedDefaultConfig())
-      : loadCustomProviderSettingsFromUrl(customProviderConfigUrl)
+  const customProviderConfigUrl = getCustomProviderConfigUrl()
+  const embeddedDefaultConfig = hasEmbeddedDefaultConfig()
+  const loadDefaultConfig = () => embeddedDefaultConfig
+    ? Promise.resolve().then(() => loadEmbeddedDefaultConfig())
+    : loadCustomProviderSettingsFromUrl(customProviderConfigUrl)
 
-    const applyUrlSettings = async (baseSettings: Partial<AppSettings>) => {
-      const ids = getExplicitUrlSettingsIds(searchParams)
-      const restored = await restoreExplicitPresetConfig(ids)
-      const restoredSettings = useStore.getState().settings
-      const sourceSettings = restored
-        ? { ...restoredSettings, ...baseSettings, customProviders: restoredSettings.customProviders, profiles: restoredSettings.profiles }
-        : baseSettings
-      const nextSettings = buildSettingsFromUrlParams(sourceSettings, searchParams)
-      return Object.keys(nextSettings).length ? nextSettings : sourceSettings
+  const applyUrlSettings = async (baseSettings: Partial<AppSettings>) => {
+    const ids = getExplicitUrlSettingsIds(searchParams)
+    const restored = await restoreExplicitPresetConfig(ids)
+    const restoredSettings = useStore.getState().settings
+    const sourceSettings = restored
+      ? { ...restoredSettings, ...baseSettings, customProviders: restoredSettings.customProviders, profiles: restoredSettings.profiles }
+      : baseSettings
+    const nextSettings = buildSettingsFromUrlParams(sourceSettings, searchParams)
+    return Object.keys(nextSettings).length ? nextSettings : sourceSettings
+  }
+
+  const clearAppliedUrlSettings = () => {
+    if (!hasUrlSettingParams(searchParams)) return
+
+    clearUrlSettingParams(searchParams)
+
+    const nextSearch = searchParams.toString()
+    const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`
+    window.history.replaceState(null, '', nextUrl)
+  }
+
+  // 部署窗口里第一次请求经常吃 502：先自己重试几轮，绝大多数用户不会看到失败页。
+  const loadWithRetry = async () => {
+    let data: BackendBootstrap | null = null
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      data = await loadBackendBootstrap()
+      if (getBootstrapFailure() === null) return data
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1200 * (attempt + 1)))
     }
+    return data
+  }
 
-    const clearAppliedUrlSettings = () => {
-      if (!hasUrlSettingParams(searchParams)) return
-
-      clearUrlSettingParams(searchParams)
-
-      const nextSearch = searchParams.toString()
-      const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`
-      window.history.replaceState(null, '', nextUrl)
-    }
-
-    // 部署窗口里第一次请求经常吃 502：先自己重试几轮，绝大多数用户不会看到失败页。
-    const loadWithRetry = async () => {
-      let data: BackendBootstrap | null = null
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        data = await loadBackendBootstrap()
-        if (getBootstrapFailure() === null) return data
-        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1200 * (attempt + 1)))
-      }
-      return data
-    }
-
-    const promise = loadWithRetry()
+  const promise = loadWithRetry()
       .then((data) => {
         // 三次都失败：明确告诉用户"站点在更新"，不要静默退回纯前端模式
         const failure = getBootstrapFailure()
@@ -92,6 +91,7 @@ function startAppBootstrap(setBackend: (b: BackendBootstrap | null) => void, set
           return data
         }
 
+        announced = data
         setBackend(data)
         setBackendManagedMode(Boolean(data))
         return initStore().then(async () => {
@@ -103,8 +103,10 @@ function startAppBootstrap(setBackend: (b: BackendBootstrap | null) => void, set
             const state = useStore.getState()
             state.setSettings(normalizeSettings({
               ...state.settings,
-              channelFailover: data.site.failoverEnabled,
-              channelFailoverMaxAttempts: data.site.failoverMaxAttempts,
+              // 托管模式的 /api/relay 已在服务端完成整条渠道链故障转移。
+              // 前端再重试一次会把 N 条渠道放大成 N×N 次请求，还可能重复结算积分。
+              channelFailover: false,
+              channelFailoverMaxAttempts: 0,
               // Agent 也由后台总控：用户不需要（也无法）自己挑文本/图像渠道。
               ...backendAgentSettings(data),
             }))
@@ -219,7 +221,6 @@ export default function App() {
   return (
     <>
       <Outlet />
-      <DetailModal />
       <Lightbox />
       <SettingsModal />
       <ConfirmDialog />

@@ -70,6 +70,11 @@ export default function ResultPage() {
   }
 
   const running = task.status === 'running'
+  const errorHint = task.error && /insufficient[_\s-]*(account[_\s-]*)?balance|余额不足|欠费/i.test(task.error)
+    ? '部分绘图渠道余额不足，系统已尝试其他可用渠道。请稍后重试或联系管理员处理渠道余额。'
+    : task.error && /尺寸|size|宽.?高|width.?height/i.test(task.error)
+      ? '绘图渠道不接受当前尺寸参数。系统已自动改用标准 1:1 尺寸，重新生成即可。'
+      : '系统已尝试可用渠道但仍未生成图片，本次失败不会扣除积分。'
 
   const download = () => {
     if (!fullSrc) return
@@ -196,9 +201,16 @@ export default function ResultPage() {
                   <GeneratingQuote />
                 </div>
               ) : task.status === 'error' ? (
-                <div className="max-w-md text-center">
-                  <p className="text-sm font-semibold text-red-500">生成失败</p>
-                  <p className="mt-2 text-xs leading-5 text-[#8a86ac]">{task.error || '未知错误'}</p>
+                <div className="w-full max-w-xl px-4 text-center">
+                  <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50 text-2xl">!</span>
+                  <p className="mt-4 text-sm font-semibold text-red-500">这次没有生成成功</p>
+                  <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-[#8a86ac]">{errorHint}</p>
+                  {task.error && (
+                    <details className="mx-auto mt-4 max-w-lg rounded-2xl border border-red-100 bg-white px-4 py-3 text-left">
+                      <summary className="cursor-pointer text-xs font-medium text-[#8a86ac]">查看渠道错误详情</summary>
+                      <p className="mt-3 whitespace-pre-wrap break-words text-[11px] leading-5 text-red-400">{task.error}</p>
+                    </details>
+                  )}
                   <button
                     type="button"
                     onClick={() => void regenerate()}

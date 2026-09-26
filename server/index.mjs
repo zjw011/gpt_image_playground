@@ -32,6 +32,7 @@ import {
   destroySessionsByUser,
   getSession,
   GUEST_COOKIE,
+  initSessions,
 } from './lib/sessions.mjs'
 import { describeSmtpError, sendMail } from './lib/smtp.mjs'
 import { serveStatic } from './lib/staticFiles.mjs'
@@ -61,8 +62,11 @@ const PORT = Number(process.env.PORT ?? 8080)
 const HOST = process.env.HOST ?? '0.0.0.0'
 const DATA_DIR = resolve(process.env.GIP_DATA_DIR ?? join(projectRoot, 'server-data'))
 const DIST_DIR = resolve(process.env.GIP_DIST_DIR ?? join(projectRoot, 'dist'))
+const STARTED_AT = Date.now()
+const SHUTDOWN_GRACE_MS = Math.min(300, Math.max(10, Number(process.env.GIP_SHUTDOWN_GRACE_SECONDS) || 120)) * 1000
 
 const config = initStore(DATA_DIR)
+initSessions(DATA_DIR)
 initUsage(DATA_DIR)
 initCredits(DATA_DIR)
 initCards(DATA_DIR)
@@ -569,6 +573,8 @@ async function handleRegister(req, res, input) {
 }
 
 const server = createServer(async (req, res) => {
+  const requestId = randomBytes(8).toString('hex')
+  res.setHeader('X-Request-Id', requestId)
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
   const path = url.pathname
   const cookies = parseCookies(req.headers.cookie)
@@ -581,6 +587,15 @@ const server = createServer(async (req, res) => {
   const role = activeUser?.role === 'admin' ? 'admin' : guestSession?.role ?? null
 
   try {
+    if (path === '/api/health' && req.method === 'GET') {
+      const distReady = existsSync(DIST_DIR)
+      return sendJson(res, distReady ? 200 : 503, {
+        ok: distReady,
+        uptimeSeconds: Math.floor((Date.now() - STARTED_AT) / 1000),
+        distReady,
+      })
+    }
+
     if (path.startsWith('/api/admin/')) {
       assertSameOrigin(req)
       return await handleAdminRoute(req, res, {
@@ -638,8 +653,8 @@ const server = createServer(async (req, res) => {
       return
     }
     if (err instanceof HttpError) return sendError(res, err.status, err.message, err.extra)
-    console.error('请求处理失败：', err)
-    return sendError(res, 502, err instanceof Error ? err.message : '服务器内部错误')
+    console.error(`[${requestId}] 请求处理失败：`, err)
+    return sendError(res, 502, err instanceof Error ? err.message : '服务器内部错误', { requestId })
   }
 })
 
@@ -647,6 +662,8 @@ const server = createServer(async (req, res) => {
 server.requestTimeout = 0
 server.headersTimeout = 65_000
 server.timeout = 0
+server.keepAliveTimeout = 5_000
+server.maxRequestsPerSocket = 1_000
 
 server.listen(PORT, HOST, () => {
   console.log(`绘想服务已启动：http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`)
@@ -656,11 +673,22 @@ server.listen(PORT, HOST, () => {
 })
 
 // 用量统计按 5 秒防抖落盘，退出前补一次，否则最后几条会丢。
+let shuttingDown = false
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.log(`收到 ${signal}，停止接收新请求并等待在途任务完成（最长 ${SHUTDOWN_GRACE_MS / 1000} 秒）…`)
     flushUsage()
-    server.close(() => process.exit(0))
-    // 有长连接（SSE）挂着时 close 不会立刻回调，给 2 秒后强退。
-    setTimeout(() => process.exit(0), 2000).unref()
+    server.close(() => {
+      flushUsage()
+      process.exit(0)
+    })
+    server.closeIdleConnections?.()
+    // 上游生图常需几十秒；给在途请求足够时间，避免部署时生成到一半被强杀。
+    setTimeout(() => {
+      console.error('优雅退出等待超时，强制结束进程')
+      process.exit(1)
+    }, SHUTDOWN_GRACE_MS).unref()
   })
 }

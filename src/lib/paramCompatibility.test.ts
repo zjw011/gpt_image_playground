@@ -16,6 +16,17 @@ describe('parameter compatibility', () => {
     expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, n: 12 }, settings).n).toBe(10)
   })
 
+  it('uses the 1:1 size shown by the new studio instead of sending auto to compatible gateways', () => {
+    const openAIProfile = createDefaultOpenAIProfile({ apiKey: 'test-key' })
+    const settings = normalizeSettings({
+      ...DEFAULT_SETTINGS,
+      profiles: [openAIProfile],
+      activeProfileId: openAIProfile.id,
+    })
+
+    expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, size: 'auto' }, settings).size).toBe('1024x1024')
+  })
+
   it('limits fal.ai output count to 4', () => {
     const falProfile = createDefaultFalProfile({ apiKey: 'fal-key' })
     const settings = normalizeSettings({

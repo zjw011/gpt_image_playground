@@ -1,5 +1,6 @@
-// 版本号跟 package.json 对齐：换 logo / 换壳资源时 bump 一下，老用户才能拿到新图标
-const CACHE_NAME = 'gpt-image-playground-v0.7.8'
+// 注册 URL 会带 package.json 版本；升级时浏览器会安装新 worker，并清掉旧缓存。
+const VERSION = new URL(self.location.href).searchParams.get('v') || 'dev'
+const CACHE_NAME = `gpt-image-playground-v${VERSION}`
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './pwa-icon.svg']
 const APP_SHELL_URLS = new Set(APP_SHELL.map((path) => new URL(path, self.registration.scope).href))
 const ASSETS_PATH = new URL('./assets/', self.registration.scope).pathname

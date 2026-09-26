@@ -7,9 +7,11 @@
 // - 点赞记 userId（一人一票，可取消）；未登录只能看。
 // - 数量上限是防滥用的兜底（配合 rateLimit），满了先拒绝发布并提示清理。
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
+
+import { readDurableJson, writeDurableJson } from './durableJson.mjs'
 
 const MAX_ITEMS = 500
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -52,9 +54,7 @@ function file() {
 
 function commit() {
   const payload = { version: 1, items }
-  const tmp = `${file()}.tmp`
-  writeFileSync(tmp, JSON.stringify(payload))
-  renameSync(tmp, file())
+  writeDurableJson(file(), payload)
 }
 
 function index() {
@@ -78,15 +78,11 @@ export function initGallery(dir) {
   imagesDir = join(dir, 'gallery')
   mkdirSync(imagesDir, { recursive: true })
   const target = file()
+  let recovered = false
   if (existsSync(target)) {
-    try {
-      const parsed = JSON.parse(readFileSync(target, 'utf-8'))
-      items = Array.isArray(parsed.items) ? parsed.items.filter(isRecord) : []
-    } catch {
-      // 元数据损坏就当空库处理：图片文件还在，不至于把服务起挂
-      items = []
-      console.error('[gallery] gallery.json 解析失败，已按空广场处理')
-    }
+    const loaded = readDurableJson(target, '作品广场元数据')
+    recovered = loaded.recovered
+    items = Array.isArray(loaded.value.items) ? loaded.value.items.filter(isRecord) : []
   } else {
     // 首次启动：播种精选作品，广场一上线就有内容、对所有人可见
     const now = Date.now()
@@ -108,7 +104,9 @@ export function initGallery(dir) {
     commit()
   }
   index()
-  // 元数据丢失时按文件名无法还原作者等信息，孤儿图片文件宁可清掉也不展示"无主"作品
+  // 备份可能比图片文件落后一个提交；恢复启动时保留孤儿，交给管理员核对后处理。
+  if (recovered) return
+  // 只有元数据成功载入后才清孤儿；解析失败会在上面终止启动，绝不拿空索引删图片。
   const known = new Set(items.map((item) => item.file).filter(Boolean))
   for (const name of readdirSync(imagesDir)) {
     // 只清理"我们生成的图片文件"这一种形态：名字对不上的一律不碰。

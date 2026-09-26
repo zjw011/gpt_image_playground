@@ -1,0 +1,4 @@
+interface:
+  display_name: '绘想项目维护'
+  short_description: '维护绘想项目代码并持续记录每次变更、验证结果、部署方式与经验沉淀'
+  default_prompt: '使用 $gpt-image-web-maintainer 分析并修改绘想项目，完成验证，记录本次变更和经验，并在回复末尾提供唯一的服务器更新命令。'

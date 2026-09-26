@@ -113,6 +113,10 @@ let browser
 try {
   console.log('准备审计环境…')
   await startServer()
+  const health = await fetch(`${BASE}/api/health`)
+  const healthBody = await health.json()
+  report('独立健康检查可用', health.ok && healthBody.ok === true && healthBody.distReady === true)
+  report('响应带请求编号', /^[a-f0-9]{16}$/.test(health.headers.get('x-request-id') ?? ''))
   await stopServer()
 
   browser = await launchChrome({ port: CDP_PORT, baseUrl: BASE })

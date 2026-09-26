@@ -140,7 +140,17 @@ function appendHeader(res, name, value) {
   res.setHeader(name, Array.isArray(existing) ? [...existing, value] : [existing, value])
 }
 
-export function getClientIp(req) {
-  const forwarded = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim()
-  return forwarded || req.socket?.remoteAddress || 'unknown'
+export function getClientIp(req, trustProxy = process.env.GIP_TRUST_PROXY === '1') {
+  const remote = req.socket?.remoteAddress || 'unknown'
+  if (!trustProxy) return remote
+
+  // 只在管理员明确声明前置代理可信时读取代理头。优先使用反代覆盖写入的 X-Real-IP；
+  // X-Forwarded-For 取最右一跳，避免客户端在最左侧塞入伪造地址绕过限流。
+  const real = String(req.headers['x-real-ip'] ?? '').trim()
+  if (real) return real
+  const forwarded = String(req.headers['x-forwarded-for'] ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+  return forwarded.at(-1) || remote
 }
