@@ -81,6 +81,10 @@ export interface BackendCreditsConfig {
   signupBonus: number
   /** 用户自助购买卡密的链接，由管理员填写。留空则不显示购买入口。 */
   purchaseUrl: string
+  /** 幸运免单活动是否开启；用户侧据此展示活动入口。 */
+  luckyEnabled: boolean
+  /** 每次创作命中免单的百分比概率。 */
+  luckyRate: number
   packs: BackendCreditPack[]
 }
 
@@ -242,6 +246,8 @@ export function getCreditsConfig(): BackendCreditsConfig | null {
     costPerImage: bootstrap.credits.costPerImage,
     signupBonus: bootstrap.credits.signupBonus,
     purchaseUrl: bootstrap.credits.purchaseUrl,
+    luckyEnabled: bootstrap.credits.luckyEnabled,
+    luckyRate: bootstrap.credits.luckyRate,
     packs: bootstrap.credits.packs,
   }
 }
@@ -363,6 +369,8 @@ function normalizeCredits(input: unknown): BackendCredits {
     costPerImage: toCount(raw.costPerImage),
     signupBonus: raw.enabled === true ? toCount(raw.signupBonus) : 0,
     purchaseUrl: typeof raw.purchaseUrl === 'string' ? raw.purchaseUrl.trim() : '',
+    luckyEnabled: raw.luckyEnabled === true,
+    luckyRate: Math.min(100, toCount(raw.luckyRate)),
     packs: (Array.isArray(raw.packs) ? raw.packs : [])
       .filter(isRecord)
       .map((pack) => ({

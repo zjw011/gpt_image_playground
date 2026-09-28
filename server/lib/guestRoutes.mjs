@@ -36,6 +36,8 @@ function publicCredits(site) {
     costPerImage: site.credits.costPerImage,
     signupBonus: site.credits.enabled ? site.credits.signupBonus : 0,
     purchaseUrl: site.credits.purchaseUrl,
+    luckyEnabled: site.credits.luckyEnabled,
+    luckyRate: site.credits.luckyRate,
     packs: site.credits.packs,
   }
 }

@@ -1,9 +1,9 @@
 // 个人中心。左侧导航承担分区入口（作品/积分中心/账号设置）；
 // 「我的收藏」不单独占一栏——收藏就是打了星标的作品，在「我的作品」里用页签切换查看。
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore } from '../../store'
-import { getBackendUser, getCreditsConfig, getInviteInfo, submitFrontLogout, type BackendLedgerType } from '../../lib/backend'
+import { fetchCredits, getBackendUser, getCreditsConfig, getInviteInfo, submitFrontLogout, type BackendLedgerType } from '../../lib/backend'
 import { copyTextToClipboard } from '../../lib/clipboard'
 import { useCreditsStore } from '../../lib/creditsStore'
 import AppShell from './AppShell'
@@ -115,6 +115,13 @@ export default function MePage() {
   const isWorks = tab === 'works'
   const gridTasks = isWorks ? (favOnly ? favoriteTasks : doneTasks) : doneTasks
   const currentLabel = MENU.find((item) => item.key === tab)?.label ?? '我的作品'
+
+  // 生图回执只同步余额，不带整本流水；进入积分中心时主动拉一次，
+  // 否则用户刚完成的消费要刷新整个页面才看得到。
+  useEffect(() => {
+    if (tab !== 'ledger' || !credits || !user) return
+    void fetchCredits().catch((err) => console.warn('刷新积分流水失败', err))
+  }, [tab, Boolean(credits), user?.id])
 
   return (
     <AppShell title="个人中心" wide>
@@ -273,7 +280,7 @@ export default function MePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {[...view.ledger].reverse().map((entry, idx) => (
+                    {[...view.ledger].sort((a, b) => b.at - a.at).map((entry, idx) => (
                       <tr key={`${entry.at}-${idx}`} className="border-b border-[#f8f7fd] last:border-0">
                         <td className="whitespace-nowrap px-5 py-3 text-[#8a86ac]">
                           {new Date(entry.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}

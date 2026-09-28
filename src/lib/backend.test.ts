@@ -48,7 +48,7 @@ function createBootstrap(site: Partial<BackendBootstrap['site']> = {}): BackendB
     workspaceId: 'shared',
     registrationOpen: false,
     registration: { enabled: false, requireInviteCode: false, emailVerification: true },
-    credits: { enabled: false, costPerImage: 0, signupBonus: 0, purchaseUrl: '', packs: [] },
+    credits: { enabled: false, costPerImage: 0, signupBonus: 0, purchaseUrl: '', luckyEnabled: false, luckyRate: 0, packs: [] },
     wechat: { enabled: false, loginMode: 'code', hasQrcodeImage: false },
     site: {
       title: 'T',
@@ -188,9 +188,9 @@ describe('积分字段的解析与本地覆盖', () => {
   }
 
   it('未登录时只有配置没有余额，界面不该显示一个假的 0', async () => {
-    stubBootstrap({ backendMode: true, accessMode: 'wechat', authenticated: false, credits: { enabled: true, costPerImage: 2 } })
+    stubBootstrap({ backendMode: true, accessMode: 'wechat', authenticated: false, credits: { enabled: true, costPerImage: 2, luckyEnabled: true, luckyRate: 12 } })
     const data = await loadBackendBootstrap()
-    expect(getCreditsConfig()).toMatchObject({ enabled: true, costPerImage: 2 })
+    expect(getCreditsConfig()).toMatchObject({ enabled: true, costPerImage: 2, luckyEnabled: true, luckyRate: 12 })
     expect(getCreditsView()).toBeNull()
   })
 

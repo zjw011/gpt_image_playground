@@ -3,12 +3,12 @@
 // 纯前端（自备密钥）模式下必须保留设置，否则用户无处填 API Key。
 import { NavLink, Link, useLocation } from 'react-router-dom'
 import { useStore } from '../../store'
-import { getBackendUser, getCreditsConfig, isAdmin } from '../../lib/backend'
+import { getBackendUser, getCreditsConfig, getInviteInfo, isAdmin } from '../../lib/backend'
 import { isBackendManagedMode } from '../../lib/presetConfig'
 import { useCreditsStore } from '../../lib/creditsStore'
 import { Logo } from '../theme'
 import {
-  IconBrush, IconGrid, IconImage, IconCoin, IconUser, IconHelp, IconSettings, IconSparkle, IconShield,
+  IconBrush, IconGrid, IconImage, IconCoin, IconUser, IconHelp, IconSettings, IconShare, IconSparkle, IconShield,
 } from '../icons'
 
 // 分区切换全部由这一列侧栏承担：个人中心页里不再放第二列菜单，
@@ -27,6 +27,7 @@ export function SideNav() {
   const location = useLocation()
   const setShowSettings = useStore((s) => s.setShowSettings)
   const credits = getCreditsConfig()
+  const invite = getInviteInfo()
   const view = useCreditsStore((s) => s.view)
   const currentTab = new URLSearchParams(location.search).get('tab')
   // 只有「自备密钥」模式才需要设置入口；托管模式下渠道全在后台，用户进去也没得改。
@@ -107,6 +108,32 @@ export function SideNav() {
           <div className="text-center text-base font-bold text-[#37335c] lg:mt-1.5 lg:text-left lg:text-2xl" title="剩余积分">
             {(view?.available ?? 0).toLocaleString()}
           </div>
+          {(invite?.enabled || credits.luckyEnabled) && (
+            <div className="mt-3 hidden flex-col gap-1.5 lg:flex">
+              {invite?.enabled && (
+                <Link
+                  to="/me?tab=ledger"
+                  className="flex items-center gap-2 rounded-xl bg-white/70 px-2.5 py-2 text-[11px] font-medium text-[#5b5680] transition hover:bg-white hover:text-[#6b5ce7]"
+                  title="分享邀请链接，好友完成首次创作后获得积分"
+                >
+                  <IconShare className="h-3.5 w-3.5 shrink-0 text-[#7c6cf6]" />
+                  <span className="min-w-0 flex-1 truncate">分享赚积分</span>
+                  <span className="shrink-0 font-semibold text-[#7c6cf6]">+{invite.reward}</span>
+                </Link>
+              )}
+              {credits.luckyEnabled && (
+                <Link
+                  to="/studio"
+                  className="flex items-center gap-2 rounded-xl bg-white/70 px-2.5 py-2 text-[11px] font-medium text-[#5b5680] transition hover:bg-white hover:text-[#6b5ce7]"
+                  title="每次创作都有机会随机免扣积分"
+                >
+                  <IconSparkle className="h-3.5 w-3.5 shrink-0 text-[#f0a94b]" />
+                  <span className="min-w-0 flex-1 truncate">每日幸运免单</span>
+                  <span className="shrink-0 font-semibold text-[#d58a28]">{credits.luckyRate}%</span>
+                </Link>
+              )}
+            </div>
+          )}
           <Link
             to="/recharge"
             className="mt-3 flex items-center justify-center rounded-full bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] py-2 text-xs font-semibold text-white shadow-md shadow-[#7c6cf6]/25 transition hover:from-[#6b5ce7] hover:to-[#9678f5]"
