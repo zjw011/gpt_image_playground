@@ -229,6 +229,14 @@ export const IconLayers = ({ className }: IconProps) => (
   </Base>
 )
 
+export const IconToolbox = ({ className }: IconProps) => (
+  <Base className={className}>
+    <path d="M8.5 7V5.5A2.5 2.5 0 0 1 11 3h2a2.5 2.5 0 0 1 2.5 2.5V7" />
+    <rect x="3" y="7" width="18" height="13" rx="2.5" />
+    <path d="M3 12h6M15 12h6M9 10.5h6v3H9z" />
+  </Base>
+)
+
 export const IconUpload = ({ className }: IconProps) => (
   <Base className={className}>
     <path d="M12 15.5v-11M7.5 8.5L12 4l4.5 4.5" />

@@ -8,13 +8,14 @@ import { isBackendManagedMode } from '../../lib/presetConfig'
 import { useCreditsStore } from '../../lib/creditsStore'
 import { Logo } from '../theme'
 import {
-  IconBrush, IconGrid, IconImage, IconCoin, IconUser, IconHelp, IconSettings, IconShare, IconSparkle, IconShield,
+  IconBrush, IconGrid, IconImage, IconCoin, IconUser, IconHelp, IconSettings, IconShare, IconSparkle, IconShield, IconToolbox,
 } from '../icons'
 
 // 分区切换全部由这一列侧栏承担：个人中心页里不再放第二列菜单，
 // 否则侧栏和个人中心各有一套入口，看着像两层导航。
 const NAV_ITEMS = [
   { label: 'AI 绘画', to: '/studio', icon: IconBrush, end: true },
+  { label: '专业工具', to: '/tools', icon: IconToolbox },
   { label: '作品广场', to: '/gallery', icon: IconGrid },
   // 「我的收藏」并入我的作品（作品页内可切收藏页签，收藏作品带星标），侧栏不再单挂
   { label: '我的作品', to: '/me?tab=works', icon: IconImage, tab: 'works' },

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore, submitTask, addImageFromFile } from '../../store'
 import { getCreditsConfig } from '../../lib/backend'
 import { useCreditsStore } from '../../lib/creditsStore'
@@ -49,6 +49,7 @@ function RecentThumb({ imageId, taskId }: { imageId: string, taskId: string }) {
 
 export default function StudioPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const prompt = useStore((s) => s.prompt)
   const setPrompt = useStore((s) => s.setPrompt)
   const inputImages = useStore((s) => s.inputImages)
@@ -61,7 +62,8 @@ export default function StudioPage() {
   const showToast = useStore((s) => s.showToast)
   const tasks = useStore((s) => s.tasks)
 
-  const [tab, setTab] = useState<TabKey>('text')
+  const requestedMode = searchParams.get('mode')
+  const [tab, setTab] = useState<TabKey>(() => MODES.some((mode) => mode.key === requestedMode) ? requestedMode as TabKey : 'text')
   const [selectedStyle, setSelectedStyle] = useState<StylePresetKey | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 

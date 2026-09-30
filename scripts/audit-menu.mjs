@@ -88,6 +88,7 @@ try {
   // 应用侧栏：既要跳对，也要留在应用外壳里
   for (const [label, selector, expected] of [
     ['侧栏 · AI 绘画', 'aside a[href="/studio"]', '/studio'],
+    ['侧栏 · 专业工具', 'aside a[href="/tools"]', '/tools'],
     ['侧栏 · 作品广场', 'aside a[href="/gallery"]', '/gallery'],
     ['侧栏 · 我的作品', 'aside a[href="/me?tab=works"]', '/me?tab=works'],
     ['侧栏 · 积分中心', 'aside a[href="/me?tab=ledger"]', '/me?tab=ledger'],
@@ -105,6 +106,11 @@ try {
   await open('/studio', 2600)
   await click('aside a[href="/studio"]')
   report('侧栏 Logo 留在应用内', (await currentUrl()) === '/studio', await currentUrl())
+
+  await open('/tools', 2000)
+  const inpaintTool = await click('main a[href="/studio?mode=inpaint"]')
+  const inpaintActive = await evaluate('Array.from(document.querySelectorAll("button")).some((button) => button.innerText.includes("局部重绘") && button.getAttribute("aria-pressed") === "true")')
+  report('专业工具 · 局部重绘直达创作模式', inpaintTool === 'clicked' && (await currentUrl()) === '/studio?mode=inpaint' && inpaintActive, await currentUrl())
 
   // 个人中心不能再出现"第二列菜单"：分区入口只归左侧主导航。
   // 这是用户报过的原话——「里面怎么又内嵌一个菜单栏」。

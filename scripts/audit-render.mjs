@@ -19,6 +19,7 @@ const CDP_PORT = Number(process.env.AUDIT_CDP_PORT || 9413)
 const PAGES = [
   { path: '/', expect: '/' },
   { path: '/studio', expect: '/studio' },
+  { path: '/tools', expect: '/tools' },
   { path: '/gallery', expect: '/gallery' },
   { path: '/me', expect: '/me' },
   { path: '/me?tab=works', expect: '/me?tab=works' },

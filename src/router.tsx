@@ -25,6 +25,7 @@ export const routes: RouteObject[] = [
         lazy: lazyPage(() => import('./App')),
         children: [
           { path: '/studio', lazy: lazyPage(() => import('./pages/app/StudioPage')) },
+          { path: '/tools', lazy: lazyPage(() => import('./pages/app/ProfessionalToolsPage')) },
           // 注意：结果页必须是单层路径。多层路径（/studio/result）在当前 base:'./' 的
           // 产物下会把 ./assets/xxx.js 解析到 /studio/assets/xxx.js，刷新即白屏。
           { path: '/result', lazy: lazyPage(() => import('./pages/app/ResultPage')) },
