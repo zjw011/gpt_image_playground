@@ -89,6 +89,8 @@ export async function handleGalleryRoute(req, res, ctx) {
       const result = publishWork({
         ownerId: user.id,
         ownerName: user.wechatNickname || user.displayName || user.username,
+        title: body.title,
+        caption: body.caption,
         prompt: String(body.prompt ?? ''),
         model: String(body.model ?? ''),
         imageDataUrl: String(body.image ?? ''),

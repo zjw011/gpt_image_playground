@@ -48,6 +48,9 @@ export default function ResultPage() {
   // 本次会话里已上传广场的作品：上传成功后按钮变成"已在广场"，避免重复上传
   const [publishedIds, setPublishedIds] = useState<Set<string>>(new Set())
   const [publishing, setPublishing] = useState(false)
+  const [publishOpen, setPublishOpen] = useState(false)
+  const [publishTitle, setPublishTitle] = useState('')
+  const [publishCaption, setPublishCaption] = useState('')
   const lastLuckyAt = useCreditsStore((s) => s.lastLuckyAt)
   const imageId = activeImageId && task?.outputImages.includes(activeImageId)
     ? activeImageId
@@ -128,15 +131,26 @@ export default function ResultPage() {
   const published = publishedIds.has(task.id)
 
   const publishToGallery = async () => {
-    if (publishing) return
+    if (publishing || !imageId) return
+    if (!publishTitle.trim()) {
+      showToast('请先写一个帖子标题', 'info')
+      return
+    }
     setPublishing(true)
     try {
-      const stored = await getImage(task.outputImages[0])
+      const stored = await getImage(imageId)
       if (!stored?.dataUrl) throw new Error('图片读取失败，请稍后重试')
-      await publishWork({ image: stored.dataUrl, prompt: task.prompt, model: task.apiModel ?? '' })
+      await publishWork({
+        image: stored.dataUrl,
+        title: publishTitle.trim(),
+        caption: publishCaption.trim(),
+        prompt: task.prompt,
+        model: task.apiModel ?? '',
+      })
       publishedIds.add(task.id)
       setPublishedIds(new Set(publishedIds))
-      showToast('已上传到作品广场，大家都能看到啦', 'success')
+      setPublishOpen(false)
+      showToast('帖子已发布到作品广场', 'success')
     } catch (err) {
       showToast(err instanceof Error ? err.message : '上传失败，请稍后重试', 'error')
     } finally {
@@ -148,7 +162,16 @@ export default function ResultPage() {
     { icon: IconDownload, label: '下载', onClick: download, disabled: !fullSrc },
     { icon: IconHeart, label: '收藏', onClick: () => openFavoritePicker([task.id]) },
     ...(canPublish
-      ? [{ icon: IconUpload, label: published ? '已在广场' : '上传广场', onClick: () => void publishToGallery(), disabled: publishing || published }]
+      ? [{
+          icon: IconUpload,
+          label: published ? '已在广场' : '发布帖子',
+          onClick: () => {
+            setPublishTitle('')
+            setPublishCaption('')
+            setPublishOpen(true)
+          },
+          disabled: publishing || published,
+        }]
       : []),
     { icon: IconRefresh, label: '再次生成', onClick: () => void regenerate() },
     { icon: IconCopy, label: '复制提示词', onClick: () => void copyPrompt() },
@@ -255,6 +278,55 @@ export default function ResultPage() {
           ))}
         </div>
       </div>
+
+      {publishOpen && (
+        <div className="animate-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-[#33285f]/45 p-4 backdrop-blur-sm" onClick={() => !publishing && setPublishOpen(false)}>
+          <div className="animate-modal-in w-full max-w-2xl overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-[#f0edf8] px-6 py-4">
+              <div>
+                <h2 className="text-base font-bold text-[#37335c]">发布到作品广场</h2>
+                <p className="mt-1 text-xs text-[#a5a1c4]">写下你想分享的内容，提示词会收进帖子的「查看提示词」中</p>
+              </div>
+              <button type="button" disabled={publishing} onClick={() => setPublishOpen(false)} className="flex h-8 w-8 items-center justify-center rounded-full text-xl text-[#a5a1c4] hover:bg-[#f6f4fc] hover:text-[#5b5680]">×</button>
+            </div>
+            <div className="grid gap-5 p-6 sm:grid-cols-[180px_minmax(0,1fr)]">
+              <div className="overflow-hidden rounded-2xl bg-[#f6f4fc]">
+                {fullSrc && <img src={fullSrc} alt="待发布作品" className="aspect-[4/5] h-full w-full object-cover" />}
+              </div>
+              <div className="min-w-0">
+                <label className="text-xs font-semibold text-[#5b5680]" htmlFor="gallery-post-title">帖子标题</label>
+                <input
+                  id="gallery-post-title"
+                  value={publishTitle}
+                  onChange={(event) => setPublishTitle(Array.from(event.target.value).slice(0, 60).join(''))}
+                  autoFocus
+                  placeholder="给这张作品起个吸引人的标题"
+                  className="mt-2 w-full rounded-xl border border-[#e5e1f5] px-3.5 py-3 text-sm outline-none transition focus:border-[#8b7bf6] focus:ring-4 focus:ring-[#7c6cf6]/10"
+                />
+                <div className="mt-4 flex items-center justify-between">
+                  <label className="text-xs font-semibold text-[#5b5680]" htmlFor="gallery-post-caption">正文 <span className="font-normal text-[#b3aed0]">· 可选</span></label>
+                  <span className="text-[11px] text-[#b3aed0]">{Array.from(publishCaption).length}/500</span>
+                </div>
+                <textarea
+                  id="gallery-post-caption"
+                  value={publishCaption}
+                  onChange={(event) => setPublishCaption(Array.from(event.target.value).slice(0, 500).join(''))}
+                  rows={6}
+                  placeholder="说说创作灵感、画面故事，或者你想记住的细节…"
+                  className="mt-2 w-full resize-none rounded-xl border border-[#e5e1f5] px-3.5 py-3 text-sm leading-6 outline-none transition focus:border-[#8b7bf6] focus:ring-4 focus:ring-[#7c6cf6]/10"
+                />
+                <p className="mt-2 text-[11px] leading-5 text-[#a5a1c4]">公开帖子暂不支持网址链接，请保持友善交流。</p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 border-t border-[#f0edf8] px-6 py-4">
+              <button type="button" disabled={publishing} onClick={() => setPublishOpen(false)} className="rounded-full border border-[#ded9ef] px-5 py-2.5 text-sm font-medium text-[#6f6a94] hover:border-[#bdb5e3]">取消</button>
+              <button type="button" disabled={publishing || !publishTitle.trim()} onClick={() => void publishToGallery()} className="rounded-full bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-[#7c6cf6]/25 disabled:cursor-not-allowed disabled:opacity-40">
+                {publishing ? '发布中…' : '发布帖子'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AppShell>
   )
 }

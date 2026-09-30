@@ -16,6 +16,10 @@ import { countComments, removeCommentsForWork } from './galleryComments.mjs'
 
 const MAX_ITEMS = 500
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_TITLE_LENGTH = 60
+const MAX_CAPTION_LENGTH = 500
+const LINK_PATTERN = /(https?:\/\/|www\.|(?:^|\s)[a-z0-9-]+\.(?:com|cn|net|org|top|xyz)(?:[\s/]|$))/i
+const HTML_PATTERN = /<\s*\/?\s*[a-z][^>]*>/i
 // 防滥用：公开站点任何人都能注册登录，上传口子必须有闸。
 // 单人总量 30 件 + 每小时最多发 10 件，足以正常分享，又能挡住灌盘。
 const MAX_PER_USER = 30
@@ -66,12 +70,12 @@ function index() {
 // 内置精选作品：随站点分发的示例图（/art/*.jpg），任何部署首次启动就自动上架，
 // 让广场公开可见、不至于空着。它们没有图片文件（staticPath 直指静态资源），不可被普通用户删除。
 const SEED_WORKS = [
-  { id: 'w-seed-train', staticPath: '/art/work-train.jpg', ownerName: '星野', baseLikes: 1280, prompt: '星空下的列车，璀璨银河，车窗暖光，新海诚风格', daysAgo: 6 },
-  { id: 'w-seed-seaside', staticPath: '/art/work-seaside.jpg', ownerName: '蓝调', baseLikes: 986, prompt: '海边少女回头微笑，粉蓝色天空，海鸥，唯美治愈', daysAgo: 5 },
-  { id: 'w-seed-cyber', staticPath: '/art/work-cyber.jpg', ownerName: 'NightCity', baseLikes: 2100, prompt: '赛博朋克城市夜景，霓虹灯牌，雨后街道倒影', daysAgo: 4 },
-  { id: 'w-seed-cat', staticPath: '/art/work-cat.jpg', ownerName: '喵星人', baseLikes: 2800, prompt: '布偶猫特写肖像，蓝眼睛，淡紫蝴蝶结，花瓣光斑', daysAgo: 3 },
-  { id: 'w-seed-hanfu', staticPath: '/art/work-hanfu.jpg', ownerName: '古风小筑', baseLikes: 764, prompt: '汉服少女桃花树下，江南水乡，柔和晨光，国风插画', daysAgo: 2 },
-  { id: 'w-seed-sakura', staticPath: '/art/work-sakura.jpg', ownerName: '春日部', baseLikes: 1500, prompt: '春日樱花街道，透明雨伞少女背影，花瓣纷飞', daysAgo: 1 },
+  { id: 'w-seed-train', staticPath: '/art/work-train.jpg', ownerName: '星野', title: '银河列车今晚会经过哪里', caption: '把一直想象的夜色画了出来，车窗里的暖光是我最喜欢的细节。', baseLikes: 1280, prompt: '星空下的列车，璀璨银河，车窗暖光，新海诚风格', daysAgo: 6 },
+  { id: 'w-seed-seaside', staticPath: '/art/work-seaside.jpg', ownerName: '蓝调', title: '海风刚好，她也刚好回头', caption: '粉蓝色的天空和远处的海鸥，是我心里最治愈的夏天。', baseLikes: 986, prompt: '海边少女回头微笑，粉蓝色天空，海鸥，唯美治愈', daysAgo: 5 },
+  { id: 'w-seed-cyber', staticPath: '/art/work-cyber.jpg', ownerName: 'NightCity', title: '下雨后的霓虹城', caption: '路面的反光比霓虹灯牌更有故事感，想做一组完整的未来城市系列。', baseLikes: 2100, prompt: '赛博朋克城市夜景，霓虹灯牌，雨后街道倒影', daysAgo: 4 },
+  { id: 'w-seed-cat', staticPath: '/art/work-cat.jpg', ownerName: '喵星人', title: '今天也是被猫咪治愈的一天', caption: '蓝眼睛和淡紫色蝴蝶结太搭了，像一位安静的小公主。', baseLikes: 2800, prompt: '布偶猫特写肖像，蓝眼睛，淡紫蝴蝶结，花瓣光斑', daysAgo: 3 },
+  { id: 'w-seed-hanfu', staticPath: '/art/work-hanfu.jpg', ownerName: '古风小筑', title: '桃花深处见江南', caption: '柔和的晨光落在汉服上，这就是我想象中的春日江南。', baseLikes: 764, prompt: '汉服少女桃花树下，江南水乡，柔和晨光，国风插画', daysAgo: 2 },
+  { id: 'w-seed-sakura', staticPath: '/art/work-sakura.jpg', ownerName: '春日部', title: '樱花落下的时候，春天就有了形状', caption: '透明雨伞、少女背影和满街花瓣，保存一个很轻的春日瞬间。', baseLikes: 1500, prompt: '春日樱花街道，透明雨伞少女背影，花瓣纷飞', daysAgo: 1 },
 ]
 
 export function initGallery(dir) {
@@ -94,6 +98,8 @@ export function initGallery(dir) {
       hash: '',
       bytes: 0,
       prompt: seed.prompt,
+      title: seed.title,
+      caption: seed.caption,
       model: '',
       ownerId: 'system',
       ownerName: seed.ownerName,
@@ -103,6 +109,16 @@ export function initGallery(dir) {
       seed: true,
     }))
     commit()
+  }
+  // 旧版已播种的精选作品没有帖子标题与正文，原地补齐，不重新播种也不改 ID。
+  const seeds = new Map(SEED_WORKS.map((seed) => [seed.id, seed]))
+  const needsSeedCopy = items.some((item) => seeds.has(item.id) && (!item.title || !item.caption))
+  if (needsSeedCopy) {
+    items = items.map((item) => {
+      const seed = seeds.get(item.id)
+      return seed ? { ...item, title: item.title || seed.title, caption: item.caption || seed.caption } : item
+    })
+    if (!recovered) commit()
   }
   index()
   // 备份可能比图片文件落后一个提交；恢复启动时保留孤儿，交给管理员核对后处理。
@@ -124,9 +140,12 @@ function isRecord(value) {
 
 /** 公开投影：给列表/详情用，绝不含 ownerId 之外的隐私（本来也没有）。 */
 function toPublic(item, viewerId) {
+  const prompt = String(item.prompt ?? '').trim()
   return {
     id: item.id,
-    prompt: item.prompt,
+    title: String(item.title ?? '').trim() || Array.from(prompt).slice(0, 28).join('') || '分享一张新作品',
+    caption: String(item.caption ?? '').trim(),
+    prompt,
     model: item.model,
     ownerName: item.ownerName,
     ownerId: item.ownerId,
@@ -143,7 +162,7 @@ function toPublic(item, viewerId) {
  * 发布作品。imageDataUrl 是前端从 IndexedDB 读出的原图 dataURL。
  * 返回 { ok, item | error }，错误都给人话，前端直接透出。
  */
-export function publishWork({ ownerId, ownerName, prompt, model, imageDataUrl }) {
+export function publishWork({ ownerId, ownerName, title, caption, prompt, model, imageDataUrl }) {
   if (!ownerId) return { ok: false, error: '请先登录后再上传作品' }
   if (items.length >= MAX_ITEMS) return { ok: false, error: `作品广场已满（${MAX_ITEMS} 件），请联系管理员清理` }
 
@@ -153,6 +172,14 @@ export function publishWork({ ownerId, ownerName, prompt, model, imageDataUrl })
   const bytes = Buffer.from(base64, 'base64')
   if (!bytes.length) return { ok: false, error: '图片内容为空' }
   if (bytes.length > MAX_IMAGE_BYTES) return { ok: false, error: '图片超过 8MB，无法上传' }
+
+  const normalizedPrompt = String(prompt ?? '').trim().slice(0, 500)
+  const normalizedTitle = String(title ?? '').replace(/\s+/g, ' ').trim() || Array.from(normalizedPrompt).slice(0, 28).join('') || '分享一张新作品'
+  const normalizedCaption = String(caption ?? '').replace(/\r\n?/g, '\n').trim()
+  if (Array.from(normalizedTitle).length > MAX_TITLE_LENGTH) return { ok: false, error: `标题最多 ${MAX_TITLE_LENGTH} 个字` }
+  if (Array.from(normalizedCaption).length > MAX_CAPTION_LENGTH) return { ok: false, error: `正文最多 ${MAX_CAPTION_LENGTH} 个字` }
+  if (HTML_PATTERN.test(normalizedTitle) || HTML_PATTERN.test(normalizedCaption)) return { ok: false, error: '发布文案不支持 HTML 标签' }
+  if (LINK_PATTERN.test(normalizedTitle) || LINK_PATTERN.test(normalizedCaption)) return { ok: false, error: '发布文案暂不支持网址链接' }
 
   // 同一张图重复上传直接复用已有作品：不计频率、不占配额
   const hash = createHash('sha256').update(bytes).digest('hex')
@@ -182,7 +209,9 @@ export function publishWork({ ownerId, ownerName, prompt, model, imageDataUrl })
     hash,
     bytes: bytes.length,
     mime,
-    prompt: String(prompt ?? '').slice(0, 500),
+    title: normalizedTitle,
+    caption: normalizedCaption,
+    prompt: normalizedPrompt,
     model: String(model ?? '').slice(0, 80),
     ownerId: String(ownerId),
     ownerName: String(ownerName ?? '').slice(0, 40) || '匿名创作者',

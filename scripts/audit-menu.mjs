@@ -147,6 +147,14 @@ try {
   for (const tab of ['推荐', '最新', '最热']) {
     report(`广场页签「${tab}」`, (await clickByText(tab)) === 'clicked')
   }
+  const postOpened = await evaluate('(() => { const el = document.querySelector("main article button"); if (!el) return "missing"; el.click(); return "clicked" })()')
+  await wait(300)
+  const postBeforePrompt = await evaluate('document.body.innerText')
+  report('作品广场使用帖子详情', postOpened === 'clicked' && postBeforePrompt.includes('查看提示词') && !postBeforePrompt.includes('创作提示词'), postOpened)
+  const revealPrompt = await clickByText('查看提示词')
+  await wait(200)
+  const postAfterPrompt = await evaluate('document.body.innerText')
+  report('帖子提示词按需展开', revealPrompt === 'clicked' && postAfterPrompt.includes('创作提示词') && postAfterPrompt.includes('用这个提示词画同款'), revealPrompt)
 
   // 已下线的旧路由应回落到首页，而不是白屏
   await open('/classic', 1600)

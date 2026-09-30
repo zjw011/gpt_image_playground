@@ -2,6 +2,8 @@
 
 export interface GalleryItem {
   id: string
+  title: string
+  caption: string
   prompt: string
   model: string
   ownerName: string
@@ -28,7 +30,7 @@ export function listGalleryWorks() {
 }
 
 /** image 传 dataURL（前端从 IndexedDB 读原图得到）。 */
-export function publishWork(body: { image: string, prompt: string, model: string }) {
+export function publishWork(body: { image: string, title: string, caption: string, prompt: string, model: string }) {
   return request<{ ok: true, item: GalleryItem, duplicated: boolean }>('/api/gallery', {
     method: 'POST',
     body: JSON.stringify(body),

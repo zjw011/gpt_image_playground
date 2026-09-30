@@ -204,6 +204,27 @@ try {
     })()`)
     report('评论发布、公开列表与删除闭环', commentFlow.createStatus === 201 && commentFlow.listStatus === 200 && commentFlow.listed && commentFlow.removeStatus === 200, JSON.stringify(commentFlow))
 
+    const galleryPostFlow = await browser.evaluate(`(async () => {
+      const response = await fetch('/api/gallery', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+          title: '真机帖子标题',
+          caption: '真机帖子正文',
+          prompt: '真机提示词',
+          model: 'audit-model',
+        }),
+      })
+      const created = await response.json()
+      const listResponse = await fetch('/api/gallery')
+      const list = await listResponse.json()
+      const found = list.items?.find((item) => item.id === created.item?.id)
+      const removed = created.item?.id ? await fetch('/api/gallery/' + encodeURIComponent(created.item.id), { method: 'DELETE' }) : null
+      return { status: response.status, title: found?.title, caption: found?.caption, removed: removed?.status }
+    })()`)
+    report('帖子标题与正文持久化闭环', galleryPostFlow.status === 200 && galleryPostFlow.title === '真机帖子标题' && galleryPostFlow.caption === '真机帖子正文' && galleryPostFlow.removed === 200, JSON.stringify(galleryPostFlow))
+
     // 侧栏每一项都要真的能打开，不能点进去空白。
     // 关键词一律取页面正文里独有的词——不要用「渠道链路」「积分」这种侧栏里也有的，
     // 否则视图根本没渲染、只渲染了壳，断言照样会绿。

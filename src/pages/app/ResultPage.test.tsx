@@ -6,7 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TaskRecord } from '../../types'
 import ResultPage from './ResultPage'
 
-const state = vi.hoisted(() => ({ tasks: [] as TaskRecord[] }))
+const state = vi.hoisted(() => ({
+  tasks: [] as TaskRecord[],
+  backend: false,
+  user: null as { id: string } | null,
+  fullSrc: null as string | null,
+  getImage: vi.fn(),
+  publishWork: vi.fn(),
+}))
 const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
 actEnvironment.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -27,7 +34,7 @@ vi.mock('./AppShell', () => ({
 }))
 
 vi.mock('./useTaskImage', () => ({
-  useFullImage: () => null,
+  useFullImage: () => state.fullSrc,
   useThumbnail: () => null,
 }))
 
@@ -36,12 +43,12 @@ vi.mock('../../lib/creditsStore', () => ({
 }))
 
 vi.mock('../../lib/backend', () => ({
-  isBackendMode: () => false,
-  getBackendUser: () => null,
+  isBackendMode: () => state.backend,
+  getBackendUser: () => state.user,
 }))
 
-vi.mock('../../lib/db', () => ({ getImage: vi.fn() }))
-vi.mock('../../lib/galleryApi', () => ({ publishWork: vi.fn() }))
+vi.mock('../../lib/db', () => ({ getImage: state.getImage }))
+vi.mock('../../lib/galleryApi', () => ({ publishWork: state.publishWork }))
 
 describe('ResultPage', () => {
   let container: HTMLDivElement
@@ -49,6 +56,11 @@ describe('ResultPage', () => {
 
   beforeEach(() => {
     state.tasks = []
+    state.backend = false
+    state.user = null
+    state.fullSrc = null
+    state.getImage.mockReset()
+    state.publishWork.mockReset()
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -92,5 +104,47 @@ describe('ResultPage', () => {
 
     await act(async () => root.render(renderPage()))
     expect(container.textContent).toContain('正在绘制你的想象')
+  })
+
+  it('发布广场前先编辑帖子标题和正文', async () => {
+    state.backend = true
+    state.user = { id: 'u-1' }
+    state.fullSrc = 'data:image/png;base64,preview'
+    state.tasks = [{
+      id: 'done-task',
+      prompt: '月光下的雪山',
+      params: {
+        size: '1024x1024',
+        quality: 'auto',
+        output_format: 'png',
+        output_compression: null,
+        moderation: 'auto',
+        n: 1,
+        transparent_output: false,
+      },
+      inputImageIds: [],
+      outputImages: ['img-1'],
+      status: 'done',
+      error: null,
+      createdAt: Date.now(),
+      finishedAt: Date.now(),
+      elapsed: 1,
+      apiModel: 'image-2',
+    }]
+
+    await act(async () => root.render(
+      <MemoryRouter initialEntries={['/result']}>
+        <ResultPage />
+      </MemoryRouter>,
+    ))
+    const publishButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('发布帖子'))
+    expect(publishButton).toBeTruthy()
+
+    await act(async () => publishButton?.click())
+
+    expect(container.textContent).toContain('帖子标题')
+    expect(container.textContent).toContain('提示词会收进帖子的「查看提示词」中')
+    expect(container.querySelector('#gallery-post-title')).toBeTruthy()
+    expect(container.querySelector('#gallery-post-caption')).toBeTruthy()
   })
 })

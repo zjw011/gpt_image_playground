@@ -20,7 +20,7 @@ import {
 import AppShell from './AppShell'
 import SafeImg from '../../components/SafeImg'
 import { assetUrl } from '../../lib/assetUrl'
-import { IconHeart, IconEye, IconMessage, IconSearch, IconSparkle, IconTrash } from '../icons'
+import { IconCopy, IconHeart, IconEye, IconMessage, IconSearch, IconSparkle, IconTrash } from '../icons'
 
 interface DemoWork {
   id: string
@@ -31,16 +31,17 @@ interface DemoWork {
   views: string
   style: string
   prompt: string
+  caption: string
   at: number
 }
 
 const DEMO_WORKS: DemoWork[] = [
-  { id: 'demo-train', img: '/art/work-train.jpg', title: '星空下的列车', author: '星野', likes: 1280, views: '3.2k', style: '动漫', prompt: '星空下的列车，璀璨银河，车窗暖光，新海诚风格', at: 6 },
-  { id: 'demo-seaside', img: '/art/work-seaside.jpg', title: '海边的少女', author: '蓝调', likes: 986, views: '2.1k', style: '动漫', prompt: '海边少女回头微笑，粉蓝色天空，海鸥，唯美治愈', at: 5 },
-  { id: 'demo-cyber', img: '/art/work-cyber.jpg', title: '霓虹雨夜', author: 'NightCity', likes: 2100, views: '5.6k', style: '赛博', prompt: '赛博朋克城市夜景，霓虹灯牌，雨后街道倒影', at: 4 },
-  { id: 'demo-cat', img: '/art/work-cat.jpg', title: '温柔的猫', author: '喵星人', likes: 2800, views: '6.8k', style: '写实', prompt: '布偶猫特写肖像，蓝眼睛，淡紫蝴蝶结，花瓣光斑', at: 3 },
-  { id: 'demo-hanfu', img: '/art/work-hanfu.jpg', title: '桃花依旧', author: '古风小筑', likes: 764, views: '1.8k', style: '古风', prompt: '汉服少女桃花树下，江南水乡，柔和晨光，国风插画', at: 2 },
-  { id: 'demo-sakura', img: '/art/work-sakura.jpg', title: '樱花街道', author: '春日部', likes: 1500, views: '4.1k', style: '动漫', prompt: '春日樱花街道，透明雨伞少女背影，花瓣纷飞', at: 1 },
+  { id: 'demo-train', img: '/art/work-train.jpg', title: '银河列车今晚会经过哪里', author: '星野', likes: 1280, views: '3.2k', style: '动漫', prompt: '星空下的列车，璀璨银河，车窗暖光，新海诚风格', caption: '把一直想象的夜色画了出来，车窗里的暖光是我最喜欢的细节。', at: 6 },
+  { id: 'demo-seaside', img: '/art/work-seaside.jpg', title: '海风刚好，她也刚好回头', author: '蓝调', likes: 986, views: '2.1k', style: '动漫', prompt: '海边少女回头微笑，粉蓝色天空，海鸥，唯美治愈', caption: '粉蓝色的天空和远处的海鸥，是我心里最治愈的夏天。', at: 5 },
+  { id: 'demo-cyber', img: '/art/work-cyber.jpg', title: '下雨后的霓虹城', author: 'NightCity', likes: 2100, views: '5.6k', style: '赛博', prompt: '赛博朋克城市夜景，霓虹灯牌，雨后街道倒影', caption: '路面的反光比霓虹灯牌更有故事感，想做一组完整的未来城市系列。', at: 4 },
+  { id: 'demo-cat', img: '/art/work-cat.jpg', title: '今天也是被猫咪治愈的一天', author: '喵星人', likes: 2800, views: '6.8k', style: '写实', prompt: '布偶猫特写肖像，蓝眼睛，淡紫蝴蝶结，花瓣光斑', caption: '蓝眼睛和淡紫色蝴蝶结太搭了，像一位安静的小公主。', at: 3 },
+  { id: 'demo-hanfu', img: '/art/work-hanfu.jpg', title: '桃花深处见江南', author: '古风小筑', likes: 764, views: '1.8k', style: '古风', prompt: '汉服少女桃花树下，江南水乡，柔和晨光，国风插画', caption: '柔和的晨光落在汉服上，这就是我想象中的春日江南。', at: 2 },
+  { id: 'demo-sakura', img: '/art/work-sakura.jpg', title: '樱花落下的时候，春天就有了形状', author: '春日部', likes: 1500, views: '4.1k', style: '动漫', prompt: '春日樱花街道，透明雨伞少女背影，花瓣纷飞', caption: '透明雨伞、少女背影和满街花瓣，保存一个很轻的春日瞬间。', at: 1 },
 ]
 
 const SERVER_TABS = ['最新', '最热', '我的'] as const
@@ -70,6 +71,7 @@ export default function GalleryPage() {
   const [commentsLoading, setCommentsLoading] = useState(false)
   const [commentText, setCommentText] = useState('')
   const [commentBusy, setCommentBusy] = useState(false)
+  const [promptVisible, setPromptVisible] = useState(false)
 
   const loadWorks = useCallback(async () => {
     if (!backendMode) return
@@ -88,6 +90,8 @@ export default function GalleryPage() {
 
   const myId = me?.id ?? null
   const previewWorkId = preview && isServerItem(preview) ? preview.id : null
+
+  useEffect(() => { setPromptVisible(false) }, [preview?.id])
 
   useEffect(() => {
     setComments([])
@@ -115,12 +119,12 @@ export default function GalleryPage() {
       if (tab === '最热') list.sort((a, b) => b.likes - a.likes)
       else list.sort((a, b) => b.createdAt - a.createdAt)
       if (tab === '我的') list = list.filter((item) => item.ownerId === myId)
-      if (keywordTrim) list = list.filter((item) => item.prompt.includes(keywordTrim) || item.ownerName.includes(keywordTrim))
+      if (keywordTrim) list = list.filter((item) => item.title.includes(keywordTrim) || item.caption.includes(keywordTrim) || item.ownerName.includes(keywordTrim))
       return list
     }
     let list = DEMO_WORKS
     if (style !== '全部风格') list = list.filter((work) => work.style === style)
-    if (keywordTrim) list = list.filter((work) => work.title.includes(keywordTrim) || work.prompt.includes(keywordTrim))
+    if (keywordTrim) list = list.filter((work) => work.title.includes(keywordTrim) || work.caption.includes(keywordTrim) || work.author.includes(keywordTrim))
     if (tab === '最新') list = [...list].sort((a, b) => b.at - a.at)
     if (tab === '最热') list = [...list].sort((a, b) => b.likes - a.likes)
     return list
@@ -174,6 +178,15 @@ export default function GalleryPage() {
     setPrompt(item.prompt)
     showToast('提示词已填入，去创作同款吧', 'success')
     navigate('/studio')
+  }
+
+  const copyPrompt = async (item: GalleryItem | DemoWork) => {
+    try {
+      await navigator.clipboard.writeText(item.prompt)
+      showToast('提示词已复制', 'success')
+    } catch {
+      showToast('复制失败，请手动选择复制', 'error')
+    }
   }
 
   const submitComment = async () => {
@@ -278,7 +291,7 @@ export default function GalleryPage() {
           <input
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
-            placeholder={backendMode ? '搜索作品提示词 / 作者' : '搜索作品或提示词'}
+            placeholder="搜索帖子或作者"
             className="w-56 rounded-full border border-[#eceaf6] bg-white py-2 pl-10 pr-4 text-[13px] outline-none transition placeholder:text-[#b3aed0] focus:border-[#7c6cf6] focus:ring-4 focus:ring-[#7c6cf6]/10"
           />
         </div>
@@ -286,7 +299,7 @@ export default function GalleryPage() {
 
       {backendMode && (
         <p className="mt-3 text-xs text-[#a5a1c4]">
-          在「生成结果」页点「上传广场」，你的作品就会出现在这里，所有人都能看到和点赞。
+          在「生成结果」页点「发布帖子」，分享你的作品和创作故事。
         </p>
       )}
 
@@ -300,37 +313,42 @@ export default function GalleryPage() {
       ) : filteredWorks.length === 0 ? (
         <div className="mt-6 rounded-3xl border border-[#eceaf6] bg-white py-20 text-center text-sm text-[#a5a1c4]">
           {backendMode && tab === '我的'
-            ? '你还没有上传过作品；在「生成结果」页点「上传广场」即可让所有人看到'
-            : '没有找到相关作品，换个关键词试试'}
+            ? '你还没有发布过帖子；去生成结果页分享第一张作品吧'
+            : '没有找到相关帖子，换个关键词试试'}
         </div>
       ) : (
-        <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4">
-          {filteredWorks.map((work) => {
+        <div className="mt-6 columns-2 gap-4 md:columns-3 lg:columns-4 2xl:columns-5">
+          {filteredWorks.map((work, index) => {
             const serverItem = isServerItem(work)
             const isLiked = serverItem ? work.likedByMe : liked.includes(work.id)
             const likes = serverItem ? work.likes : work.likes + (isLiked ? 1 : 0)
             const author = serverItem ? work.ownerName : work.author
             const isMine = serverItem && myId !== null && work.ownerId === myId
             return (
-              <div key={work.id} className="group overflow-hidden rounded-2xl border border-[#eceaf6] bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg hover:shadow-[#7c6cf6]/10">
+              <article key={work.id} className="group mb-5 break-inside-avoid overflow-hidden rounded-2xl bg-white transition hover:-translate-y-0.5">
                 <button type="button" onClick={() => setPreview(work)} className="relative block w-full overflow-hidden">
-                  <SafeImg src={serverItem ? work.imageUrl : assetUrl(work.img)} alt={work.prompt} className="aspect-square w-full object-cover transition duration-300 group-hover:scale-105" />
-                  <span className="absolute inset-0 flex items-end bg-gradient-to-t from-black/55 via-transparent to-transparent p-3.5 opacity-0 transition group-hover:opacity-100">
-                    <span className="line-clamp-2 text-left text-xs leading-5 text-white">{work.prompt}</span>
-                  </span>
+                  <SafeImg
+                    src={serverItem ? work.imageUrl : assetUrl(work.img)}
+                    alt={work.title}
+                    className={`w-full rounded-2xl object-cover transition duration-300 group-hover:scale-[1.015] ${index % 3 === 0 ? 'aspect-[4/5]' : index % 3 === 1 ? 'aspect-square' : 'aspect-[3/4]'}`}
+                    fallbackClassName={`${index % 3 === 1 ? 'aspect-square' : 'aspect-[4/5]'} w-full rounded-2xl`}
+                  />
                   {isMine && (
                     <span className="absolute left-3 top-3 rounded-full bg-[#7c6cf6]/90 px-2 py-0.5 text-[10px] font-medium text-white">我的</span>
                   )}
                 </button>
-                <div className="px-3.5 py-3">
+                <div className="px-1 py-2.5">
+                  <button type="button" onClick={() => setPreview(work)} className="line-clamp-2 w-full text-left text-[14px] font-semibold leading-5 text-[#37335c] hover:text-[#6b5ce7]">
+                    {work.title}
+                  </button>
                   <div className="flex items-center justify-between">
-                    <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="mt-2 flex min-w-0 items-center gap-1.5">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-[10px] font-bold text-white">
                         {author.slice(0, 1)}
                       </span>
-                      <span className="truncate text-xs text-[#8a86ac]">@{author}</span>
+                      <span className="truncate text-[11px] text-[#8a86ac]">{author}</span>
                     </span>
-                    <span className="flex shrink-0 items-center gap-2.5 text-[11px] text-[#a5a1c4]">
+                    <span className="mt-2 flex shrink-0 items-center gap-2.5 text-[11px] text-[#a5a1c4]">
                       <button
                         type="button"
                         onClick={() => void toggleLike(work)}
@@ -354,7 +372,7 @@ export default function GalleryPage() {
                     </span>
                   </div>
                 </div>
-              </div>
+              </article>
             )
           })}
         </div>
@@ -362,22 +380,51 @@ export default function GalleryPage() {
 
       {/* 作品预览弹层 */}
       {preview && (
-        <div className="animate-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-[#3b2f6b]/45 p-6 backdrop-blur-sm" onClick={() => setPreview(null)}>
-          <div className="animate-modal-in flex max-h-full w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
-            <SafeImg src={isServerItem(preview) ? preview.imageUrl : assetUrl(preview.img)} alt={preview.prompt} loading="eager" className="hidden w-1/2 object-cover sm:block" />
-            <div className="flex min-w-0 flex-1 flex-col overflow-y-auto p-6">
-              <h3 className="text-lg font-bold">{isServerItem(preview) ? `${preview.ownerName} 的作品` : preview.title}</h3>
-              <p className="mt-1 text-xs text-[#a5a1c4]">
-                @{isServerItem(preview) ? preview.ownerName : preview.author}
-                {isServerItem(preview) && preview.model ? ` · ${preview.model}` : ''}
-                {!isServerItem(preview) ? ` · ${preview.style}` : ''}
-              </p>
-              <div className="mt-4 rounded-2xl bg-[#faf9fe] p-4">
-                <p className="text-[11px] font-medium uppercase tracking-wider text-[#b3aed0]">提示词</p>
-                <p className="mt-1.5 text-[13px] leading-6 text-[#5b5680]">{preview.prompt}</p>
+        <div className="animate-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm" onClick={() => setPreview(null)}>
+          <div className="animate-modal-in flex h-[min(820px,calc(100vh-32px))] w-full max-w-6xl overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="hidden w-[58%] items-center justify-center bg-[#f7f7f8] p-5 sm:flex">
+              <SafeImg src={isServerItem(preview) ? preview.imageUrl : assetUrl(preview.img)} alt={preview.title} loading="eager" className="max-h-full max-w-full rounded-2xl object-contain" fallbackClassName="h-full w-full rounded-2xl" />
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
+              <div className="flex items-center gap-3 border-b border-[#f1eff6] px-6 py-4">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-sm font-bold text-white">
+                  {(isServerItem(preview) ? preview.ownerName : preview.author).slice(0, 1)}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-[#37335c]">{isServerItem(preview) ? preview.ownerName : preview.author}</p>
+                  <p className="mt-0.5 text-[11px] text-[#a5a1c4]">
+                    {isServerItem(preview) ? formatCommentTime(preview.createdAt) : preview.style}
+                    {isServerItem(preview) && preview.model ? ` · ${preview.model}` : ''}
+                  </p>
+                </div>
+                <button type="button" onClick={() => setPreview(null)} className="flex h-8 w-8 items-center justify-center rounded-full text-xl text-[#a5a1c4] hover:bg-[#f6f4fc] hover:text-[#5b5680]">×</button>
+              </div>
+
+              <div className="p-6 pb-3">
+                <SafeImg src={isServerItem(preview) ? preview.imageUrl : assetUrl(preview.img)} alt={preview.title} loading="eager" className="mb-5 w-full rounded-2xl object-cover sm:hidden" fallbackClassName="mb-5 aspect-[4/5] w-full rounded-2xl sm:hidden" />
+                <h2 className="text-xl font-bold leading-8 text-[#2f2b4c]">{preview.title}</h2>
+                {preview.caption && <p className="mt-3 whitespace-pre-wrap text-[14px] leading-7 text-[#575273]">{preview.caption}</p>}
+
+                <button type="button" onClick={() => setPromptVisible((current) => !current)} className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-[#ded9ef] bg-[#faf9fe] px-4 py-2.5 text-sm font-semibold text-[#6b5ce7] transition hover:border-[#9f94df] hover:bg-[#f5f2ff]">
+                  <IconSparkle className="h-4 w-4" />
+                  {promptVisible ? '收起提示词' : '查看提示词'}
+                </button>
+                {promptVisible && (
+                  <div className="mt-3 rounded-2xl bg-[#f7f5fd] p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[11px] font-semibold tracking-wider text-[#8a82b4]">创作提示词</p>
+                      <button type="button" onClick={() => void copyPrompt(preview)} className="flex items-center gap-1 text-[11px] text-[#7c6cf6] hover:text-[#5f50dc]">
+                        <IconCopy className="h-3.5 w-3.5" />
+                        复制
+                      </button>
+                    </div>
+                    <p className="mt-2 whitespace-pre-wrap break-words text-[13px] leading-6 text-[#5b5680]">{preview.prompt}</p>
+                    <button type="button" onClick={() => useSamePrompt(preview)} className="mt-3 rounded-full bg-[#7c6cf6] px-4 py-2 text-xs font-semibold text-white hover:bg-[#6b5ce7]">用这个提示词画同款</button>
+                  </div>
+                )}
               </div>
               {isServerItem(preview) && (
-                <div className="mt-3 flex items-center gap-4 text-xs text-[#a5a1c4]">
+                <div className="mx-6 flex items-center gap-4 border-y border-[#f1eff6] py-3 text-xs text-[#a5a1c4]">
                   <button type="button" onClick={() => void toggleLike(preview)} className={`flex items-center gap-1.5 transition hover:text-[#f472b6] ${preview.likedByMe ? 'text-[#f472b6]' : ''}`}>
                     <IconHeart className="h-3.5 w-3.5" filled={preview.likedByMe} />
                     {preview.likes.toLocaleString()} 人喜欢
@@ -390,11 +437,12 @@ export default function GalleryPage() {
               )}
 
               {isServerItem(preview) && (
-                <section className="mt-5 border-t border-[#efedf7] pt-4">
+                <section className="px-6 py-5">
                   <h4 className="text-sm font-bold text-[#37335c]">评论 <span className="font-normal text-[#a5a1c4]">{commentTotal}</span></h4>
                   {me ? (
                     <div className="mt-3 rounded-2xl border border-[#e5e1f5] bg-[#faf9fe] p-3 focus-within:border-[#9b8cf8]">
                       <textarea
+                        id="gallery-comment-box"
                         value={commentText}
                         onChange={(event) => setCommentText(event.target.value)}
                         maxLength={200}
@@ -447,15 +495,19 @@ export default function GalleryPage() {
                 </section>
               )}
 
-              <div className="flex gap-2.5 pt-6">
-                <button
-                  type="button"
-                  onClick={() => useSamePrompt(preview)}
-                  className="flex flex-1 items-center justify-center gap-2 rounded-full bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] py-2.5 text-sm font-semibold text-white shadow-md shadow-[#7c6cf6]/25 transition hover:from-[#6b5ce7] hover:to-[#9678f5]"
-                >
-                  <IconSparkle className="h-4 w-4" />
-                  画同款
-                </button>
+              <div className="mt-auto flex gap-2.5 border-t border-[#f1eff6] px-6 py-4">
+                {isServerItem(preview) && (
+                  <>
+                    <button type="button" onClick={() => void toggleLike(preview)} className={`flex items-center gap-1.5 rounded-full border px-4 py-2 text-sm font-medium transition ${preview.likedByMe ? 'border-pink-200 bg-pink-50 text-pink-500' : 'border-[#ded9ef] text-[#6f6a94] hover:border-pink-200 hover:text-pink-500'}`}>
+                      <IconHeart className="h-4 w-4" filled={preview.likedByMe} />
+                      {preview.likedByMe ? '已喜欢' : '喜欢'}
+                    </button>
+                    <button type="button" onClick={() => me ? document.getElementById('gallery-comment-box')?.focus() : navigate('/login')} className="flex items-center gap-1.5 rounded-full border border-[#ded9ef] px-4 py-2 text-sm font-medium text-[#6f6a94] hover:border-[#9f94df] hover:text-[#6b5ce7]">
+                      <IconMessage className="h-4 w-4" />
+                      评论
+                    </button>
+                  </>
+                )}
                 {isServerItem(preview) && myId !== null && preview.ownerId === myId && (
                   <button
                     type="button"
@@ -466,13 +518,7 @@ export default function GalleryPage() {
                     删除
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setPreview(null)}
-                  className="rounded-full border border-[#dcd8f0] px-5 py-2.5 text-sm font-medium text-[#6f6a94] transition hover:border-[#7c6cf6] hover:text-[#7c6cf6]"
-                >
-                  关闭
-                </button>
+                {!isServerItem(preview) && <span className="self-center text-xs text-[#a5a1c4]">示例帖子 · 点击「查看提示词」可复制或画同款</span>}
               </div>
             </div>
           </div>

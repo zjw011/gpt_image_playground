@@ -103,4 +103,36 @@ describe('作品广场持久化', () => {
 
     expect(listComments(result.item.id).total).toBe(0)
   })
+
+  it('发布时保存帖子标题和正文，同时兼容旧客户端', () => {
+    const post = publishWork({
+      ownerId: USER,
+      ownerName: '测试',
+      title: '我的第一篇帖子',
+      caption: '这是创作时想记住的画面故事。',
+      prompt: '森林中的小屋',
+      model: 'm',
+      imageDataUrl: pngDataUrl(),
+    })
+    expect(post.item.title).toBe('我的第一篇帖子')
+    expect(post.item.caption).toBe('这是创作时想记住的画面故事。')
+
+    initGalleryComments(dir)
+    initGallery(dir)
+    const restored = listWorks(null).find((item) => item.id === post.item.id)
+    expect(restored).toMatchObject({ title: '我的第一篇帖子', caption: '这是创作时想记住的画面故事。' })
+  })
+
+  it('旧客户端没有传标题时从提示词生成兼容标题', () => {
+    const result = publishWork({ ownerId: USER, ownerName: '测试', prompt: '月光下的雪山', model: 'm', imageDataUrl: pngDataUrl() })
+    expect(result.item.title).toBe('月光下的雪山')
+    expect(result.item.caption).toBe('')
+  })
+
+  it('拒绝超长发布文案、HTML 和网址链接', () => {
+    const base = { ownerId: USER, ownerName: '测试', prompt: 'x', model: 'm', imageDataUrl: pngDataUrl() }
+    expect(publishWork({ ...base, title: '甲'.repeat(61) }).ok).toBe(false)
+    expect(publishWork({ ...base, title: '标题', caption: '<b>广告</b>' }).ok).toBe(false)
+    expect(publishWork({ ...base, title: '标题', caption: '看 https://example.com' }).ok).toBe(false)
+  })
 })
