@@ -380,6 +380,19 @@ describe('mask draft lifecycle in store actions', () => {
     expect(useStore.getState().prompt).not.toContain('专业电商主图设计')
   })
 
+  it('Live 工具提交时追加微动作一致性约束', async () => {
+    await submitTask({ professionalPreset: 'live-blink' })
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+
+    expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: expect.stringContaining('只允许自然眨眼'),
+    }))
+    expect(useStore.getState().tasks[0]).toMatchObject({
+      prompt: 'prompt',
+      professionalPreset: 'live-blink',
+    })
+  })
+
   it('默认提交后清空提示词，但保留参考图供连续改图', async () => {
     useStore.setState({ inputImages: [imageA] })
 

@@ -113,6 +113,9 @@ try {
   const ecommerceTool = await click('main a[href="/tools?tool=ecommerce"]')
   const ecommerceReady = await evaluate('document.querySelector("input[type=file][accept=\\"image/*\\"]") !== null && document.body.innerText.includes("选择方案")')
   report('专业工具 · 电商设计工作台可用', ecommerceTool === 'clicked' && (await currentUrl()) === '/tools?tool=ecommerce' && ecommerceReady, await currentUrl())
+  await open('/tools?tool=live', 1600)
+  const liveReady = await evaluate('document.querySelector("input[type=file][accept=\\"image/*\\"]") !== null && document.body.innerText.includes("AI 关键帧") && document.body.innerText.includes("自然眨眼")')
+  report('专业工具 · Live 使用 AI 连续帧', (await currentUrl()) === '/tools?tool=live' && liveReady, await currentUrl())
 
   // 个人中心不能再出现"第二列菜单"：分区入口只归左侧主导航。
   // 这是用户报过的原话——「里面怎么又内嵌一个菜单栏」。

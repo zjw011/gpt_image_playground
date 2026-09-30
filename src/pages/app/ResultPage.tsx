@@ -1,5 +1,5 @@
 // 生成结果页。对应设计稿 6：大图展示 + 底部缩略图条 + 右侧操作栏。
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore, submitTask, reuseConfig, removeTask } from '../../store'
 import AppShell from './AppShell'
@@ -7,6 +7,8 @@ import GeneratingQuote from '../../components/GeneratingQuote'
 import { useFullImage, useThumbnail } from './useTaskImage'
 import { useCreditsStore } from '../../lib/creditsStore'
 import { getImage } from '../../lib/db'
+import { createLiveFrameSequence, exportLiveFrames } from '../../lib/livePhoto'
+import { isLiveProfessionalPreset } from '../../lib/professionalTools'
 import { isBackendMode, getBackendUser } from '../../lib/backend'
 import { publishWork } from '../../lib/galleryApi'
 import {
@@ -51,11 +53,39 @@ export default function ResultPage() {
   const [publishOpen, setPublishOpen] = useState(false)
   const [publishTitle, setPublishTitle] = useState('')
   const [publishCaption, setPublishCaption] = useState('')
+  const [liveFrames, setLiveFrames] = useState<string[]>([])
+  const [liveFrameIndex, setLiveFrameIndex] = useState(0)
+  const [exportingLive, setExportingLive] = useState(false)
   const lastLuckyAt = useCreditsStore((s) => s.lastLuckyAt)
   const imageId = activeImageId && task?.outputImages.includes(activeImageId)
     ? activeImageId
     : task?.outputImages[0] ?? null
   const fullSrc = useFullImage(imageId)
+  const liveTask = isLiveProfessionalPreset(task?.professionalPreset)
+  const outputKey = task?.outputImages.join('|') ?? ''
+
+  useEffect(() => {
+    let alive = true
+    setLiveFrames([])
+    setLiveFrameIndex(0)
+    if (!liveTask || task?.status !== 'done' || task.outputImages.length < 2) return
+    void Promise.all(task.outputImages.map((id) => getImage(id))).then((images) => {
+      if (!alive) return
+      setLiveFrames(images.flatMap((image) => image?.dataUrl ? [image.dataUrl] : []))
+    }).catch((err) => console.warn('读取 Live 连续帧失败', err))
+    return () => { alive = false }
+  }, [liveTask, task?.id, task?.status, outputKey])
+
+  useEffect(() => {
+    const sequence = createLiveFrameSequence(liveFrames.length)
+    if (sequence.length < 2) return
+    let idx = 0
+    const timer = window.setInterval(() => {
+      idx = (idx + 1) % sequence.length
+      setLiveFrameIndex(sequence[idx])
+    }, 210)
+    return () => window.clearInterval(timer)
+  }, [liveFrames.length])
 
   if (!task) {
     return (
@@ -81,7 +111,25 @@ export default function ResultPage() {
       ? '绘图渠道不接受当前尺寸参数。系统已自动改用标准 1:1 尺寸，重新生成即可。'
       : '系统已尝试可用渠道但仍未生成图片，本次失败不会扣除积分。'
 
-  const download = () => {
+  const download = async () => {
+    if (liveTask && liveFrames.length > 1) {
+      setExportingLive(true)
+      try {
+        const blob = await exportLiveFrames(liveFrames)
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = `绘想-Live-${task.id}.webm`
+        link.click()
+        window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
+        showToast('Live 实况视频已导出', 'success')
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'Live 实况视频导出失败', 'error')
+      } finally {
+        setExportingLive(false)
+      }
+      return
+    }
     if (!fullSrc) return
     const link = document.createElement('a')
     link.href = fullSrc
@@ -159,7 +207,7 @@ export default function ResultPage() {
   }
 
   const ACTIONS: Array<{ icon: (props: { className?: string }) => React.ReactElement, label: string, onClick: () => void, disabled?: boolean, danger?: boolean }> = [
-    { icon: IconDownload, label: '下载', onClick: download, disabled: !fullSrc },
+    { icon: IconDownload, label: liveTask ? exportingLive ? '导出中' : '下载 Live' : '下载', onClick: () => void download(), disabled: liveTask ? liveFrames.length < 2 || exportingLive : !fullSrc },
     { icon: IconHeart, label: '收藏', onClick: () => openFavoritePicker([task.id]) },
     ...(canPublish
       ? [{
@@ -241,6 +289,13 @@ export default function ResultPage() {
                   >
                     重新生成
                   </button>
+                </div>
+              ) : liveTask && liveFrames.length > 1 ? (
+                <div className="relative flex h-[62vh] max-h-[720px] w-full items-center justify-center overflow-hidden rounded-2xl bg-[#111] shadow-lg">
+                  {liveFrames.map((src, idx) => (
+                    <img key={idx} src={src} alt={`Live 连续帧 ${idx + 1}`} className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-200 ${idx === liveFrameIndex ? 'opacity-100' : 'opacity-0'}`} />
+                  ))}
+                  <span className="absolute left-4 top-4 rounded-full bg-black/55 px-3 py-1.5 text-[11px] font-semibold text-white backdrop-blur">LIVE · {liveFrames.length} AI 关键帧</span>
                 </div>
               ) : fullSrc ? (
                 <img src={fullSrc} alt={task.prompt} className="max-h-[62vh] rounded-2xl object-contain shadow-lg" />

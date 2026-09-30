@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { getLiveMotionFrame } from './livePhoto'
+import { createLiveFrameSequence } from './livePhoto'
 
-describe('getLiveMotionFrame', () => {
-  it('缩放模式随进度推进', () => {
-    expect(getLiveMotionFrame(1, 'slow-zoom').scale).toBeGreaterThan(getLiveMotionFrame(0, 'slow-zoom').scale)
+describe('createLiveFrameSequence', () => {
+  it('让 AI 关键帧往返播放，避免结尾突然跳回开头', () => {
+    expect(createLiveFrameSequence(6)).toEqual([0, 1, 2, 3, 4, 5, 4, 3, 2, 1])
   })
 
-  it('平移模式限制输入进度', () => {
-    expect(getLiveMotionFrame(-1, 'horizontal-pan').x).toBeCloseTo(-0.04)
-    expect(getLiveMotionFrame(2, 'horizontal-pan').x).toBeCloseTo(0.04)
+  it('没有足够帧时安全回落到首帧', () => {
+    expect(createLiveFrameSequence(0)).toEqual([0])
+    expect(createLiveFrameSequence(1)).toEqual([0])
   })
 })

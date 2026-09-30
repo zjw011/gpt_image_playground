@@ -3,11 +3,10 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { getCreditsConfig } from '../../lib/backend'
 import { assetUrl } from '../../lib/assetUrl'
 import { useCreditsStore } from '../../lib/creditsStore'
-import { fileToDataUrl } from '../../lib/dataUrl'
-import { exportLivePhoto, type LiveMotion } from '../../lib/livePhoto'
+import { getOutputImageLimitForSettings } from '../../lib/paramCompatibility'
 import type { ProfessionalPresetKey } from '../../lib/professionalTools'
 import { addImageFromFile, submitTask, useStore } from '../../store'
-import { IconArrowLeft, IconArrowRight, IconDownload, IconMinus, IconPlus, IconSparkle, IconUpload } from '../icons'
+import { IconArrowLeft, IconArrowRight, IconMinus, IconPlus, IconSparkle, IconUpload } from '../icons'
 import AppShell from './AppShell'
 
 type ToolKey = 'ecommerce' | 'product-suite' | 'live'
@@ -15,7 +14,7 @@ type ToolKey = 'ecommerce' | 'product-suite' | 'live'
 const TOOLS: Array<{ key: ToolKey, title: string, eyebrow: string, description: string, image: string }> = [
   { key: 'ecommerce', title: '电商设计', eyebrow: '单图精修', description: '上传商品图，生成适合详情页、海报和营销场景的成品。', image: '/art/recharge-cat.jpg' },
   { key: 'product-suite', title: '商品电商套图', eyebrow: '批量出图', description: '围绕同一商品，一次生成视觉统一的成套电商素材。', image: '/art/work-sakura.jpg' },
-  { key: 'live', title: 'Live 实况图', eyebrow: '本地视频', description: '让静态图片产生自然运镜，导出可直接使用的 WebM 短视频。', image: '/art/work-seaside.jpg' },
+  { key: 'live', title: 'Live 实况图', eyebrow: 'AI 连续帧', description: '用 AI 生成高度一致的微动作关键帧，合成类似手机实况照片的短动图。', image: '/art/work-seaside.jpg' },
 ]
 
 const RATIOS = [
@@ -140,59 +139,71 @@ function ProductImageEditor({ tool }: { tool: Exclude<ToolKey, 'live'> }) {
 }
 
 function LiveEditor() {
+  const navigate = useNavigate()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const inputImages = useStore((s) => s.inputImages)
+  const clearInputImages = useStore((s) => s.clearInputImages)
+  const setPrompt = useStore((s) => s.setPrompt)
+  const params = useStore((s) => s.params)
+  const setParams = useStore((s) => s.setParams)
+  const settings = useStore((s) => s.settings)
   const showToast = useStore((s) => s.showToast)
-  const [image, setImage] = useState('')
-  const [motion, setMotion] = useState<LiveMotion>('slow-zoom')
-  const [duration, setDuration] = useState(5)
-  const [exporting, setExporting] = useState(false)
-  const motions: Array<{ key: LiveMotion, label: string, description: string }> = [
-    { key: 'slow-zoom', label: '缓慢推进', description: '轻柔放大，突出主体' },
-    { key: 'horizontal-pan', label: '横向运镜', description: '从左到右平稳移动' },
-    { key: 'gentle-float', label: '自然漂浮', description: '模拟轻微手持呼吸感' },
+  const credits = getCreditsConfig()
+  const view = useCreditsStore((s) => s.view)
+  const maxFrames = Math.min(8, getOutputImageLimitForSettings(settings))
+  const frameOptions = [6, 8].filter((count) => count <= maxFrames)
+  if (frameOptions.length === 0) frameOptions.push(maxFrames)
+  const [motion, setMotion] = useState<ProfessionalPresetKey>('live-blink')
+  const [frameCount, setFrameCount] = useState(frameOptions[frameOptions.length - 1])
+  const [description, setDescription] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const motions: Array<{ key: ProfessionalPresetKey, label: string, description: string }> = [
+    { key: 'live-blink', label: '自然眨眼', description: '眼神和眼睑发生极轻微变化' },
+    { key: 'live-breeze', label: '微风轻动', description: '发梢、衣角或植物轻轻摆动' },
+    { key: 'live-breath', label: '呼吸起伏', description: '肩颈出现细微自然呼吸变化' },
   ]
+  const currentRatio = RATIOS.find((ratio) => ratio.size === params.size)?.label ?? '1:1'
+  const cost = credits ? credits.costPerImage * frameCount : 0
 
   const upload = async (files: FileList | null) => {
     const file = files?.[0]
     if (!file) return
-    setImage(await fileToDataUrl(file))
+    clearInputImages()
+    await addImageFromFile(file)
   }
 
-  const download = async () => {
-    if (!image) {
-      showToast('请先上传一张图片', 'error')
+  const generate = async () => {
+    if (inputImages.length === 0) {
+      showToast('请先上传一张实况参考图', 'error')
       return
     }
-    setExporting(true)
+    setSubmitting(true)
+    setPrompt(description.trim() || '保持原图人物与场景完全一致，只生成自然、克制、连续的轻微动态变化')
+    setParams({ n: frameCount })
     try {
-      const blob = await exportLivePhoto(image, motion, duration)
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = `live-${Date.now()}.webm`
-      link.click()
-      setTimeout(() => URL.revokeObjectURL(url), 1_000)
-      showToast('Live 视频已导出', 'success')
-    } catch (err) {
-      console.error(err)
-      showToast('当前浏览器无法导出视频，请使用最新版 Chrome', 'error')
+      if (!await submitTask({ professionalPreset: motion })) return
+      navigate('/result')
     } finally {
-      setExporting(false)
+      setSubmitting(false)
     }
   }
 
   return (
     <section className="overflow-hidden rounded-[28px] border border-[#e7e3f7] bg-gradient-to-br from-white via-[#fbfaff] to-[#efedff] p-5 shadow-sm sm:p-7">
-      <div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="text-2xl font-bold text-[#292650]">Live 实况图</h2><p className="mt-2 text-sm text-[#817b9f]">在浏览器本地为静态图片添加自然运镜，导出 WebM 短视频。</p></div><span className="rounded-full bg-[#eafaf3] px-3 py-1.5 text-xs font-semibold text-[#23865e]">本地处理 · 不扣积分</span></div>
-      <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_360px]">
+      <div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="text-2xl font-bold text-[#292650]">Live 实况图</h2><p className="mt-2 text-sm text-[#817b9f]">AI 以原图生成 6–8 张高一致性微动作关键帧，结果页自动补帧播放并可下载短视频。</p></div><span className="rounded-full bg-[#fff6e5] px-3 py-1.5 text-xs font-semibold text-[#b67922]">AI 连续帧 · {frameCount} 张</span></div>
+      <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_380px]">
         <button type="button" onClick={() => fileInputRef.current?.click()} className="relative flex min-h-[480px] items-center justify-center overflow-hidden rounded-3xl border-2 border-dashed border-[#d9d4ef] bg-[#f7f6fd]">
-          {image ? <img src={image} alt="Live 预览" className={`h-full min-h-[480px] w-full object-cover live-${motion}`} style={{ animationDuration: `${duration}s` }} /> : <span className="flex flex-col items-center gap-3 text-[#8d86aa]"><span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-[#6b5ce7] shadow-sm"><IconUpload className="h-7 w-7" /></span><span className="text-sm font-semibold">上传一张图片开始制作</span><span className="text-xs text-[#aaa5bf]">建议使用主体清晰的竖图或横图</span></span>}
-          {image && <span className="absolute bottom-4 right-4 rounded-full bg-black/55 px-3 py-1.5 text-xs font-medium text-white backdrop-blur">点击更换图片</span>}
+          {inputImages[0] ? <img src={inputImages[0].dataUrl} alt="Live 参考图" className="h-full min-h-[480px] w-full object-contain" /> : <span className="flex flex-col items-center gap-3 text-[#8d86aa]"><span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-[#6b5ce7] shadow-sm"><IconUpload className="h-7 w-7" /></span><span className="text-sm font-semibold">上传一张图片开始制作</span><span className="text-xs text-[#aaa5bf]">人物、宠物或轻微环境动态效果更自然</span></span>}
+          {inputImages[0] && <span className="absolute bottom-4 right-4 rounded-full bg-black/55 px-3 py-1.5 text-xs font-medium text-white backdrop-blur">点击更换图片</span>}
         </button>
         <div className="flex flex-col rounded-3xl border border-[#e5e1f3] bg-white p-5">
-          <h3 className="text-sm font-bold text-[#35315d]">运镜效果</h3><div className="mt-3 space-y-2">{motions.map((item) => <button key={item.key} type="button" onClick={() => setMotion(item.key)} className={`w-full rounded-2xl border-2 p-4 text-left transition ${motion === item.key ? 'border-[#8c7cf7] bg-[#f3f1ff]' : 'border-[#ebe8f4] hover:border-[#c6bff5]'}`}><span className={`text-sm font-bold ${motion === item.key ? 'text-[#6b5ce7]' : 'text-[#423d63]'}`}>{item.label}</span><span className="mt-1 block text-[11px] text-[#918cae]">{item.description}</span></button>)}</div>
-          <h3 className="mt-6 text-sm font-bold text-[#35315d]">视频时长</h3><div className="mt-3 grid grid-cols-3 gap-2">{[3, 5, 8].map((seconds) => <button key={seconds} type="button" onClick={() => setDuration(seconds)} className={`rounded-xl py-2.5 text-xs font-semibold transition ${duration === seconds ? 'bg-[#7867f5] text-white' : 'bg-[#f5f3fb] text-[#77718f] hover:bg-[#ece9fc]'}`}>{seconds} 秒</button>)}</div>
-          <button type="button" disabled={exporting} onClick={() => void download()} className="mt-auto flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#7462f3] to-[#9b76f6] px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-[#7867f5]/25 transition disabled:cursor-wait disabled:opacity-60"><IconDownload className="h-4 w-4" />{exporting ? '正在导出…' : '导出 Live 视频'}</button>
+          <h3 className="text-sm font-bold text-[#35315d]">轻微动态</h3><div className="mt-3 space-y-2">{motions.map((item) => <button key={item.key} type="button" onClick={() => setMotion(item.key)} className={`w-full rounded-2xl border-2 p-4 text-left transition ${motion === item.key ? 'border-[#8c7cf7] bg-[#f3f1ff]' : 'border-[#ebe8f4] hover:border-[#c6bff5]'}`}><span className={`text-sm font-bold ${motion === item.key ? 'text-[#6b5ce7]' : 'text-[#423d63]'}`}>{item.label}</span><span className="mt-1 block text-[11px] text-[#918cae]">{item.description}</span></button>)}</div>
+          <h3 className="mt-5 text-sm font-bold text-[#35315d]">AI 关键帧</h3><div className="mt-3 grid grid-cols-2 gap-2">{frameOptions.map((count) => <button key={count} type="button" onClick={() => setFrameCount(count)} className={`rounded-xl py-2.5 text-xs font-semibold transition ${frameCount === count ? 'bg-[#7867f5] text-white' : 'bg-[#f5f3fb] text-[#77718f] hover:bg-[#ece9fc]'}`}>{count} 张{count === 8 ? ' · 更自然' : ' · 更省积分'}</button>)}</div>
+          <h3 className="mt-5 text-sm font-bold text-[#35315d]">画面比例</h3><div className="mt-3 flex flex-wrap gap-2">{RATIOS.map((ratio) => <button key={ratio.label} type="button" onClick={() => setParams({ size: ratio.size })} className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${currentRatio === ratio.label ? 'bg-[#efedfd] text-[#6b5ce7] ring-1 ring-[#8c7cf7]' : 'bg-[#f7f6fc] text-[#77718f] hover:bg-[#efedfd]'}`}>{ratio.label}</button>)}</div>
+          <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} placeholder="可选：补充希望发生的极轻微动作" className="mt-5 w-full resize-none rounded-2xl border border-[#e4e0f2] bg-white p-3.5 text-sm leading-6 text-[#37335c] outline-none placeholder:text-[#aaa5bf] focus:border-[#9588f5]" />
+          <p className="mt-3 text-[11px] leading-5 text-[#aaa5bf]">生成的是 AI 关键帧；完成后会按往返顺序补成约 2–3 秒的短实况效果。主体一致性取决于当前绘图模型。</p>
+          <button type="button" disabled={submitting} onClick={() => void generate()} className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#7462f3] to-[#9b76f6] px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-[#7867f5]/25 transition disabled:cursor-wait disabled:opacity-60"><IconSparkle className="h-4 w-4" />{submitting ? '正在提交…' : `生成 Live 实况${credits ? ` · ${cost} 积分` : ''}`}</button>
+          {credits && <p className="mt-2 text-center text-[11px] text-[#aaa5bf]">剩余 {view?.available ?? 0} 积分 · 按本次提交帧数计费 · 失败自动退分</p>}
           <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(event) => { void upload(event.target.files); event.target.value = '' }} />
         </div>
       </div>

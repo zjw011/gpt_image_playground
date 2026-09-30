@@ -27,6 +27,18 @@ export const PROFESSIONAL_PRESETS = [
     key: 'product-suite-premium',
     prompt: '围绕参考商品生成一组高端品牌套图，每张图保持商品外形、材质、颜色、品牌标识和包装文字一致，统一高级配色与灯光，包含主视觉、氛围场景和材质特写，杂志广告级品质，不添加不存在的配件',
   },
+  {
+    key: 'live-blink',
+    prompt: '基于参考图生成实况照片连续帧中的一帧。人物身份、脸型、五官、发型、服装、姿势、构图、镜头、背景、光线和色彩必须与参考图高度一致，只允许自然眨眼和极轻微的眼神变化，动作幅度极小，不改变人物身份，不改变画面内容，不新增或删除任何物体，不切换视角，不重构背景',
+  },
+  {
+    key: 'live-breeze',
+    prompt: '基于参考图生成实况照片连续帧中的一帧。人物身份、脸型、五官、发型、服装、姿势、构图、镜头、背景、光线和色彩必须与参考图高度一致，只允许发梢、衣角或周围细小植物被微风轻轻带动，动作幅度极小，不改变人物身份，不改变画面内容，不新增或删除任何物体，不切换视角，不重构背景',
+  },
+  {
+    key: 'live-breath',
+    prompt: '基于参考图生成实况照片连续帧中的一帧。人物身份、脸型、五官、发型、服装、姿势、构图、镜头、背景、光线和色彩必须与参考图高度一致，只允许肩颈和胸口出现几乎不可察觉的自然呼吸变化，动作幅度极小，不改变人物身份，不改变画面内容，不新增或删除任何物体，不切换视角，不重构背景',
+  },
 ] as const
 
 export type ProfessionalPresetKey = (typeof PROFESSIONAL_PRESETS)[number]['key']
@@ -36,4 +48,8 @@ export function appendProfessionalPreset(prompt: string, key?: string): string {
   const preset = PROFESSIONAL_PRESETS.find((item) => item.key === key)
   if (!preset) return base
   return base ? `${base}，${preset.prompt}` : preset.prompt
+}
+
+export function isLiveProfessionalPreset(key?: string): boolean {
+  return key === 'live-blink' || key === 'live-breeze' || key === 'live-breath'
 }
