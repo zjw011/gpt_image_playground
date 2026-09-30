@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { initCards } from './cards.mjs'
-import { addCredits, getBalance, getReserved, initCredits, resetReservations } from './credits.mjs'
+import { addCredits, getBalance, getReserved, initCredits, resetReservations, userCreditsView } from './credits.mjs'
 import { sendError } from './http.mjs'
 import { handleGuestRoute } from './guestRoutes.mjs'
 import { generationGate } from './generationGate.mjs'
@@ -428,6 +428,13 @@ describe('按张扣费', () => {
     expect(response.headers.get('x-credits-lucky')).toBe('1')
     expect(response.headers.get('x-credits-charged')).toBeNull()
     expect(getBalance(USER_ID)).toBe(100)
+    expect(userCreditsView(USER_ID).ledger[0]).toMatchObject({
+      type: 'lucky',
+      amount: 0,
+      balanceAfter: 100,
+      ref: 'ch-1',
+    })
+    expect(userCreditsView(USER_ID).ledger[0].note).toContain('出图 2 张')
   })
 
   it('幸运免单未命中：正常扣费，不带 lucky 头', async () => {

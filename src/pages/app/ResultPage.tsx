@@ -92,7 +92,7 @@ export default function ResultPage() {
   const regenerate = async () => {
     await reuseConfig(task)
     // 提交失败（渠道没了之类）就留在当前这件作品上，别把 task 参数清掉
-    if (!await submitTask({ stylePreset: task.stylePreset })) return
+    if (!await submitTask({ stylePreset: task.stylePreset, professionalPreset: task.professionalPreset })) return
     // 清掉 task 参数：新任务进来后自动显示最新那张
     navigate('/result', { replace: true })
   }

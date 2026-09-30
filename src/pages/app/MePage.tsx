@@ -1,8 +1,9 @@
 // 个人中心。左侧导航承担分区入口（作品/积分中心/账号设置）；
 // 「我的收藏」不单独占一栏——收藏就是打了星标的作品，在「我的作品」里用页签切换查看。
 import { useEffect, useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useStore } from '../../store'
+import type { TaskRecord } from '../../types'
 import { fetchCredits, getBackendUser, getCreditsConfig, getInviteInfo, submitFrontLogout, type BackendLedgerType } from '../../lib/backend'
 import { copyTextToClipboard } from '../../lib/clipboard'
 import { useCreditsStore } from '../../lib/creditsStore'
@@ -25,19 +26,49 @@ const LEDGER_LABELS: Record<BackendLedgerType, string> = {
   refund: '失败退款',
   admin: '管理员调整',
   referral: '邀请奖励',
+  lucky: '幸运免单',
 }
 
-function WorkThumb({ imageId, taskId, favorite }: { imageId: string, taskId: string, favorite?: boolean }) {
-  const src = useThumbnail(imageId)
+function formatElapsed(ms: number) {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const minutes = Math.floor(total / 60)
+  const seconds = String(total % 60).padStart(2, '0')
+  return `${minutes}:${seconds}`
+}
+
+function WorkCard({ task, streamPreview }: { task: TaskRecord, streamPreview?: string }) {
+  const src = useThumbnail(task.outputImages[0])
+  const [now, setNow] = useState(Date.now())
+
+  useEffect(() => {
+    if (task.status !== 'running') return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [task.status])
+
   return (
     <Link
-      to={`/result?task=${taskId}`}
+      to={`/result?task=${task.id}`}
       className="group relative aspect-square overflow-hidden rounded-2xl border border-[#eceaf6] bg-[#faf9fe]"
     >
-      {src
+      {task.status === 'running' ? (
+        <>
+          {streamPreview && <img src={streamPreview} alt="生成中的预览" className="absolute inset-0 h-full w-full object-cover opacity-55 blur-[1px]" />}
+          <span className="absolute inset-0 bg-gradient-to-br from-[#f6f3ff]/95 via-[#eeeaff]/85 to-[#e4efff]/90" />
+          <span className="relative flex h-full flex-col items-center justify-center px-4 text-center">
+            <span className="relative flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-white shadow-lg shadow-[#7c6cf6]/25">
+              <span className="absolute inset-0 animate-ping rounded-2xl bg-[#7c6cf6]/20" />
+              <IconSparkle className="relative h-5 w-5 animate-pulse" />
+            </span>
+            <strong className="mt-4 text-sm text-[#554c9d]">生成中</strong>
+            <span className="mt-1 text-[11px] font-medium text-[#8d85bd]">已等待 {formatElapsed(now - task.createdAt)}</span>
+            <span className="mt-2 line-clamp-2 text-[11px] leading-4 text-[#8f89aa]">{task.prompt}</span>
+          </span>
+        </>
+      ) : src
         ? <img src={src} alt="" className="h-full w-full object-cover transition duration-300 group-hover:scale-105" />
         : <span className="flex h-full w-full items-center justify-center text-[#d8d4ec]"><IconImage className="h-7 w-7" /></span>}
-      {favorite && (
+      {task.isFavorite && task.status === 'done' && (
         <span
           className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-white/90 shadow-sm ring-1 ring-[#f3d9a4]"
           title="已收藏"
@@ -78,6 +109,7 @@ function OrderNote() {
 export default function MePage() {
   const [searchParams] = useSearchParams()
   const tasks = useStore((s) => s.tasks)
+  const streamPreviews = useStore((s) => s.streamPreviews)
   const showToast = useStore((s) => s.showToast)
   const user = getBackendUser()
   const credits = getCreditsConfig()
@@ -89,7 +121,8 @@ export default function MePage() {
   const tab: MenuKey = (MENU.some((item) => item.key === rawTab) ? rawTab : 'works') as MenuKey
   const favOnly = rawTab === 'favorites' || searchParams.get('fav') === '1'
   const name = user?.displayName || user?.username || '本地创作者'
-  const doneTasks = tasks.filter((task) => task.status === 'done' && task.outputImages.length > 0)
+  const doneCount = tasks.filter((task) => task.status === 'done' && task.outputImages.length > 0).length
+  const workTasks = tasks.filter((task) => task.status === 'running' || (task.status === 'done' && task.outputImages.length > 0))
   const favoriteTasks = tasks.filter((task) => task.isFavorite)
 
   const logout = async () => {
@@ -113,7 +146,7 @@ export default function MePage() {
     : ''
 
   const isWorks = tab === 'works'
-  const gridTasks = isWorks ? (favOnly ? favoriteTasks : doneTasks) : doneTasks
+  const gridTasks = isWorks ? (favOnly ? favoriteTasks : workTasks) : workTasks
   const currentLabel = MENU.find((item) => item.key === tab)?.label ?? '我的作品'
 
   // 生图回执只同步余额，不带整本流水；进入积分中心时主动拉一次，
@@ -143,7 +176,7 @@ export default function MePage() {
         </div>
         <div className="ml-auto flex gap-8 pr-2 text-center">
           <div>
-            <p className="text-2xl font-bold">{doneTasks.length}</p>
+            <p className="text-2xl font-bold">{doneCount}</p>
             <p className="mt-0.5 text-xs text-[#a5a1c4]">作品</p>
           </div>
           {credits && (
@@ -169,7 +202,7 @@ export default function MePage() {
             {/* 全部 / 收藏 页签：收藏就是打了星标的作品，不再单独占一个侧栏入口 */}
             <div className="flex gap-1 rounded-full border border-[#eceaf6] bg-white p-1 w-fit">
               {([
-                { key: 'all', label: `全部 ${doneTasks.length}` },
+                { key: 'all', label: `全部 ${workTasks.length}` },
                 { key: 'fav', label: `收藏 ${favoriteTasks.length}` },
               ]).map((item) => {
                 const active = (item.key === 'fav') === favOnly
@@ -195,7 +228,7 @@ export default function MePage() {
               <>
               <div className="mt-4 grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-4">
                 {gridTasks.slice(0, visibleCount).map((task) => (
-                  <WorkThumb key={task.id} imageId={task.outputImages[0]} taskId={task.id} favorite={task.isFavorite} />
+                  <WorkCard key={task.id} task={task} streamPreview={streamPreviews[task.id]} />
                 ))}
               </div>
               {gridTasks.length > visibleCount && (

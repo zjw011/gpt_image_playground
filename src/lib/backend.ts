@@ -88,7 +88,7 @@ export interface BackendCreditsConfig {
   packs: BackendCreditPack[]
 }
 
-export type BackendLedgerType = 'signup' | 'redeem' | 'spend' | 'refund' | 'admin' | 'referral'
+export type BackendLedgerType = 'signup' | 'redeem' | 'spend' | 'refund' | 'admin' | 'referral' | 'lucky'
 
 export interface BackendLedgerEntry {
   at: number
@@ -334,7 +334,7 @@ function toSignedInt(value: unknown) {
 
 function normalizeLedger(input: unknown): BackendLedgerEntry[] {
   if (!Array.isArray(input)) return []
-  const types = new Set<BackendLedgerType>(['signup', 'redeem', 'spend', 'refund', 'admin', 'referral'])
+  const types = new Set<BackendLedgerType>(['signup', 'redeem', 'spend', 'refund', 'admin', 'referral', 'lucky'])
   return input.filter(isRecord).map((entry) => ({
     at: toCount(entry.at),
     type: types.has(entry.type as BackendLedgerType) ? entry.type as BackendLedgerType : 'admin',

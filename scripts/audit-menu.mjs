@@ -108,9 +108,11 @@ try {
   report('侧栏 Logo 留在应用内', (await currentUrl()) === '/studio', await currentUrl())
 
   await open('/tools', 2000)
-  const inpaintTool = await click('main a[href="/studio?mode=inpaint"]')
-  const inpaintActive = await evaluate('Array.from(document.querySelectorAll("button")).some((button) => button.innerText.includes("局部重绘") && button.getAttribute("aria-pressed") === "true")')
-  report('专业工具 · 局部重绘直达创作模式', inpaintTool === 'clicked' && (await currentUrl()) === '/studio?mode=inpaint' && inpaintActive, await currentUrl())
+  const toolLinks = await evaluate('Array.from(document.querySelectorAll("main a[href^=\\"/tools?tool=\\"]")).map((el) => el.getAttribute("href"))')
+  report('专业工具 · 三个真实功能入口', JSON.stringify(toolLinks) === JSON.stringify(['/tools?tool=ecommerce', '/tools?tool=product-suite', '/tools?tool=live']), JSON.stringify(toolLinks))
+  const ecommerceTool = await click('main a[href="/tools?tool=ecommerce"]')
+  const ecommerceReady = await evaluate('document.querySelector("input[type=file][accept=\\"image/*\\"]") !== null && document.body.innerText.includes("选择方案")')
+  report('专业工具 · 电商设计工作台可用', ecommerceTool === 'clicked' && (await currentUrl()) === '/tools?tool=ecommerce' && ecommerceReady, await currentUrl())
 
   // 个人中心不能再出现"第二列菜单"：分区入口只归左侧主导航。
   // 这是用户报过的原话——「里面怎么又内嵌一个菜单栏」。

@@ -32,8 +32,10 @@ const MAX_AMOUNT = 100_000_000
  * - spend   出图扣费
  * - refund  出图失败退回
  * - admin   管理员人工调整（可正可负）
+ * - referral 邀请奖励
+ * - lucky    幸运免单（0 积分流水）
  */
-export const LEDGER_TYPES = new Set(['signup', 'redeem', 'spend', 'refund', 'admin', 'referral'])
+export const LEDGER_TYPES = new Set(['signup', 'redeem', 'spend', 'refund', 'admin', 'referral', 'lucky'])
 
 let creditsFile = ''
 let cache = null
@@ -263,6 +265,29 @@ export function spendCredits(userId, amount, options = {}) {
 /** 出图失败时把预扣的原路退回。走 addCredits 的 refund 分支。 */
 export function refundCredits(userId, amount, options = {}) {
   return addCredits(userId, amount, { ...options, type: 'refund' })
+}
+
+/** 幸运免单不改变余额，但要留下可核对的 0 积分流水，并计入出图张数。 */
+export function recordLuckyFree(userId, options = {}) {
+  if (!userId) return { ok: false, balance: 0 }
+
+  const at = options.at ?? Date.now()
+  const account = ensureAccount(userId)
+  account.updatedAt = at
+  const day = touchDay(at)
+  day.images += toInt(options.images, 1)
+
+  pushLedger({
+    at,
+    userId,
+    type: 'lucky',
+    amount: 0,
+    balanceAfter: account.balance,
+    ref: String(options.ref ?? ''),
+    note: String(options.note ?? '幸运免单'),
+  })
+  commit(at)
+  return { ok: true, balance: account.balance }
 }
 
 /**

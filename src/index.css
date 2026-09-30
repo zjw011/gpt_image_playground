@@ -486,3 +486,31 @@ input[type="number"] {
   isolation: isolate;
   -webkit-mask-image: -webkit-radial-gradient(white, black);
 }
+
+@keyframes live-slow-zoom {
+  from { transform: scale(1.02); }
+  to { transform: scale(1.11); }
+}
+
+@keyframes live-horizontal-pan {
+  from { transform: scale(1.09) translateX(-3.5%); }
+  to { transform: scale(1.09) translateX(3.5%); }
+}
+
+@keyframes live-gentle-float {
+  0%, 100% { transform: scale(1.055) translateY(0); }
+  50% { transform: scale(1.075) translateY(-1.2%); }
+}
+
+.live-slow-zoom,
+.live-horizontal-pan,
+.live-gentle-float {
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
+  will-change: transform;
+}
+
+.live-slow-zoom { animation-name: live-slow-zoom; }
+.live-horizontal-pan { animation-name: live-horizontal-pan; }
+.live-gentle-float { animation-name: live-gentle-float; }

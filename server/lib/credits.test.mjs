@@ -17,6 +17,7 @@ import {
   grantSignupBonus,
   initCredits,
   listLedger,
+  recordLuckyFree,
   refundCredits,
   removeAccount,
   resetCreditStats,
@@ -87,6 +88,18 @@ describe('refundCredits', () => {
     expect(day.recharge).toBe(10)
     expect(day.refund).toBe(4)
     expect(day.spend).toBe(4)
+  })
+})
+
+describe('recordLuckyFree', () => {
+  it('记录 0 积分免单流水，不改余额但计入出图张数', () => {
+    initCredits(freshDir())
+    addCredits('u-1', 10, { type: 'redeem' })
+
+    expect(recordLuckyFree('u-1', { images: 2, ref: 'ch-1', note: '幸运免单 · 出图 2 张' })).toEqual({ ok: true, balance: 10 })
+    expect(getBalance('u-1')).toBe(10)
+    expect(listLedger('u-1')[0]).toMatchObject({ type: 'lucky', amount: 0, balanceAfter: 10, ref: 'ch-1' })
+    expect(creditsOverview().todayImages).toBe(2)
   })
 })
 

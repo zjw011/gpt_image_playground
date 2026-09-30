@@ -72,6 +72,7 @@ import { addImageSizeParam, createTaskDonePatch, createTaskErrorPatch, deriveAge
 import { createFailoverAttempt, formatFailoverError, getFailoverCandidates, getFailoverTimeoutBudget, isFailoverableError, withFailoverStreamingDisabled } from './lib/failover'
 import { stripInjectedCodexCliSizePrompt } from './lib/size'
 import { appendStylePreset } from './lib/stylePresets'
+import { appendProfessionalPreset } from './lib/professionalTools'
 
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
@@ -1591,7 +1592,7 @@ export async function initStore() {
 }
 
 /** 提交新任务 */
-export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; stylePreset?: string } = {}): Promise<boolean> {
+export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; stylePreset?: string; professionalPreset?: string } = {}): Promise<boolean> {
   const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, showToast, setConfirmDialog } =
     useStore.getState()
 
@@ -1694,6 +1695,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     id: taskId,
     prompt: prompt.trim(),
     stylePreset: options.stylePreset,
+    professionalPreset: options.professionalPreset,
     params: taskParams,
     apiProvider: activeProfile.provider,
     apiProfileId: activeProfile.id,
@@ -3578,7 +3580,7 @@ async function runTaskWithProfile(
     const requestBasePrompt = task.transparentOutput && task.transparentPrompt
       ? task.transparentPrompt
       : task.prompt
-    const requestPrompt = appendStylePreset(requestBasePrompt, task.stylePreset)
+    const requestPrompt = appendProfessionalPreset(appendStylePreset(requestBasePrompt, task.stylePreset), task.professionalPreset)
 
     const result = await callImageApi({
       settings: requestSettings,
@@ -3853,6 +3855,8 @@ export async function retryTask(task: TaskRecord) {
   const newTask: TaskRecord = {
     id: taskId,
     prompt: task.prompt,
+    stylePreset: task.stylePreset,
+    professionalPreset: task.professionalPreset,
     params: taskParams,
     apiProvider: activeProfile.provider,
     apiProfileId: activeProfile.id,
@@ -3931,7 +3935,7 @@ export async function reuseConfig(task: TaskRecord) {
       confirmText: '使用当前配置提交',
       cancelText: '放弃提交',
       action: () => {
-        void submitTask({ useCurrentApiProfileWhenReusedMissing: true, stylePreset: task.stylePreset })
+        void submitTask({ useCurrentApiProfileWhenReusedMissing: true, stylePreset: task.stylePreset, professionalPreset: task.professionalPreset })
       },
     })
     return

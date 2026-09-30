@@ -366,6 +366,20 @@ describe('mask draft lifecycle in store actions', () => {
     expect(useStore.getState().prompt).not.toContain('自然皮肤质感')
   })
 
+  it('专业工具提交时追加隐藏方案词但任务仍只保存用户描述', async () => {
+    await submitTask({ professionalPreset: 'ecommerce-clean' })
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+
+    expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: expect.stringContaining('专业电商主图设计'),
+    }))
+    expect(useStore.getState().tasks[0]).toMatchObject({
+      prompt: 'prompt',
+      professionalPreset: 'ecommerce-clean',
+    })
+    expect(useStore.getState().prompt).not.toContain('专业电商主图设计')
+  })
+
   it('默认提交后清空提示词，但保留参考图供连续改图', async () => {
     useStore.setState({ inputImages: [imageA] })
 

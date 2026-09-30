@@ -19,7 +19,7 @@ import {
   isBillableRequest,
   parseImageCount,
 } from './billing.mjs'
-import { getBalance, releaseReservation, reserveCredits, settleCredits } from './credits.mjs'
+import { getBalance, recordLuckyFree, releaseReservation, reserveCredits, settleCredits } from './credits.mjs'
 import { maybeRewardInviter } from './referral.mjs'
 import { getClientIp, HttpError } from './http.mjs'
 import { generationGate } from './generationGate.mjs'
@@ -579,6 +579,11 @@ export async function handleRelay(req, res, ctx) {
         release()
         // 幸运免单命中：告诉前端这次没扣分，界面好放庆祝提示
         if (luckyFree && success) {
+          recordLuckyFree(userId, {
+            images: creditCount || 1,
+            ref: channel.id,
+            note: `幸运免单 · 出图 ${creditCount || 1} 张 · ${channel.name}`,
+          })
           extraHeaders['x-credits-lucky'] = '1'
           extraHeaders['x-credits-balance'] = String(getBalance(userId))
         }

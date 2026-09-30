@@ -182,6 +182,8 @@ export interface TaskRecord {
   prompt: string
   /** 创作台选中的风格 ID；提示词本体不写入用户输入和公开展示。 */
   stylePreset?: string
+  /** 专业工具预设 ID；增强词仅在请求阶段拼接，不写入公开提示词。 */
+  professionalPreset?: string
   params: TaskParams
   /** 生成时使用的 Provider 类型 */
   apiProvider?: ApiProvider
