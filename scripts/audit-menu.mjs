@@ -129,9 +129,9 @@ try {
   // 创作台模式切换
   await open('/studio', 2600)
   for (const mode of ['图生图', '局部重绘', 'AI 扩图', '文生图']) {
-    const state = await evaluate(`(() => { const el = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.trim().startsWith(${JSON.stringify(mode)})); if (!el) return 'missing'; el.click(); return 'clicked' })()`)
+    const state = await evaluate(`(() => { const el = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.includes(${JSON.stringify(mode)})); if (!el) return 'missing'; el.click(); return 'clicked' })()`)
     await wait(120)
-    const active = await evaluate(`(() => { const el = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.trim().startsWith(${JSON.stringify(mode)})); return el?.getAttribute('aria-pressed') === 'true' })()`)
+    const active = await evaluate(`(() => { const el = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.includes(${JSON.stringify(mode)})); return el?.getAttribute('aria-pressed') === 'true' })()`)
     report(`创作台模式「${mode}」`, state === 'clicked' && active, state)
   }
   const promptBeforeStyle = await evaluate('document.querySelector("textarea")?.value || ""')

@@ -111,10 +111,17 @@ export default function StudioPage() {
                 type="button"
                 onClick={() => setTab(mode.key)}
                 aria-pressed={tab === mode.key}
-                className={`group relative h-[106px] overflow-hidden rounded-2xl border-2 text-left transition ${
-                  tab === mode.key ? 'border-[#7867f5] bg-white shadow-lg shadow-[#7867f5]/15' : 'border-transparent bg-white/80 hover:border-[#d9d4fb]'
+                className={`group relative h-[106px] cursor-pointer overflow-hidden rounded-2xl border-2 text-left shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-md ${
+                  tab === mode.key
+                    ? 'border-[#7867f5] bg-[#f8f7ff] ring-2 ring-[#7867f5]/15 shadow-[#7867f5]/15'
+                    : 'border-[#ddd9eb] bg-[#faf9fd] hover:border-[#aaa0ef] hover:bg-white'
                 }`}
               >
+                <span className={`absolute right-2.5 top-2.5 z-20 flex h-5 w-5 items-center justify-center rounded-full border text-[11px] font-bold transition ${
+                  tab === mode.key
+                    ? 'border-[#7867f5] bg-[#7867f5] text-white shadow-sm'
+                    : 'border-[#bbb5d2] bg-white/90 text-transparent group-hover:border-[#8c7cf7]'
+                }`} aria-hidden="true">✓</span>
                 <div className="relative z-10 w-[62%] p-4">
                   <p className={`text-[15px] font-bold ${tab === mode.key ? 'text-[#6958e9]' : 'text-[#35315d]'}`}>{mode.label}</p>
                   <p className="mt-1 text-[10px] leading-4 text-[#918cae]">{mode.description}</p>
