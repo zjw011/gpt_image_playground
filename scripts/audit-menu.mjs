@@ -134,6 +134,8 @@ try {
 
   // 创作台模式切换
   await open('/studio', 2600)
+  const longPromptLength = await evaluate(`(() => { const textarea = document.querySelector('textarea'); if (!textarea) return -1; const value = '画'.repeat(2100); const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; setter.call(textarea, value); textarea.dispatchEvent(new Event('input', { bubbles: true })); return textarea.value.length })()`)
+  report('创作台提示词不限制 2000 字', longPromptLength === 2100, String(longPromptLength))
   for (const mode of ['图生图', '局部重绘', 'AI 扩图', '文生图']) {
     const state = await evaluate(`(() => { const el = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.includes(${JSON.stringify(mode)})); if (!el) return 'missing'; el.click(); return 'clicked' })()`)
     await wait(120)

@@ -140,7 +140,6 @@ export default function StudioPage() {
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
               rows={3}
-              maxLength={2000}
               placeholder="描述你想要的画面……例如：樱花下的少女，夕阳，唯美，动漫风格"
               className="min-h-[86px] w-full resize-none bg-transparent px-1 text-sm leading-6 text-[#37335c] outline-none placeholder:text-[#aaa5bf]"
             />
@@ -152,7 +151,7 @@ export default function StudioPage() {
                 <IconSparkle className="h-4 w-4" />随机灵感
               </button>
               {inputImages.length > 0 && <button type="button" onClick={clearInputImages} className="rounded-lg px-2 py-2 text-xs text-[#918cae] hover:text-red-500">清除参考图</button>}
-              <span className="ml-auto text-[11px] text-[#aaa5bf]">{prompt.length}/2000</span>
+              <span className="ml-auto text-[11px] text-[#aaa5bf]">已输入 {prompt.length.toLocaleString()} 字</span>
               <button type="button" onClick={() => void generate()} className="flex min-w-[150px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#7462f3] to-[#9b76f6] px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-[#7867f5]/25 transition hover:from-[#6653e8] hover:to-[#8f69ed]">
                 <IconSparkle className="h-4 w-4" />生成{credits ? ` · ${cost} 积分` : ''}
               </button>
