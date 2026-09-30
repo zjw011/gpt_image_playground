@@ -6,11 +6,21 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../../store'
 import { isBackendMode, getBackendUser } from '../../lib/backend'
-import { listGalleryWorks, toggleWorkLike, deleteWork, type GalleryItem } from '../../lib/galleryApi'
+import {
+  createWorkComment,
+  deleteWork,
+  deleteWorkComment,
+  listGalleryWorks,
+  listWorkComments,
+  reportWorkComment,
+  toggleWorkLike,
+  type GalleryComment,
+  type GalleryItem,
+} from '../../lib/galleryApi'
 import AppShell from './AppShell'
 import SafeImg from '../../components/SafeImg'
 import { assetUrl } from '../../lib/assetUrl'
-import { IconHeart, IconEye, IconSearch, IconSparkle, IconTrash } from '../icons'
+import { IconHeart, IconEye, IconMessage, IconSearch, IconSparkle, IconTrash } from '../icons'
 
 interface DemoWork {
   id: string
@@ -36,6 +46,8 @@ const DEMO_WORKS: DemoWork[] = [
 const SERVER_TABS = ['最新', '最热', '我的'] as const
 const DEMO_TABS = ['推荐', '最新', '最热'] as const
 const STYLE_FILTERS = ['全部风格', '动漫', '写实', '古风', '赛博'] as const
+const isServerItem = (item: GalleryItem | DemoWork): item is GalleryItem => 'imageUrl' in item
+const formatCommentTime = (value: number) => new Date(value).toLocaleString('zh-CN', { hour12: false })
 
 export default function GalleryPage() {
   const navigate = useNavigate()
@@ -53,6 +65,11 @@ export default function GalleryPage() {
   const [works, setWorks] = useState<GalleryItem[]>([])
   const [loading, setLoading] = useState(backendMode)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [comments, setComments] = useState<GalleryComment[]>([])
+  const [commentTotal, setCommentTotal] = useState(0)
+  const [commentsLoading, setCommentsLoading] = useState(false)
+  const [commentText, setCommentText] = useState('')
+  const [commentBusy, setCommentBusy] = useState(false)
 
   const loadWorks = useCallback(async () => {
     if (!backendMode) return
@@ -69,8 +86,27 @@ export default function GalleryPage() {
   }, [backendMode])
   useEffect(() => { void loadWorks() }, [loadWorks])
 
-  const isServerItem = (item: GalleryItem | DemoWork): item is GalleryItem => 'imageUrl' in item
   const myId = me?.id ?? null
+  const previewWorkId = preview && isServerItem(preview) ? preview.id : null
+
+  useEffect(() => {
+    setComments([])
+    setCommentTotal(0)
+    setCommentText('')
+    if (!previewWorkId) return
+    let active = true
+    setCommentsLoading(true)
+    void listWorkComments(previewWorkId).then((result) => {
+      if (!active) return
+      setComments(result.comments)
+      setCommentTotal(result.total)
+    }).catch((err) => {
+      if (active) showToast(err instanceof Error ? err.message : '评论加载失败', 'error')
+    }).finally(() => {
+      if (active) setCommentsLoading(false)
+    })
+    return () => { active = false }
+  }, [previewWorkId, showToast])
 
   const filteredWorks = useMemo(() => {
     const keywordTrim = keyword.trim()
@@ -107,6 +143,9 @@ export default function GalleryPage() {
       setWorks((current) => (current).map((work) => (
         work.id === item.id ? { ...work, likedByMe: result.liked, likes: result.likes } : work
       )))
+      setPreview((current) => current && isServerItem(current) && current.id === item.id
+        ? { ...current, likedByMe: result.liked, likes: result.likes }
+        : current)
     } catch (err) {
       showToast(err instanceof Error ? err.message : '操作失败', 'error')
     }
@@ -135,6 +174,69 @@ export default function GalleryPage() {
     setPrompt(item.prompt)
     showToast('提示词已填入，去创作同款吧', 'success')
     navigate('/studio')
+  }
+
+  const submitComment = async () => {
+    if (!previewWorkId || commentBusy) return
+    const text = commentText.trim()
+    if (!text) return showToast('请先输入评论内容', 'info')
+    setCommentBusy(true)
+    try {
+      const result = await createWorkComment(previewWorkId, text)
+      setComments((current) => [result.comment, ...current])
+      setCommentTotal(result.total)
+      setCommentText('')
+      setWorks((current) => current.map((work) => work.id === previewWorkId ? { ...work, comments: result.total } : work))
+      setPreview((current) => current && isServerItem(current) && current.id === previewWorkId ? { ...current, comments: result.total } : current)
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '评论发布失败', 'error')
+    } finally {
+      setCommentBusy(false)
+    }
+  }
+
+  const loadMoreComments = async () => {
+    if (!previewWorkId || commentsLoading) return
+    setCommentsLoading(true)
+    try {
+      const result = await listWorkComments(previewWorkId, comments.length)
+      setComments((current) => [...current, ...result.comments])
+      setCommentTotal(result.total)
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '评论加载失败', 'error')
+    } finally {
+      setCommentsLoading(false)
+    }
+  }
+
+  const removeComment = (comment: GalleryComment) => {
+    if (!previewWorkId) return
+    setConfirmDialog({
+      title: '删除评论',
+      message: '确定删除这条评论吗？',
+      confirmText: '删除',
+      tone: 'danger',
+      action: async () => {
+        const result = await deleteWorkComment(previewWorkId, comment.id)
+        setComments((current) => current.filter((item) => item.id !== comment.id))
+        setCommentTotal(result.total)
+        setWorks((current) => current.map((work) => work.id === previewWorkId ? { ...work, comments: result.total } : work))
+        setPreview((current) => current && isServerItem(current) && current.id === previewWorkId ? { ...current, comments: result.total } : current)
+        showToast('评论已删除', 'success')
+      },
+    })
+  }
+
+  const reportComment = async (comment: GalleryComment) => {
+    if (!previewWorkId) return
+    if (!me) return showToast('请先登录后再举报', 'info')
+    try {
+      const result = await reportWorkComment(previewWorkId, comment.id)
+      setComments((current) => current.map((item) => item.id === comment.id ? { ...item, reportedByMe: true } : item))
+      showToast(result.duplicated ? '你已举报过这条评论' : '举报已提交，管理员会尽快处理', 'success')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '举报失败', 'error')
+    }
   }
 
   return (
@@ -237,6 +339,12 @@ export default function GalleryPage() {
                         <IconHeart className="h-3.5 w-3.5" filled={isLiked} />
                         {likes.toLocaleString()}
                       </button>
+                      {serverItem && (
+                        <span className="flex items-center gap-1">
+                          <IconMessage className="h-3.5 w-3.5" />
+                          {work.comments.toLocaleString()}
+                        </span>
+                      )}
                       {!serverItem && (
                         <span className="flex items-center gap-1">
                           <IconEye className="h-3.5 w-3.5" />
@@ -255,9 +363,9 @@ export default function GalleryPage() {
       {/* 作品预览弹层 */}
       {preview && (
         <div className="animate-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-[#3b2f6b]/45 p-6 backdrop-blur-sm" onClick={() => setPreview(null)}>
-          <div className="animate-modal-in flex max-h-full w-full max-w-3xl overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+          <div className="animate-modal-in flex max-h-full w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
             <SafeImg src={isServerItem(preview) ? preview.imageUrl : assetUrl(preview.img)} alt={preview.prompt} loading="eager" className="hidden w-1/2 object-cover sm:block" />
-            <div className="flex min-w-0 flex-1 flex-col p-6">
+            <div className="flex min-w-0 flex-1 flex-col overflow-y-auto p-6">
               <h3 className="text-lg font-bold">{isServerItem(preview) ? `${preview.ownerName} 的作品` : preview.title}</h3>
               <p className="mt-1 text-xs text-[#a5a1c4]">
                 @{isServerItem(preview) ? preview.ownerName : preview.author}
@@ -269,12 +377,77 @@ export default function GalleryPage() {
                 <p className="mt-1.5 text-[13px] leading-6 text-[#5b5680]">{preview.prompt}</p>
               </div>
               {isServerItem(preview) && (
-                <p className="mt-3 flex items-center gap-1.5 text-xs text-[#a5a1c4]">
-                  <IconHeart className="h-3.5 w-3.5 text-[#f472b6]" filled />
-                  {preview.likes.toLocaleString()} 人喜欢
-                </p>
+                <div className="mt-3 flex items-center gap-4 text-xs text-[#a5a1c4]">
+                  <button type="button" onClick={() => void toggleLike(preview)} className={`flex items-center gap-1.5 transition hover:text-[#f472b6] ${preview.likedByMe ? 'text-[#f472b6]' : ''}`}>
+                    <IconHeart className="h-3.5 w-3.5" filled={preview.likedByMe} />
+                    {preview.likes.toLocaleString()} 人喜欢
+                  </button>
+                  <span className="flex items-center gap-1.5">
+                    <IconMessage className="h-3.5 w-3.5" />
+                    {commentTotal} 条评论
+                  </span>
+                </div>
               )}
-              <div className="mt-auto flex gap-2.5 pt-6">
+
+              {isServerItem(preview) && (
+                <section className="mt-5 border-t border-[#efedf7] pt-4">
+                  <h4 className="text-sm font-bold text-[#37335c]">评论 <span className="font-normal text-[#a5a1c4]">{commentTotal}</span></h4>
+                  {me ? (
+                    <div className="mt-3 rounded-2xl border border-[#e5e1f5] bg-[#faf9fe] p-3 focus-within:border-[#9b8cf8]">
+                      <textarea
+                        value={commentText}
+                        onChange={(event) => setCommentText(event.target.value)}
+                        maxLength={200}
+                        rows={2}
+                        placeholder="友善交流，说说你的看法…"
+                        className="w-full resize-none bg-transparent text-[13px] leading-5 text-[#4f4a73] outline-none placeholder:text-[#b3aed0]"
+                      />
+                      <div className="mt-2 flex items-center justify-between">
+                        <span className="text-[11px] text-[#b3aed0]">{Array.from(commentText).length}/200</span>
+                        <button type="button" disabled={commentBusy || !commentText.trim()} onClick={() => void submitComment()} className="rounded-full bg-[#7c6cf6] px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-[#6b5ce7] disabled:cursor-not-allowed disabled:opacity-40">
+                          {commentBusy ? '发布中…' : '发布评论'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => navigate('/login')} className="mt-3 w-full rounded-xl bg-[#faf9fe] px-4 py-3 text-left text-xs text-[#7c6cf6] hover:bg-[#f4f1ff]">
+                      登录后可以参与评论
+                    </button>
+                  )}
+
+                  <div className="mt-3 space-y-3">
+                    {comments.map((comment) => (
+                      <article key={comment.id} className="flex gap-2.5">
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-[11px] font-bold text-white">
+                          {comment.userName.slice(0, 1)}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-xs font-medium text-[#5b5680]">{comment.userName}</span>
+                            <span className="shrink-0 text-[10px] text-[#b3aed0]">{formatCommentTime(comment.createdAt)}</span>
+                          </div>
+                          <p className="mt-1 whitespace-pre-wrap break-words text-[13px] leading-5 text-[#575273]">{comment.text}</p>
+                          <div className="mt-1 flex gap-3 text-[10px] text-[#a5a1c4]">
+                            {comment.canDelete && <button type="button" onClick={() => removeComment(comment)} className="hover:text-red-500">删除</button>}
+                            {!comment.canDelete && me && (
+                              <button type="button" disabled={comment.reportedByMe} onClick={() => void reportComment(comment)} className="hover:text-red-500 disabled:cursor-default disabled:text-[#c9c6da]">
+                                {comment.reportedByMe ? '已举报' : '举报'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                    {commentsLoading && <p className="py-3 text-center text-xs text-[#a5a1c4]">评论加载中…</p>}
+                    {!commentsLoading && commentTotal === 0 && <p className="py-4 text-center text-xs text-[#a5a1c4]">还没有评论，来说第一句吧</p>}
+                    {!commentsLoading && comments.length < commentTotal && (
+                      <button type="button" onClick={() => void loadMoreComments()} className="w-full rounded-xl py-2 text-xs text-[#7c6cf6] hover:bg-[#faf9fe]">加载更多</button>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              <div className="flex gap-2.5 pt-6">
                 <button
                   type="button"
                   onClick={() => useSamePrompt(preview)}

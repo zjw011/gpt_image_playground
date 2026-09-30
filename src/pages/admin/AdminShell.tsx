@@ -11,6 +11,7 @@ import { getBackendUser, submitFrontLogout } from '../../lib/backend'
 import {
   IconGrid, IconLayers, IconBolt, IconUser, IconCoin,
   IconWechat, IconMail, IconSettings, IconLogout, IconHome,
+  IconMessage,
 } from '../icons'
 
 export const ADMIN_TABS = [
@@ -19,6 +20,7 @@ export const ADMIN_TABS = [
   { key: 'usage', label: '用量与健康', icon: IconBolt },
   { key: 'users', label: '用户', icon: IconUser },
   { key: 'credits', label: '积分与卡密', icon: IconCoin },
+  { key: 'comments', label: '评论审核', icon: IconMessage },
   { key: 'wechat', label: '微信登录', icon: IconWechat },
   { key: 'smtp', label: '邮件发信', icon: IconMail },
   { key: 'site', label: '站点设置', icon: IconSettings },

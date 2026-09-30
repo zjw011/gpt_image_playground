@@ -166,6 +166,12 @@ export const IconEye = ({ className }: IconProps) => (
   </Base>
 )
 
+export const IconMessage = ({ className }: IconProps) => (
+  <Base className={className}>
+    <path d="M5 5.5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-7l-4.5 3v-3H5a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z" />
+  </Base>
+)
+
 export const IconMail = ({ className }: IconProps) => (
   <Base className={className}>
     <rect x="3" y="5" width="18" height="14" rx="2.5" />

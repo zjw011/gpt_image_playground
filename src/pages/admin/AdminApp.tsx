@@ -9,6 +9,7 @@ import ChannelsPage from './ChannelsPage'
 import UsagePage from './UsagePage'
 import UsersPage from './UsersPage'
 import CreditsPage from './CreditsPage'
+import CommentsPage from './CommentsPage'
 import WechatPage from './WechatPage'
 import SmtpPage from './SmtpPage'
 import SitePage from './SitePage'
@@ -20,6 +21,7 @@ const VIEWS: Record<string, React.ComponentType> = {
   usage: UsagePage,
   users: UsersPage,
   credits: CreditsPage,
+  comments: CommentsPage,
   wechat: WechatPage,
   smtp: SmtpPage,
   site: SitePage,

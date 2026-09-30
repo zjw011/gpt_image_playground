@@ -183,6 +183,27 @@ try {
     const dashboard = await browser.text()
     report('登录后 /admin 渲染仪表盘', dashboard.includes('仪表盘') && dashboard.includes('渠道链路'), dashboard.slice(0, 60).replace(/\n/g, ' '))
 
+    const commentFlow = await browser.evaluate(`(async () => {
+      const createdResponse = await fetch('/api/gallery/w-seed-train/comments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: '真机审计评论' }),
+      })
+      const created = await createdResponse.json()
+      const listedResponse = await fetch('/api/gallery/w-seed-train/comments')
+      const listed = await listedResponse.json()
+      const removedResponse = created.comment?.id
+        ? await fetch('/api/gallery/w-seed-train/comments/' + encodeURIComponent(created.comment.id), { method: 'DELETE' })
+        : null
+      return {
+        createStatus: createdResponse.status,
+        listStatus: listedResponse.status,
+        listed: listed.comments?.some((item) => item.id === created.comment?.id),
+        removeStatus: removedResponse?.status,
+      }
+    })()`)
+    report('评论发布、公开列表与删除闭环', commentFlow.createStatus === 201 && commentFlow.listStatus === 200 && commentFlow.listed && commentFlow.removeStatus === 200, JSON.stringify(commentFlow))
+
     // 侧栏每一项都要真的能打开，不能点进去空白。
     // 关键词一律取页面正文里独有的词——不要用「渠道链路」「积分」这种侧栏里也有的，
     // 否则视图根本没渲染、只渲染了壳，断言照样会绿。
@@ -191,6 +212,7 @@ try {
       ['usage', '累计请求'],
       ['users', '新建用户'],
       ['credits', '生成卡密'],
+      ['comments', '举报优先'],
       ['smtp', 'SMTP 发信配置'],
       ['site', '保存设置'],
     ]) {

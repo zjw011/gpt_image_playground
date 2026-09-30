@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { handleAdminRoute } from './lib/adminRoutes.mjs'
 import { initCards } from './lib/cards.mjs'
 import { initGallery } from './lib/gallery.mjs'
+import { initGalleryComments } from './lib/galleryComments.mjs'
 import { countAccountsForIp, normalizeIp, resolveInviter } from './lib/referral.mjs'
 import { initCredits, grantSignupBonus } from './lib/credits.mjs'
 import {
@@ -70,6 +71,7 @@ initSessions(DATA_DIR)
 initUsage(DATA_DIR)
 initCredits(DATA_DIR)
 initCards(DATA_DIR)
+initGalleryComments(DATA_DIR)
 initGallery(DATA_DIR)
 
 // 首次启动可用环境变量播种站长账号（role=admin），省掉手动初始化步骤。

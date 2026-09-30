@@ -19,6 +19,7 @@ import { auditChannel } from './channelAudit.mjs'
 import { creditsOverview, creditsSummary, listLedger, removeAccount, resetCreditStats, setBalance } from './credits.mjs'
 import { EMAIL_CODE_COOLDOWN_MS, EMAIL_CODE_TTL_MS } from './emailCodes.mjs'
 import { HttpError, readJsonBody, sendJson, sendText } from './http.mjs'
+import { listCommentsForAdmin, removeComment, setCommentHidden } from './galleryComments.mjs'
 import { describeSmtpError, sendMail, SMTP_PRESETS, verifyConnection } from './smtp.mjs'
 import {
   ACCESS_MODES,
@@ -131,6 +132,30 @@ export async function handleAdminRoute(req, res, ctx) {
   }
 
   if (ctx.role !== 'admin') throw new HttpError(401, '需要管理员登录')
+
+  // ===== 作品广场评论审核 =====
+  if (path === '/api/admin/gallery-comments' && method === 'GET') {
+    const query = new URLSearchParams(ctx.search ?? '')
+    return sendJson(res, 200, listCommentsForAdmin({
+      status: query.get('status') ?? 'reported',
+      keyword: query.get('keyword') ?? '',
+      offset: query.get('offset'),
+      limit: query.get('limit'),
+    }))
+  }
+
+  const commentMatch = path.match(/^\/api\/admin\/gallery-comments\/([^/]+)$/)
+  if (commentMatch && method === 'PUT') {
+    const body = await readJsonBody(req)
+    const result = setCommentHidden(decodeURIComponent(commentMatch[1]), body.hidden === true)
+    if (!result.ok) throw new HttpError(result.status, result.error)
+    return sendJson(res, 200, result)
+  }
+  if (commentMatch && method === 'DELETE') {
+    const result = removeComment(decodeURIComponent(commentMatch[1]), { isAdmin: true })
+    if (!result.ok) throw new HttpError(result.status, result.error)
+    return sendJson(res, 200, result)
+  }
 
   // ===== 概览：后台首屏，回答"今天出了多少图、谁在用" =====
   if (path === '/api/admin/overview' && method === 'GET') {

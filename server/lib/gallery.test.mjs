@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { getImagePath, initGallery, listWorks, publishWork, removeWork, toggleLike } from './gallery.mjs'
+import { createComment, initGalleryComments, listComments } from './galleryComments.mjs'
 
 // 1x1 的合法 PNG（带不同注释字节就能造出内容不同的两张）
 function pngDataUrl(seed = 0) {
@@ -21,6 +22,7 @@ const USER = 'u-tester'
 let dir = ''
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'gip-gallery-'))
+  initGalleryComments(dir)
   initGallery(dir)
 })
 
@@ -90,5 +92,15 @@ describe('作品广场持久化', () => {
     removeWork(a.item.id, { userId: USER, isAdmin: false })
     expect(getImagePath(a.item.id)).toBeNull()
     if (b.ok && b.item.id !== a.item.id) expect(getImagePath(b.item.id)).not.toBeNull()
+  })
+
+  it('删除作品时同步清理它的评论', () => {
+    const result = publishWork({ ownerId: USER, ownerName: '测试', prompt: 'x', model: 'm', imageDataUrl: pngDataUrl() })
+    createComment({ workId: result.item.id, userId: 'u-fan', userName: '读者', text: '很好看', now: 20_000 })
+    expect(listWorks(null).find((item) => item.id === result.item.id)?.comments).toBe(1)
+
+    removeWork(result.item.id, { userId: USER, isAdmin: false })
+
+    expect(listComments(result.item.id).total).toBe(0)
   })
 })

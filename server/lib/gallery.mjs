@@ -12,6 +12,7 @@ import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 import { readDurableJson, writeDurableJson } from './durableJson.mjs'
+import { countComments, removeCommentsForWork } from './galleryComments.mjs'
 
 const MAX_ITEMS = 500
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -130,6 +131,7 @@ function toPublic(item, viewerId) {
     ownerName: item.ownerName,
     ownerId: item.ownerId,
     likes: (item.baseLikes ?? 0) + item.likedBy.length,
+    comments: countComments(item.id),
     likedByMe: viewerId ? item.likedBy.includes(viewerId) : false,
     createdAt: item.createdAt,
     // 精选作品直接引用随站点分发的内置图；用户上传的走图片接口
@@ -199,6 +201,10 @@ export function listWorks(viewerId) {
   return [...items].sort((a, b) => b.createdAt - a.createdAt).map((item) => toPublic(item, viewerId))
 }
 
+export function hasWork(itemId) {
+  return byId.has(itemId)
+}
+
 /** 点赞/取消点赞。返回当前状态，前端直接覆盖本地。 */
 export function toggleLike(itemId, userId) {
   const item = byId.get(itemId)
@@ -222,6 +228,7 @@ export function removeWork(itemId, { userId, isAdmin }) {
   index()
   try { unlinkSync(join(imagesDir, item.file)) } catch { /* 文件已不在就当删掉 */ }
   commit()
+  removeCommentsForWork(itemId)
   return { ok: true }
 }
 

@@ -71,6 +71,23 @@ export interface AdminDashboard {
   updatedAt: number
 }
 
+export interface AdminGalleryComment {
+  id: string
+  workId: string
+  userName: string
+  text: string
+  createdAt: number
+  hidden: boolean
+  reports: number
+}
+
+export interface AdminGalleryComments {
+  total: number
+  offset: number
+  limit: number
+  comments: AdminGalleryComment[]
+}
+
 async function request<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     headers: { 'Content-Type': 'application/json', ...(options.headers ?? {}) },
@@ -118,6 +135,27 @@ export function getAdminUsage(maxAgeMs = 0) {
 
 export function resetAdminUsage() {
   return request('/api/admin/usage', { method: 'DELETE' })
+}
+
+// ===== 作品评论 =====
+export function getAdminGalleryComments(params: { status?: string, keyword?: string, offset?: number, limit?: number }) {
+  const query = new URLSearchParams()
+  if (params.status) query.set('status', params.status)
+  if (params.keyword) query.set('keyword', params.keyword)
+  query.set('offset', String(params.offset ?? 0))
+  query.set('limit', String(params.limit ?? 50))
+  return request<AdminGalleryComments>(`/api/admin/gallery-comments?${query.toString()}`)
+}
+
+export function setAdminGalleryCommentHidden(id: string, hidden: boolean) {
+  return request<{ ok: true, hidden: boolean }>(`/api/admin/gallery-comments/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ hidden }),
+  })
+}
+
+export function deleteAdminGalleryComment(id: string) {
+  return request<{ ok: true }>(`/api/admin/gallery-comments/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 // ===== 渠道 =====
