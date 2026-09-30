@@ -62,7 +62,7 @@ const SCENARIOS = [
     },
     checks: [
       { path: '/', has: ['进入创作'], hasNot: ['立即注册'] },
-      { path: '/studio', has: ['AI 绘画', '立即生成'], hasNot: ['设置'] },
+      { path: '/studio', has: ['AI 绘画', '选择风格', '生成'], hasNot: ['设置'] },
       // 没开积分制就不该有人对着一个买不到的价签点支付
       { path: '/recharge', has: ['本站未开启积分制'], hasNot: ['立即支付'] },
     ],

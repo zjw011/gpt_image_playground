@@ -180,6 +180,8 @@ export type TaskStatus = 'running' | 'done' | 'error'
 export interface TaskRecord {
   id: string
   prompt: string
+  /** 创作台选中的风格 ID；提示词本体不写入用户输入和公开展示。 */
+  stylePreset?: string
   params: TaskParams
   /** 生成时使用的 Provider 类型 */
   apiProvider?: ApiProvider

@@ -345,6 +345,27 @@ describe('mask draft lifecycle in store actions', () => {
     expect(state.showToast).toHaveBeenCalledWith('任务已提交', 'success')
   })
 
+  it('提交时应用风格词但任务仍只保存用户描述', async () => {
+    vi.mocked(callImageApi).mockResolvedValueOnce({
+      images: ['data:image/png;base64,styled'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: ['prompt，真实人物摄影，自然皮肤质感'],
+    })
+    await submitTask({ stylePreset: 'portrait' })
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+
+    expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: expect.stringContaining('自然皮肤质感'),
+    }))
+    expect(useStore.getState().tasks[0]).toMatchObject({
+      prompt: 'prompt',
+      stylePreset: 'portrait',
+    })
+    expect(useStore.getState().tasks[0].revisedPromptByImage).toBeUndefined()
+    expect(useStore.getState().prompt).not.toContain('自然皮肤质感')
+  })
+
   it('默认提交后清空提示词，但保留参考图供连续改图', async () => {
     useStore.setState({ inputImages: [imageA] })
 

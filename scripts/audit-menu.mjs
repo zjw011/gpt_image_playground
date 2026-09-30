@@ -129,16 +129,19 @@ try {
   // 创作台模式切换
   await open('/studio', 2600)
   for (const mode of ['图生图', '局部重绘', 'AI 扩图', '文生图']) {
-    const state = await clickByText(mode)
-    const active = await evaluate(`(() => { const el = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.trim() === ${JSON.stringify(mode)}); return el ? el.className.includes('7c6cf6') : false })()`)
+    const state = await evaluate(`(() => { const el = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.trim().startsWith(${JSON.stringify(mode)})); if (!el) return 'missing'; el.click(); return 'clicked' })()`)
+    await wait(120)
+    const active = await evaluate(`(() => { const el = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.trim().startsWith(${JSON.stringify(mode)})); return el?.getAttribute('aria-pressed') === 'true' })()`)
     report(`创作台模式「${mode}」`, state === 'clicked' && active, state)
   }
+  const promptBeforeStyle = await evaluate('document.querySelector("textarea")?.value || ""')
   const realPersonState = await evaluate('(() => { const el = Array.from(document.querySelectorAll("button")).find((button) => button.innerText.includes("真实人物")); if (!el) return "missing"; el.click(); return "clicked" })()')
   await wait(300)
   const realPersonPrompt = await evaluate('document.querySelector("textarea")?.value || ""')
+  const realPersonActive = await evaluate('Array.from(document.querySelectorAll("button")).some((button) => button.innerText.includes("真实人物") && button.getAttribute("aria-pressed") === "true")')
   report(
-    '真实人物提示词预设',
-    realPersonState === 'clicked' && realPersonPrompt.includes('自然皮肤质感') && realPersonPrompt.includes('避免过度磨皮'),
+    '风格选择不改写用户输入框',
+    realPersonState === 'clicked' && realPersonActive && realPersonPrompt === promptBeforeStyle && !realPersonPrompt.includes('自然皮肤质感') && !realPersonPrompt.includes('避免过度磨皮'),
     realPersonState,
   )
 

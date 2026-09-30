@@ -71,6 +71,7 @@ import { createPersistedState, mergePersistedAgentConversations, migratePersiste
 import { addImageSizeParam, createTaskDonePatch, createTaskErrorPatch, deriveAgentImageActualParams, deriveGalleryActualParams, firstActualParams, hasActualParams, hasActualSizeParam, mapActualParamsByImage, mapRevisedPromptsByImage, markInterruptedOpenAIRunningTasks } from './lib/taskState'
 import { createFailoverAttempt, formatFailoverError, getFailoverCandidates, getFailoverTimeoutBudget, isFailoverableError, withFailoverStreamingDisabled } from './lib/failover'
 import { stripInjectedCodexCliSizePrompt } from './lib/size'
+import { appendStylePreset } from './lib/stylePresets'
 
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
@@ -1590,7 +1591,7 @@ export async function initStore() {
 }
 
 /** 提交新任务 */
-export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean } = {}): Promise<boolean> {
+export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; stylePreset?: string } = {}): Promise<boolean> {
   const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, showToast, setConfirmDialog } =
     useStore.getState()
 
@@ -1653,7 +1654,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
           confirmText: '继续提交',
           tone: 'warning',
           action: () => {
-            void submitTask({ allowFullMask: true })
+            void submitTask({ ...options, allowFullMask: true })
           },
         })
         return false
@@ -1692,6 +1693,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   const task: TaskRecord = {
     id: taskId,
     prompt: prompt.trim(),
+    stylePreset: options.stylePreset,
     params: taskParams,
     apiProvider: activeProfile.provider,
     apiProfileId: activeProfile.id,
@@ -3573,9 +3575,10 @@ async function runTaskWithProfile(
       if (!maskDataUrl) throw new Error('遮罩图片已不存在')
     }
 
-    const requestPrompt = task.transparentOutput && task.transparentPrompt
+    const requestBasePrompt = task.transparentOutput && task.transparentPrompt
       ? task.transparentPrompt
       : task.prompt
+    const requestPrompt = appendStylePreset(requestBasePrompt, task.stylePreset)
 
     const result = await callImageApi({
       settings: requestSettings,
@@ -3621,7 +3624,7 @@ async function runTaskWithProfile(
       outputImageSizes,
     )
     const actualParams = deriveGalleryActualParams(taskProvider, isAsyncCustomTask, result.actualParams, actualParamsList, outputIds.length)
-    const shouldStoreRevisedPrompts = taskProvider !== 'fal' && !isAsyncCustomTask
+    const shouldStoreRevisedPrompts = taskProvider !== 'fal' && !isAsyncCustomTask && !task.stylePreset
     const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
     const revisedPrompts = activeProfile.codexCli && task.sourceMode !== 'agent'
       ? result.revisedPrompts?.map((prompt) => prompt == null ? prompt : stripInjectedCodexCliSizePrompt(prompt, requestPrompt, task.params.size))
@@ -3928,7 +3931,7 @@ export async function reuseConfig(task: TaskRecord) {
       confirmText: '使用当前配置提交',
       cancelText: '放弃提交',
       action: () => {
-        void submitTask({ useCurrentApiProfileWhenReusedMissing: true })
+        void submitTask({ useCurrentApiProfileWhenReusedMissing: true, stylePreset: task.stylePreset })
       },
     })
     return
