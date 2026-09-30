@@ -133,6 +133,14 @@ try {
     const active = await evaluate(`(() => { const el = Array.from(document.querySelectorAll('button')).find((b) => b.innerText.trim() === ${JSON.stringify(mode)}); return el ? el.className.includes('7c6cf6') : false })()`)
     report(`创作台模式「${mode}」`, state === 'clicked' && active, state)
   }
+  const realPersonState = await evaluate('(() => { const el = Array.from(document.querySelectorAll("button")).find((button) => button.innerText.includes("真实人物")); if (!el) return "missing"; el.click(); return "clicked" })()')
+  await wait(300)
+  const realPersonPrompt = await evaluate('document.querySelector("textarea")?.value || ""')
+  report(
+    '真实人物提示词预设',
+    realPersonState === 'clicked' && realPersonPrompt.includes('自然皮肤质感') && realPersonPrompt.includes('避免过度磨皮'),
+    realPersonState,
+  )
 
   // 作品广场排序页签
   await open('/gallery', 2600)

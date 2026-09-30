@@ -9,7 +9,7 @@ import { useCreditsStore } from '../../lib/creditsStore'
 import AppShell from './AppShell'
 import { assetUrl } from '../../lib/assetUrl'
 import { useThumbnail } from './useTaskImage'
-import { IconImage, IconSparkle, IconUpload, IconBrush, IconArrowRight, IconPlus, IconMinus, IconEdit } from '../icons'
+import { IconImage, IconSparkle, IconUpload, IconBrush, IconArrowRight, IconPlus, IconMinus, IconEdit, IconUser } from '../icons'
 
 type TabKey = 'text' | 'image' | 'inpaint' | 'outpaint'
 
@@ -24,6 +24,12 @@ const TABS: Array<{ key: TabKey, label: string }> = [
 const STYLES = [
   { key: 'anime', label: '动漫风格', img: '/art/work-sakura.jpg', suffix: '日系动漫风格，色彩明亮，线条细腻' },
   { key: 'real', label: '写实风格', img: '/art/work-cyber.jpg', suffix: '写实风格，真实光影，超高细节' },
+  {
+    key: 'real-person',
+    label: '真实人物',
+    img: '',
+    suffix: '真实人物摄影，自然皮肤质感，保留细微毛孔、浅淡雀斑与痘印、轻微肤色不均、眼下阴影和清晰唇纹，真实面部细节；手机原生摄影，轻微手持运动模糊、镜头色散、暗部噪点与自然曝光波动，避免过度磨皮、蜡像感、塑料皮肤和CG质感',
+  },
   { key: '2d', label: '二次元', img: '/art/work-hanfu.jpg', suffix: '二次元插画风格，唯美梦幻，柔和光晕' },
   { key: 'art', label: '艺术风格', img: '/art/work-train.jpg', suffix: '艺术插画风格，氛围感强，笔触细腻' },
 ]
@@ -242,7 +248,14 @@ export default function StudioPage() {
                     active ? 'border-[#7c6cf6] shadow-md shadow-[#7c6cf6]/20' : 'border-transparent hover:border-[#dcd8f0]'
                   }`}
                 >
-                  <img src={assetUrl(style.img)} alt={style.label} loading="lazy" className="h-[68px] w-full object-cover" />
+                  {style.img ? (
+                    <img src={assetUrl(style.img)} alt={style.label} loading="lazy" className="h-[68px] w-full object-cover" />
+                  ) : (
+                    <span className="flex h-[68px] w-full flex-col items-center justify-center gap-1 bg-gradient-to-br from-[#f5e9e2] via-[#f4d9cf] to-[#d9c1bc] text-[#845e58]">
+                      <IconUser className="h-6 w-6" />
+                      <span className="text-[9px] font-medium tracking-wide">自然皮肤质感</span>
+                    </span>
+                  )}
                   <span className={`block px-2 py-1.5 text-center text-[11px] font-medium ${active ? 'text-[#6b5ce7]' : 'text-[#6f6a94]'}`}>
                     {style.label}
                   </span>
