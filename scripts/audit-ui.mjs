@@ -21,11 +21,11 @@ try {
   dev = await startDevServer({ port: PORT })
   browser = await launchChrome({ port: CDP_PORT, baseUrl: dev.url, onConsoleError: (msg) => errors.push(msg) })
   await browser.open('/')
-  await browser.waitFor('main h1')
+  await browser.waitFor('h1')
   const tools = ['/studio', '/studio?mode=image', '/studio?mode=inpaint', '/studio?mode=outpaint', '/tools?tool=ecommerce', '/tools?tool=product-suite', '/tools?tool=live']
   for (const target of tools) {
     await browser.open('/')
-    const clicked = await browser.click(`main a[href="${target}"]`)
+    const clicked = await browser.click(`section[aria-label="创作工具"] a[href="${target}"]`)
     report(`首页工具直达 ${target}`, clicked === 'clicked' && (await browser.url()) === target)
     if (target.startsWith('/studio?mode=')) {
       const mode = target.split('=')[1]

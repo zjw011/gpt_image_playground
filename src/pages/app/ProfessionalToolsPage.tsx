@@ -11,8 +11,8 @@ import AppShell from './AppShell'
 type ToolKey = 'ecommerce' | 'product-suite' | 'live'
 
 const TOOLS: Array<{ key: ToolKey, title: string, eyebrow: string, description: string, image: string }> = [
-  { key: 'ecommerce', title: '电商设计', eyebrow: '单图精修', description: '上传商品图，生成适合详情页、海报和营销场景的成品。', image: '/art/tool-commerce.svg' },
-  { key: 'product-suite', title: '商品电商套图', eyebrow: '批量出图', description: '围绕同一商品，一次生成视觉统一的成套电商素材。', image: '/art/tool-product-suite.svg' },
+  { key: 'ecommerce', title: '电商设计', eyebrow: '单图精修', description: '上传商品图，生成适合详情页、海报和营销场景的成品。', image: '/art/cover-commerce-v2.jpg' },
+  { key: 'product-suite', title: '商品电商套图', eyebrow: '批量出图', description: '围绕同一商品，一次生成视觉统一的成套电商素材。', image: '/art/cover-suite-v2.jpg' },
   { key: 'live', title: 'Live 实况图', eyebrow: 'AI 连续帧', description: '用 AI 生成高度一致的微动作关键帧，合成类似手机实况照片的短动图。', image: '/art/work-seaside.jpg' },
 ]
 

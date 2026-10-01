@@ -80,7 +80,7 @@ export function PublicNav({ active, overlay, inApp }: { active?: string, overlay
     { label: '帮助中心', to: '/help', key: 'help' },
   ]
   return (
-    <header className={`sticky top-0 z-40 ${overlay ? 'bg-white/70 backdrop-blur-xl' : 'border-b border-[#eceaf6] bg-white/85 backdrop-blur-xl'}`}>
+    <header className={`sticky top-0 z-40 ${overlay ? 'bg-[#f8f5ff]/55 backdrop-blur-xl' : 'border-b border-[#eceaf6] bg-white/85 backdrop-blur-xl'}`}>
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5">
         <Logo />
         <nav className="hidden items-center gap-1 md:flex">
