@@ -46,7 +46,7 @@ import {
   storeImage,
   storeImageWithSize,
 } from './lib/db'
-import { callImageApi } from './lib/api'
+import { callImageApi, type CallApiOptions } from './lib/api'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
 import { buildAgentApiInput, buildAgentContinuationInput } from './lib/agentInputBuilder'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId } from './lib/agentImageReferences'
@@ -72,7 +72,8 @@ import { addImageSizeParam, createTaskDonePatch, createTaskErrorPatch, deriveAge
 import { createFailoverAttempt, formatFailoverError, getFailoverCandidates, getFailoverTimeoutBudget, isFailoverableError, withFailoverStreamingDisabled } from './lib/failover'
 import { stripInjectedCodexCliSizePrompt } from './lib/size'
 import { appendStylePreset } from './lib/stylePresets'
-import { appendProfessionalPreset } from './lib/professionalTools'
+import { appendProfessionalPreset, isLiveProfessionalPreset } from './lib/professionalTools'
+import { generateLiveFrameSequence } from './lib/liveGeneration'
 
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
@@ -1592,7 +1593,7 @@ export async function initStore() {
 }
 
 /** 提交新任务 */
-export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; stylePreset?: string; professionalPreset?: string } = {}): Promise<boolean> {
+export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; stylePreset?: string; professionalPreset?: string; liveFrameCount?: number } = {}): Promise<boolean> {
   const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, showToast, setConfirmDialog } =
     useStore.getState()
 
@@ -1677,11 +1678,16 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     await storeImage(img.dataUrl)
   }
 
+  const liveFrameCount = isLiveProfessionalPreset(options.professionalPreset)
+    ? Math.max(1, Math.min(12, Math.trunc(options.liveFrameCount ?? params.n)))
+    : undefined
   const normalizedParams = normalizeParamsForSettings(params, requestSettings, { hasInputImages: orderedInputImages.length > 0 })
   const shouldUseTransparentOutput = (normalizedParams.output_format === 'png' || normalizedParams.output_format === 'webp') && normalizedParams.transparent_output
-  const taskParams = shouldUseTransparentOutput
+  const normalizedTaskParams = shouldUseTransparentOutput
     ? getTransparentRequestParams(normalizedParams)
     : { ...normalizedParams, transparent_output: false }
+  // Live 的 n 表示整条序列的目标帧数，不是单次渠道返回数量。渠道调用固定 n=1。
+  const taskParams = liveFrameCount ? { ...normalizedTaskParams, n: 1 } : normalizedTaskParams
   const transparentMeta = taskParams.transparent_output && activeProfile.transparentBackgroundMethod === 'local'
     ? createTransparentOutputMeta(prompt.trim())
     : null
@@ -1696,6 +1702,8 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     prompt: prompt.trim(),
     stylePreset: options.stylePreset,
     professionalPreset: options.professionalPreset,
+    liveFrameCount,
+    liveFramesCompleted: liveFrameCount ? 0 : undefined,
     params: taskParams,
     apiProvider: activeProfile.provider,
     apiProfileId: activeProfile.id,
@@ -3582,7 +3590,7 @@ async function runTaskWithProfile(
       : task.prompt
     const requestPrompt = appendProfessionalPreset(appendStylePreset(requestBasePrompt, task.stylePreset), task.professionalPreset)
 
-    const result = await callImageApi({
+    const apiOptions: CallApiOptions = {
       settings: requestSettings,
       prompt: replaceImageMentionsForApi(requestPrompt, inputDataUrls.length),
       params: task.params,
@@ -3609,7 +3617,15 @@ async function runTaskWithProfile(
         useStore.getState().setTaskStreamPreview(taskId, partial.image, partial.requestIndex)
         void persistTaskStreamPartialImage(taskId, partial.image)
       },
-    })
+    }
+    const result = isLiveProfessionalPreset(task.professionalPreset) && task.liveFrameCount
+      ? await generateLiveFrameSequence(apiOptions, task.liveFrameCount, (progress) => {
+          const latest = useStore.getState().tasks.find((item) => item.id === taskId)
+          if (!latest || latest.status !== 'running') return
+          useStore.getState().setTaskStreamPreview(taskId, progress.image, progress.completed - 1)
+          updateTaskInStore(taskId, { liveFramesCompleted: progress.completed })
+        })
+      : await callImageApi(apiOptions)
 
     const latestBeforeSuccess = useStore.getState().tasks.find((t) => t.id === taskId)
     if (!latestBeforeSuccess || latestBeforeSuccess.status !== 'running') {
@@ -3626,7 +3642,7 @@ async function runTaskWithProfile(
       outputImageSizes,
     )
     const actualParams = deriveGalleryActualParams(taskProvider, isAsyncCustomTask, result.actualParams, actualParamsList, outputIds.length)
-    const shouldStoreRevisedPrompts = taskProvider !== 'fal' && !isAsyncCustomTask && !task.stylePreset
+    const shouldStoreRevisedPrompts = taskProvider !== 'fal' && !isAsyncCustomTask && !task.stylePreset && !task.professionalPreset
     const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
     const revisedPrompts = activeProfile.codexCli && task.sourceMode !== 'agent'
       ? result.revisedPrompts?.map((prompt) => prompt == null ? prompt : stripInjectedCodexCliSizePrompt(prompt, requestPrompt, task.params.size))
@@ -3664,6 +3680,7 @@ async function runTaskWithProfile(
       actualParamsByImage,
       revisedPromptByImage,
       failoverAttempts: context.attempts.length ? context.attempts : undefined,
+      liveFramesCompleted: task.liveFrameCount ? outputIds.length : undefined,
       ...createTaskDonePatch(task, Date.now()),
       falRecoverable: false,
       customRecoverable: false,
@@ -3857,6 +3874,8 @@ export async function retryTask(task: TaskRecord) {
     prompt: task.prompt,
     stylePreset: task.stylePreset,
     professionalPreset: task.professionalPreset,
+    liveFrameCount: task.liveFrameCount,
+    liveFramesCompleted: task.liveFrameCount ? 0 : undefined,
     params: taskParams,
     apiProvider: activeProfile.provider,
     apiProfileId: activeProfile.id,
@@ -3935,7 +3954,7 @@ export async function reuseConfig(task: TaskRecord) {
       confirmText: '使用当前配置提交',
       cancelText: '放弃提交',
       action: () => {
-        void submitTask({ useCurrentApiProfileWhenReusedMissing: true, stylePreset: task.stylePreset, professionalPreset: task.professionalPreset })
+        void submitTask({ useCurrentApiProfileWhenReusedMissing: true, stylePreset: task.stylePreset, professionalPreset: task.professionalPreset, liveFrameCount: task.liveFrameCount })
       },
     })
     return

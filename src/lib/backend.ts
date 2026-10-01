@@ -566,6 +566,19 @@ export async function submitFrontLogout() {
   await fetch('/api/session', { method: 'DELETE' }).catch(() => {})
 }
 
+/** 修改当前账号资料，并同步更新内存中的 bootstrap，让顶栏无需刷新立即生效。 */
+export async function submitUserProfile(input: { displayName: string, avatar: string }) {
+  const response = await fetch('/api/profile', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const payload = await response.json().catch(() => ({})) as { error?: string, user?: BackendUser }
+  if (!response.ok || !payload.user) throw new Error(payload.error || `HTTP ${response.status}`)
+  if (bootstrap) bootstrap = { ...bootstrap, user: payload.user }
+  return payload.user
+}
+
 /** 凭邀请码自助注册。成功后服务端直接下发会话，不需要再登录一次。 */
 export async function submitRegister(input: {
   username: string

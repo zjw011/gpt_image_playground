@@ -292,6 +292,19 @@ describe('邮箱验证码注册全流程', () => {
     expect(bootstrap.body.credits).toMatchObject({ enabled: true, balance: SIGNUP_BONUS })
   })
 
+  it('登录用户可以修改昵称和头像，刷新后仍保留', async () => {
+    const avatar = 'data:image/png;base64,aGVsbG8='
+    const saved = await api('/api/profile', {
+      method: 'PATCH',
+      body: { displayName: '绘想创作者', avatar },
+    })
+    expect(saved.status).toBe(200)
+    expect(saved.body.user).toMatchObject({ username: 'newuser', displayName: '绘想创作者', avatar })
+
+    const bootstrap = await api('/api/bootstrap')
+    expect(bootstrap.body.user).toMatchObject({ displayName: '绘想创作者', avatar })
+  })
+
   it('注册赠送只发一次：重新登录不会再加分', async () => {
     const logout = await api('/api/session', { method: 'DELETE' })
     expect(logout.status).toBe(200)

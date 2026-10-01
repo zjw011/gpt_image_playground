@@ -8,6 +8,7 @@
 import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import { getBackendUser, submitFrontLogout } from '../../lib/backend'
+import { BrandMark } from '../theme'
 import {
   IconGrid, IconLayers, IconBolt, IconUser, IconCoin,
   IconWechat, IconMail, IconSettings, IconLogout, IconHome,
@@ -48,9 +49,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
       <aside className="sticky top-0 flex h-screen w-[236px] shrink-0 flex-col overflow-y-auto border-r border-[#e6ebf2] bg-white/95 px-4 py-5 shadow-[8px_0_32px_rgba(148,163,184,0.06)] backdrop-blur">
         <div className="px-2.5">
           <span className="flex items-center gap-3">
-            <span className="flex h-10 w-10 items-center justify-center rounded-[14px] bg-gradient-to-br from-[#2563eb] to-[#60a5fa] font-bold text-white shadow-[0_8px_20px_rgba(59,130,246,0.25)]">
-              绘
-            </span>
+            <BrandMark className="h-11 w-11" />
             <span>
               <span className="block text-[17px] font-bold tracking-wide text-[#1e293b]">绘想后台</span>
               <span className="mt-0.5 block text-[9px] font-semibold tracking-[0.22em] text-[#94a3b8]">CONTROL</span>
@@ -117,9 +116,9 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
             </span>
             <span className="h-7 w-px bg-[#e6ebf2]" />
             <div className="flex items-center gap-2.5 rounded-full border border-[#e6ebf2] bg-white py-1.5 pl-1.5 pr-3 shadow-sm">
-              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-[#2563eb] to-[#60a5fa] text-sm font-bold text-white shadow-sm">
-                {name.slice(0, 1)}
-              </span>
+              {user?.avatar
+                ? <img src={user.avatar} alt="" className="h-8 w-8 rounded-full object-cover shadow-sm" />
+                : <span className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-[#2563eb] to-[#60a5fa] text-sm font-bold text-white shadow-sm">{name.slice(0, 1)}</span>}
               <span>
                 <span className="block max-w-[8rem] truncate text-xs font-semibold text-[#334155]">{name}</span>
                 <span className="flex items-center gap-1 text-[9px] text-[#94a3b8]"><IconShield className="h-2.5 w-2.5" />管理员</span>

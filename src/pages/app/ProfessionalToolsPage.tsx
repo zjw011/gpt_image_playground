@@ -3,7 +3,6 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { getCreditsConfig } from '../../lib/backend'
 import { assetUrl } from '../../lib/assetUrl'
 import { useCreditsStore } from '../../lib/creditsStore'
-import { getOutputImageLimitForSettings } from '../../lib/paramCompatibility'
 import type { ProfessionalPresetKey } from '../../lib/professionalTools'
 import { addImageFromFile, submitTask, useStore } from '../../store'
 import { IconArrowLeft, IconArrowRight, IconMinus, IconPlus, IconSparkle, IconUpload } from '../icons'
@@ -146,13 +145,10 @@ function LiveEditor() {
   const setPrompt = useStore((s) => s.setPrompt)
   const params = useStore((s) => s.params)
   const setParams = useStore((s) => s.setParams)
-  const settings = useStore((s) => s.settings)
   const showToast = useStore((s) => s.showToast)
   const credits = getCreditsConfig()
   const view = useCreditsStore((s) => s.view)
-  const maxFrames = Math.min(8, getOutputImageLimitForSettings(settings))
-  const frameOptions = [6, 8].filter((count) => count <= maxFrames)
-  if (frameOptions.length === 0) frameOptions.push(maxFrames)
+  const frameOptions = [6, 8]
   const [motion, setMotion] = useState<ProfessionalPresetKey>('live-blink')
   const [frameCount, setFrameCount] = useState(frameOptions[frameOptions.length - 1])
   const [description, setDescription] = useState('')
@@ -179,9 +175,9 @@ function LiveEditor() {
     }
     setSubmitting(true)
     setPrompt(description.trim() || '保持原图人物与场景完全一致，只生成自然、克制、连续的轻微动态变化')
-    setParams({ n: frameCount })
+    setParams({ n: 1 })
     try {
-      if (!await submitTask({ professionalPreset: motion })) return
+      if (!await submitTask({ professionalPreset: motion, liveFrameCount: frameCount })) return
       navigate('/result')
     } finally {
       setSubmitting(false)
@@ -190,7 +186,7 @@ function LiveEditor() {
 
   return (
     <section className="overflow-hidden rounded-[28px] border border-[#e7e3f7] bg-gradient-to-br from-white via-[#fbfaff] to-[#efedff] p-5 shadow-sm sm:p-7">
-      <div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="text-2xl font-bold text-[#292650]">Live 实况图</h2><p className="mt-2 text-sm text-[#817b9f]">AI 以原图生成 6–8 张高一致性微动作关键帧，结果页自动补帧播放并可下载短视频。</p></div><span className="rounded-full bg-[#fff6e5] px-3 py-1.5 text-xs font-semibold text-[#b67922]">AI 连续帧 · {frameCount} 张</span></div>
+      <div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="text-2xl font-bold text-[#292650]">Live 实况图</h2><p className="mt-2 text-sm text-[#817b9f]">AI 逐帧生成 6–8 张连续画面，每张完成后作为下一帧参考，结果页自动补帧播放并可下载短视频。</p></div><span className="rounded-full bg-[#fff6e5] px-3 py-1.5 text-xs font-semibold text-[#b67922]">串行连续帧 · {frameCount} 张</span></div>
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_380px]">
         <button type="button" onClick={() => fileInputRef.current?.click()} className="relative flex min-h-[480px] items-center justify-center overflow-hidden rounded-3xl border-2 border-dashed border-[#d9d4ef] bg-[#f7f6fd]">
           {inputImages[0] ? <img src={inputImages[0].dataUrl} alt="Live 参考图" className="h-full min-h-[480px] w-full object-contain" /> : <span className="flex flex-col items-center gap-3 text-[#8d86aa]"><span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-[#6b5ce7] shadow-sm"><IconUpload className="h-7 w-7" /></span><span className="text-sm font-semibold">上传一张图片开始制作</span><span className="text-xs text-[#aaa5bf]">人物、宠物或轻微环境动态效果更自然</span></span>}
@@ -201,7 +197,7 @@ function LiveEditor() {
           <h3 className="mt-5 text-sm font-bold text-[#35315d]">AI 关键帧</h3><div className="mt-3 grid grid-cols-2 gap-2">{frameOptions.map((count) => <button key={count} type="button" onClick={() => setFrameCount(count)} className={`rounded-xl py-2.5 text-xs font-semibold transition ${frameCount === count ? 'bg-[#7867f5] text-white' : 'bg-[#f5f3fb] text-[#77718f] hover:bg-[#ece9fc]'}`}>{count} 张{count === 8 ? ' · 更自然' : ' · 更省积分'}</button>)}</div>
           <h3 className="mt-5 text-sm font-bold text-[#35315d]">画面比例</h3><div className="mt-3 flex flex-wrap gap-2">{RATIOS.map((ratio) => <button key={ratio.label} type="button" onClick={() => setParams({ size: ratio.size })} className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${currentRatio === ratio.label ? 'bg-[#efedfd] text-[#6b5ce7] ring-1 ring-[#8c7cf7]' : 'bg-[#f7f6fc] text-[#77718f] hover:bg-[#efedfd]'}`}>{ratio.label}</button>)}</div>
           <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} placeholder="可选：补充希望发生的极轻微动作" className="mt-5 w-full resize-none rounded-2xl border border-[#e4e0f2] bg-white p-3.5 text-sm leading-6 text-[#37335c] outline-none placeholder:text-[#aaa5bf] focus:border-[#9588f5]" />
-          <p className="mt-3 text-[11px] leading-5 text-[#aaa5bf]">生成的是 AI 关键帧；完成后会按往返顺序补成约 2–3 秒的短实况效果。主体一致性取决于当前绘图模型。</p>
+          <p className="mt-3 text-[11px] leading-5 text-[#aaa5bf]">系统会依次提交 {frameCount} 次单图任务，上一帧返回后才继续下一帧；完成后按往返顺序补成约 2–3 秒的短实况效果。</p>
           <button type="button" disabled={submitting} onClick={() => void generate()} className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#7462f3] to-[#9b76f6] px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-[#7867f5]/25 transition disabled:cursor-wait disabled:opacity-60"><IconSparkle className="h-4 w-4" />{submitting ? '正在提交…' : `生成 Live 实况${credits ? ` · ${cost} 积分` : ''}`}</button>
           {credits && <p className="mt-2 text-center text-[11px] text-[#aaa5bf]">剩余 {view?.available ?? 0} 积分 · 按本次提交帧数计费 · 失败自动退分</p>}
           <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(event) => { void upload(event.target.files); event.target.value = '' }} />

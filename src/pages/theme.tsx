@@ -1,6 +1,7 @@
 // 「绘想」设计基座：品牌标识、配色与通用控件样式。
 // 视觉基调是紫罗兰渐变 + 浅薰衣草底 + 白色圆角卡片，对应设计稿的梦幻插画风。
 import { Link, NavLink } from 'react-router-dom'
+import { assetUrl } from '../lib/assetUrl'
 import { IconSparkle } from './icons'
 
 export const BRAND_NAME = '绘想'
@@ -33,15 +34,18 @@ export function PageLoading({ text = '正在加载…' }: { text?: string }) {
   )
 }
 
-/** 品牌 Logo：星形图标 + 绘想字标。应用内传 to="/studio"，免得点一下跳出应用。 */
+/** 绘想品牌图形：透明底用于导航与后台，App 图标用于极小尺寸入口。 */
+export function BrandMark({ className = 'h-9 w-9', appIcon = false }: { className?: string, appIcon?: boolean }) {
+  return <img src={assetUrl(appIcon ? '/brand/app-icon.png' : '/brand/logo-mark.png')} alt="" className={`${className} shrink-0 object-contain`} />
+}
+
+/** 品牌 Logo：蝴蝶画笔图形 + 绘想字标。应用内传 to="/studio"，免得点一下跳出应用。 */
 export function Logo({ light, size = 'md', to = '/' }: { light?: boolean, size?: 'md' | 'lg', to?: string }) {
-  const box = size === 'lg' ? 'h-11 w-11 rounded-xl text-xl' : 'h-9 w-9 rounded-lg text-base'
+  const box = size === 'lg' ? 'h-12 w-12' : 'h-10 w-10'
   const text = size === 'lg' ? 'text-2xl' : 'text-lg'
   return (
     <Link to={to} className="flex items-center gap-2.5">
-      <span className={`flex items-center justify-center bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] font-bold text-white shadow-md shadow-[#7c6cf6]/30 ${box}`}>
-        绘
-      </span>
+      <BrandMark className={box} />
       <span className={`font-bold tracking-wide ${text} ${light ? 'text-white' : 'text-[#37335c]'}`}>
         {BRAND_NAME}
       </span>

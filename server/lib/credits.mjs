@@ -488,7 +488,15 @@ export function userCreditsView(userId, limit = 20) {
     available: getAvailableBalance(userId),
     totalIn: account.totalIn,
     totalOut: account.totalOut,
-    ledger: listLedger(userId, limit),
+    ledger: listLedger(userId, limit).map((entry) => ({
+      ...entry,
+      // 历史生图流水曾把渠道名拼进说明；前台投影统一去掉，内部 ref 仍可供后台审计。
+      note: entry.type === 'spend'
+        ? entry.note.split(' · ')[0]
+        : entry.type === 'lucky'
+          ? entry.note.split(' · ').slice(0, 2).join(' · ')
+          : entry.note,
+    })),
   }
 }
 

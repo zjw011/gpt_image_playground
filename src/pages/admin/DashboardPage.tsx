@@ -230,10 +230,10 @@ export default function AdminDashboardPage() {
                             <span className="flex items-center gap-2.5 font-medium text-[#475569]"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#eff6ff] text-[10px] font-bold text-[#3b82f6]">{name.slice(0, 1)}</span>{name}</span>
                           </td>
                           <td className="px-5 py-3.5"><span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${amount > 0 ? 'bg-emerald-50 text-emerald-600' : amount < 0 ? 'bg-rose-50 text-rose-500' : 'bg-blue-50 text-blue-500'}`}>{LEDGER_LABELS[type] ?? (type || '其他')}</span></td>
-                          <td className="max-w-[22rem] truncate px-5 py-3.5 text-[#8492a6]">{String(entry.note || '—')}</td>
+                          <td className="max-w-[22rem] truncate px-5 py-3.5 text-[#8492a6]">{type === 'lucky' ? String(entry.note || '').split(' · ').slice(0, 2).join(' · ') : String(entry.note || '—')}</td>
                           <td className="px-5 py-3.5 text-[#a0aec0]">{formatLedgerTime(entry.at ?? entry.createdAt)}</td>
-                          <td className={`px-6 py-3.5 text-right font-bold ${amount > 0 ? 'text-emerald-500' : amount < 0 ? 'text-rose-500' : 'text-blue-500'}`}>
-                            {amount > 0 ? `+${amount}` : amount}
+                          <td className={`px-6 py-3.5 text-right font-bold ${amount > 0 ? 'text-emerald-500' : amount < 0 || type === 'lucky' ? 'text-rose-500' : 'text-blue-500'}`}>
+                            {type === 'lucky' ? '-0' : amount > 0 ? `+${amount}` : amount}
                           </td>
                         </tr>
                       )

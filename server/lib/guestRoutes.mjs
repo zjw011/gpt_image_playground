@@ -7,7 +7,7 @@ import { redeemCard } from './cards.mjs'
 import { getClientIp, HttpError, readJsonBody, sendJson } from './http.mjs'
 import { isLocked, getLockRemainingSeconds, recordFailure, recordSuccess } from './rateLimit.mjs'
 import { handleRelay } from './relay.mjs'
-import { getConfig, getEnabledChannels, inviteStatus, isSmtpConfigured, toPublicChannel } from './store.mjs'
+import { getConfig, getEnabledChannels, inviteStatus, isSmtpConfigured, toPublicChannel, toPublicUser, updateConfig } from './store.mjs'
 import { handleWechatCallback, pollWechatLogin, serveFixedQrcode, serveSceneQrcode, startWechatLogin } from './wechatRoutes.mjs'
 import { handleGalleryRoute } from './galleryRoutes.mjs'
 import { inviteStats } from './referral.mjs'
@@ -70,17 +70,7 @@ export async function handleGuestRoute(req, res, ctx) {
       guestPasswordSet: Boolean(config.guestPasswordHash),
       userCount: config.users.filter((user) => user.enabled).length,
       authenticated: gateOpen,
-      user: ctx.user
-        ? {
-            id: ctx.user.id,
-            username: ctx.user.username,
-            displayName: ctx.user.wechatNickname || ctx.user.displayName || ctx.user.username,
-            avatar: ctx.user.wechatAvatar || '',
-            email: ctx.user.email || '',
-            // 管理员账号据此在前端分流进管理后台。
-            role: ctx.user.role === 'admin' ? 'admin' : 'user',
-          }
-        : null,
+      user: ctx.user ? toPublicUser(ctx.user) : null,
       workspaceId: getWorkspaceId(accessMode, ctx.user),
       // 注册入口是否可见。只回传"能不能注册"和"要不要邀请码"，邀请码本身不下发。
       registrationOpen: accessMode === 'accounts' && inviteStatus(config.site).ok,
@@ -142,6 +132,36 @@ export async function handleGuestRoute(req, res, ctx) {
 
   if (ctx.path === '/api/session' && req.method === 'DELETE') {
     return ctx.logout()
+  }
+
+  if (ctx.path === '/api/profile' && req.method === 'PATCH') {
+    if (!ctx.user) throw new HttpError(401, '请先登录后再编辑资料')
+    const body = await readJsonBody(req)
+    const displayName = String(body.displayName ?? '').trim()
+    const requestedAvatar = String(body.avatar ?? '')
+    // 微信头像是远程 URL，只用于公共投影，不写回自定义头像字段；用户只改昵称时也不能因此被误判格式非法。
+    const avatar = requestedAvatar === (ctx.user.avatar || ctx.user.wechatAvatar || '')
+      ? (ctx.user.avatar || '')
+      : requestedAvatar
+    const displayNameLength = Array.from(displayName).length
+    if (displayNameLength < 1 || displayNameLength > 24) throw new HttpError(400, '昵称需为 1–24 个字符')
+    if (avatar && (avatar.length > 700_000 || !/^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/=]+$/i.test(avatar))) {
+      throw new HttpError(400, '头像格式无效或文件过大')
+    }
+
+    const next = updateConfig((current) => {
+      const idx = current.users.findIndex((user) => user.id === ctx.user.id)
+      if (idx < 0) throw new HttpError(404, '账号不存在')
+      current.users[idx] = {
+        ...current.users[idx],
+        displayName,
+        avatar,
+        updatedAt: Date.now(),
+      }
+      return current
+    }).users.find((user) => user.id === ctx.user.id)
+    if (!next) throw new HttpError(404, '账号不存在')
+    return sendJson(res, 200, { ok: true, user: toPublicUser(next) })
   }
 
   if (ctx.path === '/api/register' && req.method === 'POST') {

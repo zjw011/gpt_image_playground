@@ -88,7 +88,7 @@ export async function handleGalleryRoute(req, res, ctx) {
       }
       const result = publishWork({
         ownerId: user.id,
-        ownerName: user.wechatNickname || user.displayName || user.username,
+        ownerName: user.displayName || user.wechatNickname || user.username,
         title: body.title,
         caption: body.caption,
         prompt: String(body.prompt ?? ''),
@@ -115,7 +115,7 @@ export async function handleGalleryRoute(req, res, ctx) {
       const result = createComment({
         workId,
         userId: user.id,
-        userName: user.wechatNickname || user.displayName || user.username,
+        userName: user.displayName || user.wechatNickname || user.username,
         text: body.text,
       })
       if (!result.ok) throw new HttpError(result.status, result.error)

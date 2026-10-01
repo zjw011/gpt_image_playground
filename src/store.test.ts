@@ -381,7 +381,13 @@ describe('mask draft lifecycle in store actions', () => {
   })
 
   it('Live 工具提交时追加微动作一致性约束', async () => {
-    await submitTask({ professionalPreset: 'live-blink' })
+    vi.mocked(callImageApi).mockResolvedValueOnce({
+      images: ['data:image/png;base64,live-frame'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+    await submitTask({ professionalPreset: 'live-blink', liveFrameCount: 1 })
     await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
 
     expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({

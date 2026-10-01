@@ -178,6 +178,7 @@ function assertSameOrigin(req) {
  */
 const SAME_ORIGIN_API_PATHS = new Set([
   '/api/session',
+  '/api/profile',
   '/api/register',
   '/api/auth/email-code',
   '/api/auth/reset-password',

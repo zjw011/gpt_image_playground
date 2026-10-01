@@ -184,6 +184,10 @@ export interface TaskRecord {
   stylePreset?: string
   /** 专业工具预设 ID；增强词仅在请求阶段拼接，不写入公开提示词。 */
   professionalPreset?: string
+  /** Live 工具要串行生成的总帧数；单次渠道请求始终固定为 1 张。 */
+  liveFrameCount?: number
+  /** 已完成的 Live 帧数，用于结果页与作品列表展示进度。 */
+  liveFramesCompleted?: number
   params: TaskParams
   /** 生成时使用的 Provider 类型 */
   apiProvider?: ApiProvider

@@ -6,7 +6,7 @@ import { useStore } from '../../store'
 import { getBackendUser, getCreditsConfig, getInviteInfo, isAdmin } from '../../lib/backend'
 import { isBackendManagedMode } from '../../lib/presetConfig'
 import { useCreditsStore } from '../../lib/creditsStore'
-import { Logo } from '../theme'
+import { BrandMark, Logo } from '../theme'
 import {
   IconBrush, IconGrid, IconImage, IconCoin, IconUser, IconHelp, IconSettings, IconShare, IconSparkle, IconShield, IconToolbox,
 } from '../icons'
@@ -48,8 +48,8 @@ export function SideNav() {
         <Logo to="/studio" />
       </div>
       <div className="flex justify-center lg:hidden">
-        <Link to="/studio" className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-base font-bold text-white">
-          绘
+        <Link to="/studio" className="flex h-10 w-10 items-center justify-center">
+          <BrandMark appIcon className="h-9 w-9" />
         </Link>
       </div>
 

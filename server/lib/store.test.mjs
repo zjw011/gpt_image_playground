@@ -92,7 +92,7 @@ describe('users 清洗', () => {
 
   it('补齐缺省字段', () => {
     const config = initWith({ version: 2, users: [{ id: 'u-1', username: 'alice' }], channels: [] })
-    expect(config.users[0]).toMatchObject({ displayName: '', note: '', enabled: true, passwordHash: '', lastSeenAt: 0 })
+    expect(config.users[0]).toMatchObject({ displayName: '', avatar: '', note: '', enabled: true, passwordHash: '', lastSeenAt: 0 })
   })
 })
 

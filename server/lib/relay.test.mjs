@@ -411,6 +411,7 @@ describe('按张扣费', () => {
     expect(response.headers.get('x-credits-charged')).toBe('6')
     expect(response.headers.get('x-credits-balance')).toBe('94')
     expect(getBalance(USER_ID)).toBe(94)
+    expect(userCreditsView(USER_ID).ledger[0].note).toBe('出图 2 张')
   })
 
   it('幸运免单命中：不扣积分并带 x-credits-lucky 头', async () => {
@@ -435,6 +436,7 @@ describe('按张扣费', () => {
       ref: 'ch-1',
     })
     expect(userCreditsView(USER_ID).ledger[0].note).toContain('出图 2 张')
+    expect(userCreditsView(USER_ID).ledger[0].note).not.toContain('渠道')
   })
 
   it('幸运免单未命中：正常扣费，不带 lucky 头', async () => {

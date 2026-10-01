@@ -1,15 +1,16 @@
 // 个人中心。左侧导航承担分区入口（作品/积分中心/账号设置）；
 // 「我的收藏」不单独占一栏——收藏就是打了星标的作品，在「我的作品」里用页签切换查看。
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useStore } from '../../store'
 import type { TaskRecord } from '../../types'
-import { fetchCredits, getBackendUser, getCreditsConfig, getInviteInfo, submitFrontLogout, type BackendLedgerType } from '../../lib/backend'
+import { fetchCredits, getBackendUser, getCreditsConfig, getInviteInfo, submitFrontLogout, submitUserProfile, type BackendLedgerType } from '../../lib/backend'
 import { copyTextToClipboard } from '../../lib/clipboard'
 import { useCreditsStore } from '../../lib/creditsStore'
+import { prepareProfileAvatar } from '../../lib/profileImage'
 import AppShell from './AppShell'
 import { useThumbnail } from './useTaskImage'
-import { IconImage, IconUser, IconLogout, IconSparkle, IconStar } from '../icons'
+import { IconImage, IconUser, IconLogout, IconSparkle, IconStar, IconEdit, IconUpload, IconTrash } from '../icons'
 
 const MENU = [
   { key: 'works', label: '我的作品' },
@@ -60,7 +61,7 @@ function WorkCard({ task, streamPreview }: { task: TaskRecord, streamPreview?: s
               <span className="absolute inset-0 animate-ping rounded-2xl bg-[#7c6cf6]/20" />
               <IconSparkle className="relative h-5 w-5 animate-pulse" />
             </span>
-            <strong className="mt-4 text-sm text-[#554c9d]">生成中</strong>
+            <strong className="mt-4 text-sm text-[#554c9d]">{task.liveFrameCount ? `连续帧 ${task.liveFramesCompleted ?? 0}/${task.liveFrameCount}` : '生成中'}</strong>
             <span className="mt-1 text-[11px] font-medium text-[#8d85bd]">已等待 {formatElapsed(now - task.createdAt)}</span>
             <span className="mt-2 line-clamp-2 text-[11px] leading-4 text-[#8f89aa]">{task.prompt}</span>
           </span>
@@ -108,6 +109,7 @@ function OrderNote() {
 
 export default function MePage() {
   const [searchParams] = useSearchParams()
+  const avatarInputRef = useRef<HTMLInputElement>(null)
   const tasks = useStore((s) => s.tasks)
   const streamPreviews = useStore((s) => s.streamPreviews)
   const showToast = useStore((s) => s.showToast)
@@ -115,6 +117,12 @@ export default function MePage() {
   const credits = getCreditsConfig()
   const invite = getInviteInfo()
   const view = useCreditsStore((s) => s.view)
+  const [, setProfileVersion] = useState(0)
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [profileName, setProfileName] = useState('')
+  const [profileAvatar, setProfileAvatar] = useState('')
+  const [savingProfile, setSavingProfile] = useState(false)
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
 
   const rawTab = searchParams.get('tab') ?? 'works'
   // 「我的收藏」已并入我的作品：旧链接 ?tab=favorites 等价于 works 页的收藏筛选
@@ -124,6 +132,45 @@ export default function MePage() {
   const doneCount = tasks.filter((task) => task.status === 'done' && task.outputImages.length > 0).length
   const workTasks = tasks.filter((task) => task.status === 'running' || (task.status === 'done' && task.outputImages.length > 0))
   const favoriteTasks = tasks.filter((task) => task.isFavorite)
+
+  const openProfileEditor = () => {
+    if (!user) return
+    setProfileName(user.displayName || user.username)
+    setProfileAvatar(user.avatar || '')
+    setProfileOpen(true)
+  }
+
+  const selectAvatar = async (files: FileList | null) => {
+    const file = files?.[0]
+    if (!file) return
+    setUploadingAvatar(true)
+    try {
+      setProfileAvatar(await prepareProfileAvatar(file))
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '头像处理失败', 'error')
+    } finally {
+      setUploadingAvatar(false)
+    }
+  }
+
+  const saveProfile = async () => {
+    const displayName = profileName.trim()
+    if (!displayName) {
+      showToast('请输入昵称', 'error')
+      return
+    }
+    setSavingProfile(true)
+    try {
+      await submitUserProfile({ displayName, avatar: profileAvatar })
+      setProfileVersion((version) => version + 1)
+      setProfileOpen(false)
+      showToast('个人资料已更新', 'success')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '资料保存失败', 'error')
+    } finally {
+      setSavingProfile(false)
+    }
+  }
 
   const logout = async () => {
     try {
@@ -174,6 +221,11 @@ export default function MePage() {
             {user?.email ? ` · ${user.email}` : ''}
           </p>
         </div>
+        {user && (
+          <button type="button" onClick={openProfileEditor} className="flex items-center gap-1.5 rounded-full border border-[#ddd8f1] bg-[#faf9ff] px-4 py-2 text-xs font-semibold text-[#6b5ce7] transition hover:border-[#a99df6] hover:bg-[#f2efff]">
+            <IconEdit className="h-3.5 w-3.5" />编辑资料
+          </button>
+        )}
         <div className="ml-auto flex gap-8 pr-2 text-center">
           <div>
             <p className="text-2xl font-bold">{doneCount}</p>
@@ -319,9 +371,11 @@ export default function MePage() {
                           {new Date(entry.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
                         </td>
                         <td className="px-5 py-3 font-medium">{LEDGER_LABELS[entry.type] ?? entry.type}</td>
-                        <td className="max-w-[220px] truncate px-5 py-3 text-[#8a86ac]" title={entry.note}>{entry.note || '—'}</td>
-                        <td className={`px-5 py-3 text-right font-semibold ${entry.amount >= 0 ? 'text-emerald-500' : 'text-[#f472b6]'}`}>
-                          {entry.amount >= 0 ? `+${entry.amount}` : entry.amount}
+                        <td className="max-w-[220px] truncate px-5 py-3 text-[#8a86ac]" title={entry.type === 'lucky' ? entry.note.split(' · ').slice(0, 2).join(' · ') : entry.note}>
+                          {entry.type === 'lucky' ? entry.note.split(' · ').slice(0, 2).join(' · ') : entry.note || '—'}
+                        </td>
+                        <td className={`px-5 py-3 text-right font-semibold ${entry.type === 'lucky' || entry.amount < 0 ? 'text-[#f472b6]' : 'text-emerald-500'}`}>
+                          {entry.type === 'lucky' ? '-0' : entry.amount >= 0 ? `+${entry.amount}` : entry.amount}
                         </td>
                         <td className="px-5 py-3 text-right text-[#8a86ac]">{entry.balanceAfter}</td>
                       </tr>
@@ -340,6 +394,10 @@ export default function MePage() {
             <div className="rounded-3xl border border-[#eceaf6] bg-white p-6 shadow-sm">
               <h3 className="text-[15px] font-bold">账号设置</h3>
               <dl className="mt-5 space-y-4 text-sm">
+                <div className="flex items-center justify-between border-b border-[#f8f7fd] pb-4">
+                  <dt className="text-[#8a86ac]">昵称</dt>
+                  <dd className="flex items-center gap-3 font-medium"><span>{name}</span>{user && <button type="button" onClick={openProfileEditor} className="text-xs text-[#6b5ce7] hover:text-[#5a4cd6]">修改</button>}</dd>
+                </div>
                 <div className="flex items-center justify-between border-b border-[#f8f7fd] pb-4">
                   <dt className="text-[#8a86ac]">用户名</dt>
                   <dd className="font-medium">{user?.username ?? name}</dd>
@@ -380,6 +438,37 @@ export default function MePage() {
           )}
         </div>
       </div>
+
+      {profileOpen && user && (
+        <div className="animate-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-[#33285f]/45 p-4 backdrop-blur-sm" onClick={() => !savingProfile && setProfileOpen(false)}>
+          <div className="animate-modal-in w-full max-w-md overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-[#f0edf8] px-6 py-4">
+              <div><h2 className="text-base font-bold text-[#37335c]">编辑个人资料</h2><p className="mt-1 text-xs text-[#a5a1c4]">头像和昵称会显示在个人中心与顶部账号栏</p></div>
+              <button type="button" disabled={savingProfile} onClick={() => setProfileOpen(false)} className="flex h-8 w-8 items-center justify-center rounded-full text-xl text-[#a5a1c4] hover:bg-[#f6f4fc]">×</button>
+            </div>
+            <div className="p-6">
+              <div className="flex flex-col items-center">
+                <button type="button" disabled={uploadingAvatar} onClick={() => avatarInputRef.current?.click()} className="group relative h-24 w-24 overflow-hidden rounded-full bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-3xl font-bold text-white ring-4 ring-[#efedfd]">
+                  {profileAvatar ? <img src={profileAvatar} alt="头像预览" className="h-full w-full object-cover" /> : profileName.trim().slice(0, 1) || user.username.slice(0, 1)}
+                  <span className="absolute inset-0 flex items-center justify-center bg-black/45 text-xs font-semibold opacity-0 transition group-hover:opacity-100"><IconUpload className="mr-1 h-4 w-4" />更换</span>
+                </button>
+                <div className="mt-3 flex items-center gap-3 text-xs">
+                  <button type="button" disabled={uploadingAvatar} onClick={() => avatarInputRef.current?.click()} className="font-semibold text-[#6b5ce7]">{uploadingAvatar ? '处理中…' : '上传头像'}</button>
+                  {profileAvatar && <button type="button" onClick={() => setProfileAvatar('')} className="flex items-center gap-1 text-red-400 hover:text-red-500"><IconTrash className="h-3.5 w-3.5" />移除</button>}
+                </div>
+                <input ref={avatarInputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => { void selectAvatar(event.target.files); event.target.value = '' }} />
+              </div>
+              <label htmlFor="profile-display-name" className="mt-6 block text-xs font-semibold text-[#5b5680]">昵称</label>
+              <input id="profile-display-name" value={profileName} onChange={(event) => setProfileName(Array.from(event.target.value).slice(0, 24).join(''))} placeholder="输入你的昵称" className="mt-2 w-full rounded-xl border border-[#e5e1f5] px-3.5 py-3 text-sm outline-none transition focus:border-[#8b7bf6] focus:ring-4 focus:ring-[#7c6cf6]/10" />
+              <div className="mt-2 flex items-center justify-between text-[11px] text-[#b3aed0]"><span>用户名 {user.username} 不会改变</span><span>{Array.from(profileName).length}/24</span></div>
+            </div>
+            <div className="flex justify-end gap-3 border-t border-[#f0edf8] px-6 py-4">
+              <button type="button" disabled={savingProfile} onClick={() => setProfileOpen(false)} className="rounded-full border border-[#ded9ef] px-5 py-2.5 text-sm font-medium text-[#6f6a94]">取消</button>
+              <button type="button" disabled={savingProfile || uploadingAvatar || !profileName.trim()} onClick={() => void saveProfile()} className="rounded-full bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-[#7c6cf6]/25 disabled:cursor-not-allowed disabled:opacity-40">{savingProfile ? '保存中…' : '保存资料'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </AppShell>
   )
 }

@@ -1,8 +1,17 @@
 // 注册 URL 会带 package.json 版本；升级时浏览器会安装新 worker，并清掉旧缓存。
 const VERSION = new URL(self.location.href).searchParams.get('v') || 'dev'
 const CACHE_NAME = `gpt-image-playground-v${VERSION}`
-const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './pwa-icon.svg']
+const APP_SHELL = [
+  './',
+  './index.html',
+  './manifest.webmanifest',
+  './favicon.png',
+  './apple-touch-icon.png',
+  './brand/logo-mark.png',
+  './brand/app-icon.png',
+]
 const APP_SHELL_URLS = new Set(APP_SHELL.map((path) => new URL(path, self.registration.scope).href))
+const APP_SHELL_PATHS = new Set([...APP_SHELL_URLS].map((href) => new URL(href).pathname))
 const ASSETS_PATH = new URL('./assets/', self.registration.scope).pathname
 
 self.addEventListener('install', (event) => {
@@ -42,10 +51,11 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
-  if (!APP_SHELL_URLS.has(url.href) && !url.pathname.startsWith(ASSETS_PATH)) return
+  const isAppShell = APP_SHELL_URLS.has(url.href) || APP_SHELL_PATHS.has(url.pathname)
+  if (!isAppShell && !url.pathname.startsWith(ASSETS_PATH)) return
 
   event.respondWith(
-    caches.match(request).then((cached) => {
+    caches.match(request, { ignoreSearch: isAppShell }).then((cached) => {
       if (cached) return cached
 
       return fetch(request).then((response) => {

@@ -140,7 +140,7 @@ export default function ResultPage() {
   const regenerate = async () => {
     await reuseConfig(task)
     // 提交失败（渠道没了之类）就留在当前这件作品上，别把 task 参数清掉
-    if (!await submitTask({ stylePreset: task.stylePreset, professionalPreset: task.professionalPreset })) return
+    if (!await submitTask({ stylePreset: task.stylePreset, professionalPreset: task.professionalPreset, liveFrameCount: task.liveFrameCount })) return
     // 清掉 task 参数：新任务进来后自动显示最新那张
     navigate('/result', { replace: true })
   }
@@ -267,8 +267,9 @@ export default function ResultPage() {
                       <IconSparkle className="h-6 w-6 animate-pulse" />
                     </span>
                   </span>
-                  <p className="mt-5 text-sm font-semibold">正在绘制你的想象…</p>
+                  <p className="mt-5 text-sm font-semibold">{liveTask ? `正在生成连续帧 ${task.liveFramesCompleted ?? 0}/${task.liveFrameCount ?? 1}` : '正在绘制你的想象…'}</p>
                   <p className="mt-1.5 max-w-sm truncate text-xs text-[#a5a1c4]">{task.prompt}</p>
+                  {liveTask && <div className="mt-4 h-1.5 w-56 overflow-hidden rounded-full bg-[#e5e1f5]"><div className="h-full rounded-full bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] transition-all" style={{ width: `${((task.liveFramesCompleted ?? 0) / Math.max(1, task.liveFrameCount ?? 1)) * 100}%` }} /></div>}
                   <GeneratingQuote />
                 </div>
               ) : task.status === 'error' ? (

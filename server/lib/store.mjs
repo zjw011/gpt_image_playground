@@ -231,6 +231,8 @@ export function normalizeUser(input, fallbackId) {
     id: normalizeString(record.id, fallbackId).trim() || fallbackId,
     username,
     displayName: normalizeString(record.displayName, '').trim(),
+    // 用户主动上传的头像优先于微信头像；只接受经过前端压缩的安全位图 data URL。
+    avatar: normalizeProfileAvatar(record.avatar),
     passwordHash: normalizeString(record.passwordHash, ''),
     // 站长角色：登录后由前端分流进管理后台。只有 role === 'admin' 的账号能碰 /api/admin/*。
     role: record.role === 'admin' ? 'admin' : 'user',
@@ -703,14 +705,21 @@ export function toPublicUser(user) {
   return {
     id: user.id,
     username: user.username,
-    displayName: user.wechatNickname || user.displayName || user.username,
-    avatar: user.wechatAvatar || '',
+    displayName: user.displayName || user.wechatNickname || user.username,
+    avatar: user.avatar || user.wechatAvatar || '',
     // 邮箱回给本人是合理的（用户中心要显示"绑定的是哪个邮箱"），
     // 但它只在本人的响应里出现，不会出现在任何列表接口中。
     email: user.email || '',
     // 管理员身份要跟着本人走：登录响应和 bootstrap 都靠它分流后台入口。
     role: user.role === 'admin' ? 'admin' : 'user',
   }
+}
+
+function normalizeProfileAvatar(value) {
+  const avatar = normalizeString(value, '').trim()
+  if (!avatar) return ''
+  if (avatar.length > 700_000) return ''
+  return /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/=]+$/i.test(avatar) ? avatar : ''
 }
 
 /** 后台可见的用户投影：口令只回传"是否已设置"，永不回传哈希。 */

@@ -568,8 +568,8 @@ export async function handleRelay(req, res, ctx) {
         settleCredits(userId, charged, {
           images: creditCount,
           ref: channel.id,
-          // 流水说明要能独立看懂："出图 2 张"比一个渠道名直观得多
-          note: `出图 ${creditCount || 1} 张 · ${channel.name}`,
+          // 用户流水只说明做了什么，渠道信息留在 ref 里供后台排查，不向用户文案暴露。
+          note: `出图 ${creditCount || 1} 张`,
           reserved,
         })
         settled = true
@@ -582,7 +582,7 @@ export async function handleRelay(req, res, ctx) {
           recordLuckyFree(userId, {
             images: creditCount || 1,
             ref: channel.id,
-            note: `幸运免单 · 出图 ${creditCount || 1} 张 · ${channel.name}`,
+            note: `幸运免单 · 出图 ${creditCount || 1} 张`,
           })
           extraHeaders['x-credits-lucky'] = '1'
           extraHeaders['x-credits-balance'] = String(getBalance(userId))

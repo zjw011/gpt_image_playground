@@ -82,7 +82,7 @@ export async function handleAdminRoute(req, res, ctx) {
   // ===== 渠道列表与站点状态 =====
   if (path === '/api/admin/state' && method === 'GET') {
     const config = getConfig()
-    const userNames = new Map(config.users.map((user) => [user.id, user.wechatNickname || user.displayName || user.username]))
+    const userNames = new Map(config.users.map((user) => [user.id, user.displayName || user.wechatNickname || user.username]))
     const creditsRows = new Map(creditsSummary(userNames, { ledgerLimit: 1 }).users.map((row) => [row.id, row]))
 
     return sendJson(res, 200, {
@@ -650,7 +650,7 @@ export async function handleAdminRoute(req, res, ctx) {
 
   if (path === '/api/admin/credits' && method === 'GET') {
     const config = getConfig()
-    const userNames = new Map(config.users.map((user) => [user.id, user.wechatNickname || user.displayName || user.username]))
+    const userNames = new Map(config.users.map((user) => [user.id, user.displayName || user.wechatNickname || user.username]))
     return sendJson(res, 200, {
       ...creditsSummary(userNames, { ledgerLimit: 200 }),
       overview: creditsOverview(),
@@ -682,7 +682,7 @@ export async function handleAdminRoute(req, res, ctx) {
   if (path === '/api/admin/cards' && method === 'GET') {
     const query = new URLSearchParams(ctx.search ?? '')
     const config = getConfig()
-    const userNames = new Map(config.users.map((user) => [user.id, user.wechatNickname || user.displayName || user.username]))
+    const userNames = new Map(config.users.map((user) => [user.id, user.displayName || user.wechatNickname || user.username]))
     const payload = listCards({
       status: query.get('status') ?? '',
       batch: query.get('batch') ?? '',
