@@ -7,6 +7,7 @@ export interface GalleryItem {
   prompt: string
   model: string
   ownerName: string
+  ownerAvatar: string
   ownerId: string
   likes: number
   comments: number
@@ -19,6 +20,7 @@ export interface GalleryComment {
   id: string
   workId: string
   userName: string
+  userAvatar: string
   text: string
   createdAt: number
   canDelete: boolean

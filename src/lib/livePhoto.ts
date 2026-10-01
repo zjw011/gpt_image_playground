@@ -1,10 +1,20 @@
 function loadImage(dataUrl: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image()
-    image.onload = () => resolve(image)
+    image.decoding = 'async'
+    image.onload = () => {
+      if (!image.decode) return resolve(image)
+      void image.decode().then(() => resolve(image)).catch(() => resolve(image))
+    }
     image.onerror = () => reject(new Error('实况帧读取失败，请重新生成'))
     image.src = dataUrl
   })
+}
+
+/** 所有大图都完成解码后再开始播放，避免透明帧被浏览器延迟解码造成黑闪。 */
+export async function preloadLiveFrames(dataUrls: string[]) {
+  await Promise.all(dataUrls.map((dataUrl) => loadImage(dataUrl)))
+  return dataUrls
 }
 
 export function createLiveFrameSequence(frameCount: number) {

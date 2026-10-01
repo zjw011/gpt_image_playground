@@ -4,7 +4,7 @@ import type { CallApiOptions } from './imageApiShared'
 import { generateLiveFrameSequence } from './liveGeneration'
 
 describe('generateLiveFrameSequence', () => {
-  it('固定以 n=1 串行请求，并把上一帧作为下一帧输入', async () => {
+  it('固定以 n=1 串行请求，并同时携带原图锚点与上一帧', async () => {
     const caller = vi.fn(async (options: CallApiOptions) => ({
       images: [`data:image/png;base64,frame-${caller.mock.calls.length}`],
       actualParams: options.params,
@@ -21,11 +21,12 @@ describe('generateLiveFrameSequence', () => {
 
     expect(caller).toHaveBeenCalledTimes(3)
     expect(caller.mock.calls.map(([options]) => options.params.n)).toEqual([1, 1, 1])
-    expect(caller.mock.calls.map(([options]) => options.inputImageDataUrls[0])).toEqual([
-      'data:image/png;base64,original',
-      'data:image/png;base64,frame-1',
-      'data:image/png;base64,frame-2',
+    expect(caller.mock.calls.map(([options]) => options.inputImageDataUrls)).toEqual([
+      ['data:image/png;base64,original'],
+      ['data:image/png;base64,original', 'data:image/png;base64,frame-1'],
+      ['data:image/png;base64,original', 'data:image/png;base64,frame-2'],
     ])
+    expect(caller.mock.calls[1][0].prompt).toContain('逐帧锁定曝光')
     expect(result.images).toEqual([
       'data:image/png;base64,frame-1',
       'data:image/png;base64,frame-2',

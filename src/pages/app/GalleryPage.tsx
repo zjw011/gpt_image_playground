@@ -50,6 +50,19 @@ const STYLE_FILTERS = ['全部风格', '动漫', '写实', '古风', '赛博'] a
 const isServerItem = (item: GalleryItem | DemoWork): item is GalleryItem => 'imageUrl' in item
 const formatCommentTime = (value: number) => new Date(value).toLocaleString('zh-CN', { hour12: false })
 
+function AuthorAvatar({ name, avatar, className }: { name: string, avatar?: string, className: string }) {
+  const [failed, setFailed] = useState(false)
+  useEffect(() => { setFailed(false) }, [avatar])
+
+  return (
+    <span className={`flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] font-bold text-white ${className}`}>
+      {avatar && !failed
+        ? <img src={avatar} alt={`${name}的头像`} className="h-full w-full object-cover" onError={() => setFailed(true)} />
+        : name.slice(0, 1)}
+    </span>
+  )
+}
+
 export default function GalleryPage() {
   const navigate = useNavigate()
   const setPrompt = useStore((s) => s.setPrompt)
@@ -343,9 +356,7 @@ export default function GalleryPage() {
                   </button>
                   <div className="flex items-center justify-between">
                     <span className="mt-2 flex min-w-0 items-center gap-1.5">
-                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-[10px] font-bold text-white">
-                        {author.slice(0, 1)}
-                      </span>
+                      <AuthorAvatar name={author} avatar={serverItem ? work.ownerAvatar : ''} className="h-5 w-5 text-[10px]" />
                       <span className="truncate text-[11px] text-[#8a86ac]">{author}</span>
                     </span>
                     <span className="mt-2 flex shrink-0 items-center gap-2.5 text-[11px] text-[#a5a1c4]">
@@ -387,9 +398,11 @@ export default function GalleryPage() {
             </div>
             <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
               <div className="flex items-center gap-3 border-b border-[#f1eff6] px-6 py-4">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-sm font-bold text-white">
-                  {(isServerItem(preview) ? preview.ownerName : preview.author).slice(0, 1)}
-                </span>
+                <AuthorAvatar
+                  name={isServerItem(preview) ? preview.ownerName : preview.author}
+                  avatar={isServerItem(preview) ? preview.ownerAvatar : ''}
+                  className="h-9 w-9 text-sm"
+                />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-semibold text-[#37335c]">{isServerItem(preview) ? preview.ownerName : preview.author}</p>
                   <p className="mt-0.5 text-[11px] text-[#a5a1c4]">
@@ -466,9 +479,7 @@ export default function GalleryPage() {
                   <div className="mt-3 space-y-3">
                     {comments.map((comment) => (
                       <article key={comment.id} className="flex gap-2.5">
-                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-[11px] font-bold text-white">
-                          {comment.userName.slice(0, 1)}
-                        </span>
+                        <AuthorAvatar name={comment.userName} avatar={comment.userAvatar} className="h-7 w-7 text-[11px]" />
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <span className="truncate text-xs font-medium text-[#5b5680]">{comment.userName}</span>

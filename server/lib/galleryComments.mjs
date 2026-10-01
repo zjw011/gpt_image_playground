@@ -81,6 +81,8 @@ function toPublic(comment, viewerId, isAdmin) {
   return {
     id: comment.id,
     workId: comment.workId,
+    // 路由层用稳定 userId 关联当前资料，发给浏览器前会移除。
+    userId: comment.userId,
     userName: comment.userName,
     text: comment.text,
     createdAt: comment.createdAt,

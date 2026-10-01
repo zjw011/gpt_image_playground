@@ -7,7 +7,7 @@ import GeneratingQuote from '../../components/GeneratingQuote'
 import { useFullImage, useThumbnail } from './useTaskImage'
 import { useCreditsStore } from '../../lib/creditsStore'
 import { getImage } from '../../lib/db'
-import { createLiveFrameSequence, exportLiveFrames } from '../../lib/livePhoto'
+import { createLiveFrameSequence, exportLiveFrames, preloadLiveFrames } from '../../lib/livePhoto'
 import { isLiveProfessionalPreset } from '../../lib/professionalTools'
 import { isBackendMode, getBackendUser } from '../../lib/backend'
 import { publishWork } from '../../lib/galleryApi'
@@ -69,9 +69,10 @@ export default function ResultPage() {
     setLiveFrames([])
     setLiveFrameIndex(0)
     if (!liveTask || task?.status !== 'done' || task.outputImages.length < 2) return
-    void Promise.all(task.outputImages.map((id) => getImage(id))).then((images) => {
-      if (!alive) return
-      setLiveFrames(images.flatMap((image) => image?.dataUrl ? [image.dataUrl] : []))
+    void Promise.all(task.outputImages.map((id) => getImage(id))).then(async (images) => {
+      const frames = images.flatMap((image) => image?.dataUrl ? [image.dataUrl] : [])
+      await preloadLiveFrames(frames)
+      if (alive) setLiveFrames(frames)
     }).catch((err) => console.warn('读取 Live 连续帧失败', err))
     return () => { alive = false }
   }, [liveTask, task?.id, task?.status, outputKey])
@@ -83,7 +84,7 @@ export default function ResultPage() {
     const timer = window.setInterval(() => {
       idx = (idx + 1) % sequence.length
       setLiveFrameIndex(sequence[idx])
-    }, 210)
+    }, 280)
     return () => window.clearInterval(timer)
   }, [liveFrames.length])
 
@@ -294,7 +295,13 @@ export default function ResultPage() {
               ) : liveTask && liveFrames.length > 1 ? (
                 <div className="relative flex h-[62vh] max-h-[720px] w-full items-center justify-center overflow-hidden rounded-2xl bg-[#111] shadow-lg">
                   {liveFrames.map((src, idx) => (
-                    <img key={idx} src={src} alt={`Live 连续帧 ${idx + 1}`} className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-200 ${idx === liveFrameIndex ? 'opacity-100' : 'opacity-0'}`} />
+                    <img
+                      key={idx}
+                      src={src}
+                      alt={`Live 连续帧 ${idx + 1}`}
+                      draggable={false}
+                      className={`absolute inset-0 h-full w-full select-none object-contain transition-opacity duration-[260ms] ease-linear ${idx === liveFrameIndex ? 'opacity-100' : 'opacity-0'}`}
+                    />
                   ))}
                   <span className="absolute left-4 top-4 rounded-full bg-black/55 px-3 py-1.5 text-[11px] font-semibold text-white backdrop-blur">LIVE · {liveFrames.length} AI 关键帧</span>
                 </div>

@@ -293,7 +293,20 @@ describe('邮箱验证码注册全流程', () => {
   })
 
   it('登录用户可以修改昵称和头像，刷新后仍保留', async () => {
-    const avatar = 'data:image/png;base64,aGVsbG8='
+    const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    const published = await api('/api/gallery', {
+      method: 'POST',
+      body: { image, title: '资料同步测试', caption: '发布后再修改资料', prompt: '测试', model: 'test' },
+    })
+    expect(published.status).toBe(200)
+
+    const commented = await api(`/api/gallery/${published.body.item.id}/comments`, {
+      method: 'POST',
+      body: { text: '历史评论也应同步' },
+    })
+    expect(commented.status).toBe(201)
+
+    const avatar = image
     const saved = await api('/api/profile', {
       method: 'PATCH',
       body: { displayName: '绘想创作者', avatar },
@@ -303,6 +316,19 @@ describe('邮箱验证码注册全流程', () => {
 
     const bootstrap = await api('/api/bootstrap')
     expect(bootstrap.body.user).toMatchObject({ displayName: '绘想创作者', avatar })
+
+    const gallery = await api('/api/gallery')
+    const work = gallery.body.items.find((item) => item.id === published.body.item.id)
+    expect(work).toMatchObject({ ownerName: '绘想创作者' })
+    expect(work.ownerAvatar).toMatch(/^\/api\/gallery\/avatars\//)
+
+    const comments = await api(`/api/gallery/${published.body.item.id}/comments`)
+    expect(comments.body.comments[0]).toMatchObject({ userName: '绘想创作者', userAvatar: work.ownerAvatar })
+
+    const avatarResponse = await fetch(`${base}${work.ownerAvatar}`)
+    expect(avatarResponse.status).toBe(200)
+    expect(avatarResponse.headers.get('content-type')).toBe('image/png')
+    expect((await avatarResponse.arrayBuffer()).byteLength).toBeGreaterThan(0)
   })
 
   it('注册赠送只发一次：重新登录不会再加分', async () => {

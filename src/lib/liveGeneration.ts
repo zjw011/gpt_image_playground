@@ -25,14 +25,15 @@ export async function generateLiveFrameSequence(
   const revisedPrompts: Array<string | undefined> = []
   const rawImageUrls: string[] = []
   const failedRequests: NonNullable<CallApiResult['failedRequests']> = []
-  let previousInputs = options.inputImageDataUrls
+  const anchorInputs = [...(options.inputImageDataUrls ?? [])]
+  let previousInputs = anchorInputs
   let actualParams: CallApiResult['actualParams']
 
   for (let idx = 0; idx < total; idx += 1) {
     try {
       const result = await caller({
         ...options,
-        prompt: `${options.prompt}。这是连续序列第 ${idx + 1}/${total} 帧，只在上一帧基础上推进极小一步，保持动作连续、主体稳定，禁止突然跳变。`,
+        prompt: `${options.prompt}。这是连续序列第 ${idx + 1}/${total} 帧。第一张参考图是全程固定的主体、构图与曝光锚点，最后一张参考图是上一帧；只允许在上一帧基础上推进极小一步。逐帧锁定曝光、白平衡、色温、亮度、对比度、饱和度、景深、噪点与清晰度，禁止忽明忽暗、闪烁、突然跳变和整体重绘。`,
         params: { ...options.params, n: 1 },
         inputImageDataUrls: previousInputs,
         onPartialImage: options.onPartialImage
@@ -47,7 +48,7 @@ export async function generateLiveFrameSequence(
       actualParamsList.push(result.actualParamsList?.[0] ?? result.actualParams)
       revisedPrompts.push(result.revisedPrompts?.[0])
       if (result.rawImageUrls?.[0]) rawImageUrls.push(result.rawImageUrls[0])
-      previousInputs = [image]
+      previousInputs = anchorInputs.length ? [...anchorInputs, image] : [image]
       onFrame?.({ completed: images.length, total, image })
     } catch (err) {
       if (images.length === 0) throw err
