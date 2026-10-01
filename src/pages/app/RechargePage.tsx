@@ -65,7 +65,7 @@ export default function RechargePage() {
     <AppShell title="积分充值">
       <div className="overflow-hidden rounded-3xl border border-[#eceaf6] bg-white shadow-sm">
         <div className="grid lg:grid-cols-[1fr_380px]">
-          <div className="p-7">
+          <div className="p-4 sm:p-7">
             <h2 className="text-lg font-bold">积分充值</h2>
             <p className="mt-1 text-[13px] text-[#8a86ac]">
               {hasPacks ? '购买积分，解锁更多创作可能' : '积分档位仅供参考，实际以卡密面值为准'}
@@ -106,7 +106,7 @@ export default function RechargePage() {
 
             {/* 支付方式 */}
             <h3 className="mt-7 text-sm font-semibold">选择支付方式</h3>
-            <div className="mt-3 flex gap-3">
+            <div className="mt-3 flex flex-wrap gap-3">
               <button
                 type="button"
                 onClick={() => setPayMethod('wechat')}

@@ -160,7 +160,7 @@ export default function StudioPage() {
               </button>
               {inputImages.length > 0 && <button type="button" onClick={clearInputImages} className="rounded-lg px-2 py-2 text-xs text-[#918cae] hover:text-red-500">清除参考图</button>}
               <span className="ml-auto text-[11px] text-[#aaa5bf]">已输入 {prompt.length.toLocaleString()} 字</span>
-              <button type="button" onClick={() => void generate()} className="flex min-w-[150px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#7462f3] to-[#9b76f6] px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-[#7867f5]/25 transition hover:from-[#6653e8] hover:to-[#8f69ed]">
+              <button type="button" onClick={() => void generate()} className="hidden min-w-[150px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#7462f3] to-[#9b76f6] px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-[#7867f5]/25 transition hover:from-[#6653e8] hover:to-[#8f69ed] sm:flex">
                 <IconSparkle className="h-4 w-4" />生成{credits ? ` · ${cost} 积分` : ''}
               </button>
               <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => { void pickFiles(event.target.files); event.target.value = '' }} />
@@ -211,7 +211,7 @@ export default function StudioPage() {
               <h3 className="text-sm font-bold text-[#35315d]">画面比例</h3>
               <div className="mt-2.5 flex flex-wrap gap-2">
                 {RATIOS.map((ratio) => (
-                  <button key={ratio.label} type="button" onClick={() => setParams({ size: ratio.size })} className={`min-w-[62px] rounded-lg px-3.5 py-2 text-[12px] font-semibold transition ${currentRatio === ratio.label ? 'bg-[#efedfd] text-[#6b5ce7] ring-1 ring-[#8c7cf7]' : 'bg-white text-[#77718f] hover:bg-[#f3f1ff]'}`}>{ratio.label}</button>
+                  <button key={ratio.label} type="button" onClick={() => setParams({ size: ratio.size })} className={`min-h-11 min-w-[62px] rounded-lg px-3.5 py-2 text-[12px] font-semibold transition ${currentRatio === ratio.label ? 'bg-[#efedfd] text-[#6b5ce7] ring-1 ring-[#8c7cf7]' : 'bg-white text-[#77718f] hover:bg-[#f3f1ff]'}`}>{ratio.label}</button>
                 ))}
               </div>
             </div>
@@ -225,6 +225,7 @@ export default function StudioPage() {
             </div>
             {credits && <p className="ml-auto text-[11px] text-[#aaa5bf]">剩余 {view?.available ?? 0} 积分 · 失败自动退分</p>}
           </div>
+          <button type="button" onClick={() => void generate()} className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#7462f3] to-[#9b76f6] px-4 text-sm font-semibold text-white shadow-lg shadow-[#7867f5]/25 sm:hidden"><IconSparkle className="h-4 w-4" />立即生成{credits ? ` · ${cost} 积分` : ''}</button>
         </div>
       </div>
 

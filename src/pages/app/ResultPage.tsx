@@ -223,7 +223,7 @@ export default function ResultPage() {
         继续创作
       </Link>
 
-      <div className="flex gap-5">
+      <div className="flex flex-col gap-4 md:flex-row md:gap-5">
         {/* 主图区 */}
         <div className="min-w-0 flex-1">
           <div className="overflow-hidden rounded-3xl border border-[#eceaf6] bg-white shadow-sm">
@@ -254,7 +254,7 @@ export default function ResultPage() {
               </div>
             )}
 
-            <div className="flex min-h-[420px] items-center justify-center bg-[#faf9fe] p-5">
+            <div className="flex min-h-[260px] items-center justify-center bg-[#faf9fe] p-3 sm:min-h-[420px] sm:p-5">
               {running ? (
                 <div className="flex flex-col items-center text-center">
                   <span className="relative flex h-16 w-16 items-center justify-center">
@@ -290,7 +290,7 @@ export default function ResultPage() {
               ) : liveTask && liveFrames.length > 1 && !activeImageId ? (
                 <LivePhotoPlayer frames={liveFrames} />
               ) : fullSrc ? (
-                <img src={fullSrc} alt={task.prompt} className="max-h-[62vh] rounded-2xl object-contain shadow-lg" />
+                <img src={fullSrc} alt={task.prompt} className="max-h-[62vh] max-w-full rounded-2xl object-contain shadow-lg" />
               ) : (
                 <span className="text-[#d8d4ec]"><IconImage className="h-12 w-12" /></span>
               )}
@@ -311,7 +311,7 @@ export default function ResultPage() {
         </div>
 
         {/* 右侧操作栏 */}
-        <div className="flex w-[76px] shrink-0 flex-col gap-2">
+        <div className="grid grid-cols-3 gap-2 md:flex md:w-[76px] md:shrink-0 md:flex-col">
           {ACTIONS.map((action) => (
             <button
               key={action.label}

@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { PublicNav, SiteFooter, PRIMARY_BTN, GHOST_BTN, BrandMark } from './theme'
 import SafeImg from '../components/SafeImg'
+import MobileBottomNav from '../components/MobileBottomNav'
 import { assetUrl } from '../lib/assetUrl'
 import { useInApp } from './useInApp'
 import { IconSparkle, IconBolt, IconCoin, IconShield, IconArrowRight, IconImage } from './icons'
@@ -42,7 +43,8 @@ export default function LandingPage() {
   const inApp = useInApp() === true
 
   return (
-    <div className="min-h-screen bg-[#fcfbff] text-[#211b4f]">
+    <div className="min-h-screen bg-[#fcfbff] pb-[calc(4rem+env(safe-area-inset-bottom))] text-[#211b4f] md:pb-0">
+      <MobileBottomNav />
       <PublicNav active="home" overlay inApp={inApp} />
       <main>
       <div className="relative isolate bg-[#f4efff]">
@@ -71,7 +73,7 @@ export default function LandingPage() {
       <div className="relative">
         <section aria-label="创作工具" className="relative mx-auto -mt-16 max-w-7xl px-5 pb-10">
           <h2 className="sr-only">选择你的创作方式</h2>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+          <div className="grid grid-cols-4 gap-2 sm:grid-cols-3 sm:gap-3 lg:grid-cols-7">
             {TOOLS.map((tool, idx) => (
               <Link key={tool.title} to={tool.to} className={`group overflow-hidden rounded-xl border bg-gradient-to-b ${tool.color} shadow-md shadow-[#9d81cc]/10 transition hover:-translate-y-1 hover:shadow-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#7955ed] ${idx === 0 ? 'border-[#b79afa] ring-2 ring-[#a080ef]/35' : 'border-[#ebe3fa] hover:border-[#b8a7f5]'}`}>
                 <div className="relative aspect-square overflow-hidden lg:aspect-[4/5]">
@@ -79,7 +81,7 @@ export default function LandingPage() {
                   {idx === 2 && <span aria-hidden="true" className="absolute right-[18%] top-[25%] h-9 w-9 rounded-xl border border-dashed border-white/90 shadow-sm" />}
                   {tool.title === 'Live 实况图' && <span className="absolute bottom-3 right-3 flex h-8 w-8 items-center justify-center rounded-full bg-white/95 text-xs font-bold text-[#7752bf] shadow-sm">▶</span>}
                 </div>
-                <div className="p-3"><div className="flex items-center justify-between gap-1"><h3 className="text-[13px] font-bold">{tool.title}</h3><span style={{ backgroundColor: tool.accent }} className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white"><IconArrowRight className="h-3.5 w-3.5" /></span></div><p className="mt-1.5 text-[10px] leading-5 text-[#7f739a]">{tool.desc}</p></div>
+                <div className="px-1 py-2 sm:p-3"><div className="flex items-center justify-center gap-1 sm:justify-between"><h3 className="text-center text-[10px] font-bold sm:text-left sm:text-[13px]">{tool.title}</h3><span style={{ backgroundColor: tool.accent }} className="hidden h-6 w-6 shrink-0 items-center justify-center rounded-full text-white sm:flex"><IconArrowRight className="h-3.5 w-3.5" /></span></div><p className="mt-1.5 hidden text-[10px] leading-5 text-[#7f739a] sm:block">{tool.desc}</p></div>
               </Link>
             ))}
           </div>

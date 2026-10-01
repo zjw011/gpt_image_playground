@@ -205,9 +205,9 @@ export default function MePage() {
   }, [tab, Boolean(credits), user?.id])
 
   return (
-    <AppShell title="个人中心" wide>
+    <AppShell title={currentLabel} wide>
       {/* 资料卡 */}
-      <div className="flex flex-wrap items-center gap-6 rounded-3xl border border-[#eceaf6] bg-white p-6 shadow-sm">
+      <div className="flex flex-wrap items-center gap-3 rounded-3xl border border-[#eceaf6] bg-white p-4 shadow-sm sm:gap-6 sm:p-6">
         {user?.avatar ? (
           <img src={user.avatar} alt="" className="h-20 w-20 rounded-full object-cover ring-4 ring-[#efedfd]" />
         ) : (
@@ -215,9 +215,9 @@ export default function MePage() {
             {name.slice(0, 1)}
           </span>
         )}
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1 sm:flex-initial">
           <h2 className="truncate text-xl font-bold">{name}</h2>
-          <p className="mt-1 text-xs text-[#a5a1c4]">
+          <p className="mt-1 break-all text-xs text-[#a5a1c4]">
             {user ? `UID: ${user.id.slice(0, 8)}` : '纯前端模式，数据保存在本机浏览器'}
             {user?.email ? ` · ${user.email}` : ''}
           </p>
@@ -227,7 +227,7 @@ export default function MePage() {
             <IconEdit className="h-3.5 w-3.5" />编辑资料
           </button>
         )}
-        <div className="ml-auto flex gap-8 pr-2 text-center">
+        <div className="flex w-full justify-around gap-4 border-t border-[#f1effa] pt-3 text-center sm:ml-auto sm:w-auto sm:gap-8 sm:border-0 sm:pt-0 sm:pr-2">
           <div>
             <p className="text-2xl font-bold">{doneCount}</p>
             <p className="mt-0.5 text-xs text-[#a5a1c4]">作品</p>
@@ -354,8 +354,17 @@ export default function MePage() {
             {!credits || !view || view.ledger.length === 0 ? (
               <EmptyState text={credits ? '还没有积分变动记录' : '本站未开启积分制'} />
             ) : (
-              <div className="overflow-hidden rounded-3xl border border-[#eceaf6] bg-white shadow-sm">
-                <table className="w-full text-[13px]">
+              <div className="overflow-x-auto rounded-3xl border border-[#eceaf6] bg-white shadow-sm">
+                <div className="divide-y divide-[#f1effa] sm:hidden">
+                  {[...view.ledger].sort((a, b) => b.at - a.at).map((entry, idx) => (
+                    <div key={`${entry.at}-${idx}`} className="p-4">
+                      <div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">{LEDGER_LABELS[entry.type] ?? entry.type}</span><span className={`font-semibold ${entry.type === 'lucky' || entry.amount < 0 ? 'text-[#f472b6]' : 'text-emerald-500'}`}>{entry.type === 'lucky' ? '-0' : entry.amount >= 0 ? `+${entry.amount}` : entry.amount}</span></div>
+                      <p className="mt-2 break-words text-xs text-[#8a86ac]">{entry.type === 'lucky' ? entry.note.split(' · ').slice(0, 2).join(' · ') : entry.note || '—'}</p>
+                      <div className="mt-2 flex justify-between gap-2 text-[11px] text-[#a5a1c4]"><time>{new Date(entry.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</time><span>余额 {entry.balanceAfter}</span></div>
+                    </div>
+                  ))}
+                </div>
+                <table className="hidden w-full text-[13px] sm:table">
                   <thead>
                     <tr className="border-b border-[#f1effa] text-left text-xs text-[#a5a1c4]">
                       <th className="px-5 py-3.5 font-medium">时间</th>
@@ -394,7 +403,7 @@ export default function MePage() {
           {tab === 'settings' && (
             <div className="rounded-3xl border border-[#eceaf6] bg-white p-6 shadow-sm">
               <h3 className="text-[15px] font-bold">账号设置</h3>
-              <dl className="mt-5 space-y-4 text-sm">
+              <dl className="mt-5 space-y-4 text-sm [&_dt]:shrink-0 [&_dd]:min-w-0 [&_dd]:break-all [&_dd]:text-right [&>div]:gap-3">
                 <div className="flex items-center justify-between border-b border-[#f8f7fd] pb-4">
                   <dt className="text-[#8a86ac]">昵称</dt>
                   <dd className="flex items-center gap-3 font-medium"><span>{name}</span>{user && <button type="button" onClick={openProfileEditor} className="text-xs text-[#6b5ce7] hover:text-[#5a4cd6]">修改</button>}</dd>
@@ -442,7 +451,7 @@ export default function MePage() {
 
       {profileOpen && user && (
         <div className="animate-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-[#33285f]/45 p-4 backdrop-blur-sm" onClick={() => !savingProfile && setProfileOpen(false)}>
-          <div className="animate-modal-in w-full max-w-md overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+          <div className="animate-modal-in max-h-[85dvh] w-full max-w-md overflow-y-auto rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-[#f0edf8] px-6 py-4">
               <div><h2 className="text-base font-bold text-[#37335c]">编辑个人资料</h2><p className="mt-1 text-xs text-[#a5a1c4]">头像和昵称会显示在个人中心与顶部账号栏</p></div>
               <button type="button" disabled={savingProfile} onClick={() => setProfileOpen(false)} className="flex h-8 w-8 items-center justify-center rounded-full text-xl text-[#a5a1c4] hover:bg-[#f6f4fc]">×</button>

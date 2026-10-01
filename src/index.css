@@ -400,8 +400,8 @@ input[type="number"] {
 
 @media (max-width: 640px) {
   input,
-  textarea,
-  select {
+  :root textarea,
+  :root select {
     font-size: 16px;
   }
 }
@@ -485,4 +485,13 @@ input[type="number"] {
 .ios-rounded-scroll-fix {
   isolation: isolate;
   -webkit-mask-image: -webkit-radial-gradient(white, black);
+}
+
+/* iPhone 输入小字号表单时会自动放大页面，保留浏览器缩放而不靠禁用缩放规避。 */
+@media (max-width: 767px) {
+  input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']),
+  textarea,
+  select {
+    font-size: 16px;
+  }
 }
