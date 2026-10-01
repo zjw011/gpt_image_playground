@@ -4,6 +4,7 @@ import { useStore, submitTask, addImageFromFile } from '../../store'
 import { getCreditsConfig } from '../../lib/backend'
 import { useCreditsStore } from '../../lib/creditsStore'
 import { assetUrl } from '../../lib/assetUrl'
+import { IMAGE_RATIO_PRESETS as RATIOS } from '../../lib/size'
 import { STYLE_PRESETS, type StylePresetKey } from '../../lib/stylePresets'
 import AppShell from './AppShell'
 import { useThumbnail } from './useTaskImage'
@@ -16,14 +17,6 @@ const MODES: Array<{ key: TabKey, label: string, description: string, image: str
   { key: 'image', label: '图生图', description: '上传图片生成新图', image: '/art/work-cat.jpg' },
   { key: 'inpaint', label: '局部重绘', description: '涂抹修改，精细编辑', image: '/art/auth-register.jpg' },
   { key: 'outpaint', label: 'AI 扩图', description: '一键延展画面', image: '/art/work-train.jpg' },
-]
-
-const RATIOS = [
-  { label: '1:1', size: '1024x1024' },
-  { label: '3:4', size: '1024x1536' },
-  { label: '4:3', size: '1536x1024' },
-  { label: '9:16', size: '1024x1536' },
-  { label: '16:9', size: '1536x1024' },
 ]
 
 const RANDOM_PROMPTS = [
@@ -75,7 +68,7 @@ export default function StudioPage() {
   const needsUpload = tab !== 'text'
   const count = Math.max(1, Math.min(4, params.n || 1))
   const cost = credits ? credits.costPerImage * count : 0
-  const currentRatio = RATIOS.find((ratio) => ratio.size === params.size)?.label ?? '1:1'
+  const currentRatio = RATIOS.find((ratio) => ratio.size === params.size)?.label
   const recentTasks = tasks.filter((task) => task.status === 'done' && task.outputImages.length > 0).slice(0, 6)
 
   const pickFiles = async (files: FileList | null) => {
@@ -211,9 +204,10 @@ export default function StudioPage() {
               <h3 className="text-sm font-bold text-[#35315d]">画面比例</h3>
               <div className="mt-2.5 flex flex-wrap gap-2">
                 {RATIOS.map((ratio) => (
-                  <button key={ratio.label} type="button" onClick={() => setParams({ size: ratio.size })} className={`min-h-11 min-w-[62px] rounded-lg px-3.5 py-2 text-[12px] font-semibold transition ${currentRatio === ratio.label ? 'bg-[#efedfd] text-[#6b5ce7] ring-1 ring-[#8c7cf7]' : 'bg-white text-[#77718f] hover:bg-[#f3f1ff]'}`}>{ratio.label}</button>
+                  <button key={ratio.label} type="button" aria-pressed={currentRatio === ratio.label} onClick={() => setParams({ size: ratio.size })} className={`min-h-11 min-w-[62px] rounded-lg px-3.5 py-2 text-[12px] font-semibold transition ${currentRatio === ratio.label ? 'bg-[#efedfd] text-[#6b5ce7] ring-1 ring-[#8c7cf7]' : 'bg-white text-[#77718f] hover:bg-[#f3f1ff]'}`}>{ratio.label}</button>
                 ))}
               </div>
+              {!currentRatio && <p className="mt-2 text-[11px] text-[#918cae]">当前尺寸：{params.size === 'auto' ? '自动匹配' : params.size}</p>}
             </div>
             <div>
               <h3 className="text-sm font-bold text-[#35315d]">生成数量</h3>

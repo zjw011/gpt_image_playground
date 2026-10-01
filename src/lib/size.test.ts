@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { calculateImageSize, normalizeCodexCliImageSize, prependCodexCliSizePrompt, stripInjectedCodexCliSizePrompt } from './size'
+import { IMAGE_RATIO_PRESETS, calculateImageSize, normalizeCodexCliImageSize, prependCodexCliSizePrompt, stripInjectedCodexCliSizePrompt } from './size'
 
 describe('calculateImageSize', () => {
+  it('创作按钮的比例与像素一致且不存在重复尺寸', () => {
+    expect(new Set(IMAGE_RATIO_PRESETS.map((item) => item.size)).size).toBe(IMAGE_RATIO_PRESETS.length)
+    for (const item of IMAGE_RATIO_PRESETS) {
+      const [width, height] = item.size.split('x').map(Number)
+      const [rw, rh] = item.label.split(':').map(Number)
+      expect(width / height).toBeCloseTo(rw / rh, 6)
+      expect(item.size).toBe(calculateImageSize('1K', item.label))
+    }
+  })
   it('uses common 16:9 display resolutions for the built-in tiers', () => {
     expect(calculateImageSize('1K', '16:9')).toBe('1280x720')
     expect(calculateImageSize('2K', '16:9')).toBe('2560x1440')

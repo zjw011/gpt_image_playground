@@ -2,7 +2,7 @@
 // - 托管模式（连了后端）：读服务端 /api/gallery，展示真实用户上传的作品（含作者、点赞）。
 // - 纯前端模式（没后端）：没有服务器可存，退回内置的示例作品，界面不空着。
 // 未登录也能逛；点赞/发布需要登录账号。
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../../store'
 import { isBackendMode, getBackendUser } from '../../lib/backend'
@@ -20,6 +20,9 @@ import {
 import AppShell from './AppShell'
 import SafeImg from '../../components/SafeImg'
 import { assetUrl } from '../../lib/assetUrl'
+import { copyTextToClipboard } from '../../lib/clipboard'
+import { useCloseOnEscape } from '../../hooks/useCloseOnEscape'
+import { usePreventBackgroundScroll } from '../../hooks/usePreventBackgroundScroll'
 import { IconCopy, IconHeart, IconEye, IconMessage, IconSearch, IconSparkle, IconTrash } from '../icons'
 
 interface DemoWork {
@@ -103,6 +106,11 @@ export default function GalleryPage() {
 
   const myId = me?.id ?? null
   const previewWorkId = preview && isServerItem(preview) ? preview.id : null
+  const previewRef = useRef<HTMLDivElement>(null)
+  const currentWorkId = useRef(previewWorkId)
+  currentWorkId.current = previewWorkId
+  useCloseOnEscape(Boolean(preview), () => setPreview(null))
+  usePreventBackgroundScroll(Boolean(preview), previewRef)
 
   useEffect(() => { setPromptVisible(false) }, [preview?.id])
 
@@ -195,7 +203,7 @@ export default function GalleryPage() {
 
   const copyPrompt = async (item: GalleryItem | DemoWork) => {
     try {
-      await navigator.clipboard.writeText(item.prompt)
+      await copyTextToClipboard(item.prompt)
       showToast('提示词已复制', 'success')
     } catch {
       showToast('复制失败，请手动选择复制', 'error')
@@ -209,9 +217,11 @@ export default function GalleryPage() {
     setCommentBusy(true)
     try {
       const result = await createWorkComment(previewWorkId, text)
-      setComments((current) => [result.comment, ...current])
-      setCommentTotal(result.total)
-      setCommentText('')
+      if (currentWorkId.current === previewWorkId) {
+        setComments((current) => [result.comment, ...current])
+        setCommentTotal(result.total)
+        setCommentText('')
+      }
       setWorks((current) => current.map((work) => work.id === previewWorkId ? { ...work, comments: result.total } : work))
       setPreview((current) => current && isServerItem(current) && current.id === previewWorkId ? { ...current, comments: result.total } : current)
     } catch (err) {
@@ -226,12 +236,13 @@ export default function GalleryPage() {
     setCommentsLoading(true)
     try {
       const result = await listWorkComments(previewWorkId, comments.length)
+      if (currentWorkId.current !== previewWorkId) return
       setComments((current) => [...current, ...result.comments])
       setCommentTotal(result.total)
     } catch (err) {
-      showToast(err instanceof Error ? err.message : '评论加载失败', 'error')
+      if (currentWorkId.current === previewWorkId) showToast(err instanceof Error ? err.message : '评论加载失败', 'error')
     } finally {
-      setCommentsLoading(false)
+      if (currentWorkId.current === previewWorkId) setCommentsLoading(false)
     }
   }
 
@@ -401,12 +412,12 @@ export default function GalleryPage() {
       {/* 作品预览弹层 */}
       {preview && (
         <div className="animate-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm" onClick={() => setPreview(null)}>
-          <div className="animate-modal-in flex h-[min(820px,calc(100vh-32px))] w-full max-w-6xl overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+          <div ref={previewRef} role="dialog" aria-modal="true" aria-label="作品帖子" className="animate-modal-in flex h-[min(820px,calc(100dvh-32px))] w-full max-w-6xl overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
             <div className="hidden w-[58%] items-center justify-center bg-[#f7f7f8] p-5 sm:flex">
               <SafeImg src={isServerItem(preview) ? preview.imageUrl : assetUrl(preview.img)} alt={preview.title} loading="eager" className="max-h-full max-w-full rounded-2xl object-contain" fallbackClassName="h-full w-full rounded-2xl" />
             </div>
             <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-              <div className="flex items-center gap-3 border-b border-[#f1eff6] px-6 py-4">
+              <div className="sticky top-0 z-10 flex items-center gap-3 border-b border-[#f1eff6] bg-white px-4 py-3 sm:px-6 sm:py-4">
                 <AuthorAvatar
                   name={isServerItem(preview) ? preview.ownerName : preview.author}
                   avatar={isServerItem(preview) ? preview.ownerAvatar : ''}
@@ -419,13 +430,13 @@ export default function GalleryPage() {
                     {isServerItem(preview) && preview.model ? ` · ${preview.model}` : ''}
                   </p>
                 </div>
-                <button type="button" onClick={() => setPreview(null)} className="flex h-8 w-8 items-center justify-center rounded-full text-xl text-[#a5a1c4] hover:bg-[#f6f4fc] hover:text-[#5b5680]">×</button>
+                <button type="button" aria-label="关闭帖子" onClick={() => setPreview(null)} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-xl text-[#a5a1c4] hover:bg-[#f6f4fc] hover:text-[#5b5680]">×</button>
               </div>
 
               <div className="p-6 pb-3">
                 <SafeImg src={isServerItem(preview) ? preview.imageUrl : assetUrl(preview.img)} alt={preview.title} loading="eager" className="mb-5 w-full rounded-2xl object-cover sm:hidden" fallbackClassName="mb-5 aspect-[4/5] w-full rounded-2xl sm:hidden" />
-                <h2 className="text-xl font-bold leading-8 text-[#2f2b4c]">{preview.title}</h2>
-                {preview.caption && <p className="mt-3 whitespace-pre-wrap text-[14px] leading-7 text-[#575273]">{preview.caption}</p>}
+                <h2 className="break-words text-xl font-bold leading-8 text-[#2f2b4c]">{preview.title}</h2>
+                {preview.caption && <p className="mt-3 whitespace-pre-wrap break-words text-[14px] leading-7 text-[#575273]">{preview.caption}</p>}
 
                 <button type="button" onClick={() => setPromptVisible((current) => !current)} className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-[#ded9ef] bg-[#faf9fe] px-4 py-2.5 text-sm font-semibold text-[#6b5ce7] transition hover:border-[#9f94df] hover:bg-[#f5f2ff]">
                   <IconSparkle className="h-4 w-4" />
@@ -490,7 +501,7 @@ export default function GalleryPage() {
                       <article key={comment.id} className="flex gap-2.5">
                         <AuthorAvatar name={comment.userName} avatar={comment.userAvatar} className="h-7 w-7 text-[11px]" />
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <span className="truncate text-xs font-medium text-[#5b5680]">{comment.userName}</span>
                             <span className="shrink-0 text-[10px] text-[#b3aed0]">{formatCommentTime(comment.createdAt)}</span>
                           </div>
@@ -515,7 +526,7 @@ export default function GalleryPage() {
                 </section>
               )}
 
-              <div className="mt-auto flex gap-2.5 border-t border-[#f1eff6] px-6 py-4">
+              <div className="mt-auto flex flex-wrap gap-2.5 border-t border-[#f1eff6] px-6 py-4">
                 {isServerItem(preview) && (
                   <>
                     <button type="button" onClick={() => void toggleLike(preview)} className={`flex items-center gap-1.5 rounded-full border px-4 py-2 text-sm font-medium transition ${preview.likedByMe ? 'border-pink-200 bg-pink-50 text-pink-500' : 'border-[#ded9ef] text-[#6f6a94] hover:border-pink-200 hover:text-pink-500'}`}>

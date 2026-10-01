@@ -1,5 +1,5 @@
 // 生成结果页。对应设计稿 6：大图展示 + 底部缩略图条 + 右侧操作栏。
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore, submitTask, reuseConfig, removeTask } from '../../store'
 import AppShell from './AppShell'
@@ -12,6 +12,9 @@ import LivePhotoPlayer from '../../components/LivePhotoPlayer'
 import { isLiveProfessionalPreset } from '../../lib/professionalTools'
 import { isBackendMode, getBackendUser } from '../../lib/backend'
 import { publishWork } from '../../lib/galleryApi'
+import { copyTextToClipboard } from '../../lib/clipboard'
+import { useCloseOnEscape } from '../../hooks/useCloseOnEscape'
+import { usePreventBackgroundScroll } from '../../hooks/usePreventBackgroundScroll'
 import {
   IconArrowLeft, IconDownload, IconHeart, IconRefresh, IconCopy,
   IconTrash, IconImage, IconSparkle, IconUpload,
@@ -52,6 +55,7 @@ export default function ResultPage() {
   const [publishedIds, setPublishedIds] = useState<Set<string>>(new Set())
   const [publishing, setPublishing] = useState(false)
   const [publishOpen, setPublishOpen] = useState(false)
+  const publishRef = useRef<HTMLDivElement>(null)
   const [publishTitle, setPublishTitle] = useState('')
   const [publishCaption, setPublishCaption] = useState('')
   const [liveFrames, setLiveFrames] = useState<string[]>([])
@@ -63,6 +67,8 @@ export default function ResultPage() {
   const fullSrc = useFullImage(imageId)
   const liveTask = isLiveProfessionalPreset(task?.professionalPreset)
   const outputKey = task?.outputImages.join('|') ?? ''
+  useCloseOnEscape(publishOpen, () => { if (!publishing) setPublishOpen(false) })
+  usePreventBackgroundScroll(publishOpen, publishRef)
 
   useEffect(() => { setActiveImageId(null) }, [task?.id])
 
@@ -98,7 +104,7 @@ export default function ResultPage() {
   const errorHint = task.error && /insufficient[_\s-]*(account[_\s-]*)?balance|余额不足|欠费/i.test(task.error)
     ? '部分绘图渠道余额不足，系统已尝试其他可用渠道。请稍后重试或联系管理员处理渠道余额。'
     : task.error && /尺寸|size|宽.?高|width.?height/i.test(task.error)
-      ? '绘图渠道不接受当前尺寸参数。系统已自动改用标准 1:1 尺寸，重新生成即可。'
+      ? '绘图服务不接受当前尺寸参数。请返回创作页选择标准 1:1 尺寸后再试，本次失败不会扣除积分。'
       : '系统已尝试可用渠道但仍未生成图片，本次失败不会扣除积分。'
 
   const download = async () => {
@@ -137,7 +143,7 @@ export default function ResultPage() {
 
   const copyPrompt = async () => {
     try {
-      await navigator.clipboard.writeText(task.prompt)
+      await copyTextToClipboard(task.prompt)
       showToast('提示词已复制', 'success')
     } catch {
       showToast('复制失败，请手动选择复制', 'error')
@@ -331,7 +337,7 @@ export default function ResultPage() {
 
       {publishOpen && (
         <div className="animate-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-[#33285f]/45 p-4 backdrop-blur-sm" onClick={() => !publishing && setPublishOpen(false)}>
-          <div className="animate-modal-in w-full max-w-2xl overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+          <div ref={publishRef} role="dialog" aria-modal="true" aria-label="发布帖子" className="animate-modal-in max-h-[calc(100dvh-32px)] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-[#f0edf8] px-6 py-4">
               <div>
                 <h2 className="text-base font-bold text-[#37335c]">发布到作品广场</h2>
@@ -341,7 +347,7 @@ export default function ResultPage() {
             </div>
             <div className="grid gap-5 p-6 sm:grid-cols-[180px_minmax(0,1fr)]">
               <div className="overflow-hidden rounded-2xl bg-[#f6f4fc]">
-                {fullSrc && <img src={fullSrc} alt="待发布作品" className="aspect-[4/5] h-full w-full object-cover" />}
+                {fullSrc && <img src={fullSrc} alt="待发布作品" className="h-40 w-full object-contain sm:aspect-[4/5] sm:h-full sm:object-cover" />}
               </div>
               <div className="min-w-0">
                 <label className="text-xs font-semibold text-[#5b5680]" htmlFor="gallery-post-title">帖子标题</label>

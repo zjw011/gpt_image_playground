@@ -8,6 +8,15 @@ const MAX_PIXELS = 8_294_400
 const MAX_1K_PIXELS = 1_572_864
 
 export type SizeTier = '1K' | '2K' | '4K'
+export const IMAGE_RATIO_PRESETS = [
+  { label: '1:1', size: '1024x1024' },
+  { label: '3:4', size: '768x1024' },
+  { label: '4:3', size: '1024x768' },
+  { label: '9:16', size: '720x1280' },
+  { label: '16:9', size: '1280x720' },
+  { label: '2:3', size: '1024x1536' },
+  { label: '3:2', size: '1536x1024' },
+] as const
 type PresetRatio = '1:1' | '3:2' | '2:3' | '16:9' | '9:16' | '4:3' | '3:4' | '21:9'
 
 function roundToMultiple(value: number, multiple: number) {

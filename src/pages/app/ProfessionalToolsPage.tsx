@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { getCreditsConfig } from '../../lib/backend'
 import { assetUrl } from '../../lib/assetUrl'
+import { IMAGE_RATIO_PRESETS as RATIOS } from '../../lib/size'
 import { useCreditsStore } from '../../lib/creditsStore'
 import type { ProfessionalPresetKey } from '../../lib/professionalTools'
 import { addImageFromFile, submitTask, useStore } from '../../store'
@@ -14,14 +15,6 @@ const TOOLS: Array<{ key: ToolKey, title: string, eyebrow: string, description: 
   { key: 'ecommerce', title: '电商设计', eyebrow: '单图精修', description: '上传商品图，生成适合详情页、海报和营销场景的成品。', image: '/art/cover-commerce-v2.jpg' },
   { key: 'product-suite', title: '商品电商套图', eyebrow: '批量出图', description: '围绕同一商品，一次生成视觉统一的成套电商素材。', image: '/art/cover-suite-v2.jpg' },
   { key: 'live', title: 'Live 实况图', eyebrow: 'AI 连续帧', description: '用 AI 生成高度一致的微动作关键帧，合成类似手机实况照片的短动图。', image: '/art/work-seaside.jpg' },
-]
-
-const RATIOS = [
-  { label: '1:1', size: '1024x1024' },
-  { label: '3:4', size: '1024x1536' },
-  { label: '4:3', size: '1536x1024' },
-  { label: '9:16', size: '1024x1536' },
-  { label: '16:9', size: '1536x1024' },
 ]
 
 const ECOMMERCE_SCENES: Array<{ key: ProfessionalPresetKey, label: string, description: string }> = [
@@ -79,7 +72,7 @@ function ProductImageEditor({ tool }: { tool: Exclude<ToolKey, 'live'> }) {
   const [description, setDescription] = useState('')
   const [count, setCount] = useState(tool === 'ecommerce' ? 1 : 4)
   const [submitting, setSubmitting] = useState(false)
-  const currentRatio = RATIOS.find((ratio) => ratio.size === params.size)?.label ?? '1:1'
+  const currentRatio = RATIOS.find((ratio) => ratio.size === params.size)?.label
   const cost = credits ? credits.costPerImage * count : 0
 
   const upload = async (files: FileList | null) => {
@@ -158,7 +151,7 @@ function LiveEditor() {
     { key: 'live-breeze', label: '微风轻动', description: '发梢、衣角或植物轻轻摆动' },
     { key: 'live-breath', label: '呼吸起伏', description: '肩颈出现细微自然呼吸变化' },
   ]
-  const currentRatio = RATIOS.find((ratio) => ratio.size === params.size)?.label ?? '1:1'
+  const currentRatio = RATIOS.find((ratio) => ratio.size === params.size)?.label
   const cost = credits ? credits.costPerImage * frameCount : 0
 
   const upload = async (files: FileList | null) => {

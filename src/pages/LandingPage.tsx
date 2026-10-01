@@ -47,9 +47,11 @@ export default function LandingPage() {
       <MobileBottomNav />
       <PublicNav active="home" overlay inApp={inApp} />
       <main>
-      <div className="relative isolate bg-[#f4efff]">
-        <SafeImg src={assetUrl('/art/hero-home-v2.jpg')} alt="流光蝴蝶与长发少女，绘想创作主视觉" loading="eager" className="pointer-events-none absolute inset-0 -z-10 h-full w-full object-cover object-[75%_top] md:object-top" />
-        <div className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-r from-[#f8f5ff]/95 via-[#f8f5ff]/80 to-[#f8f5ff]/75 md:via-transparent md:to-transparent" />
+      <div className="landing-intro relative isolate">
+        <div aria-hidden="true" className="landing-art pointer-events-none absolute inset-x-0 top-0 -z-10 h-[620px] md:h-[700px]">
+          <SafeImg src={assetUrl('/art/hero-home-v2.jpg')} alt="" loading="eager" className="h-full w-full object-cover object-[75%_top] md:object-top" />
+          <div className="absolute inset-0 bg-gradient-to-r from-[#fcfbff]/90 via-[#fcfbff]/75 to-[#fcfbff]/60 md:from-[#fcfbff]/75 md:via-transparent md:to-transparent" />
+        </div>
           <section className="relative mx-auto max-w-7xl px-5 pb-24 pt-10 sm:pt-16 lg:min-h-[470px] lg:pb-28">
             <div className="relative max-w-xl">
               <p className="flex items-center gap-2 text-sm font-medium tracking-[0.15em] text-[#7754bc]">让想象，变成图像<IconSparkle className="h-4 w-4" /></p>
@@ -67,10 +69,6 @@ export default function LandingPage() {
             </div>
             <p className="absolute bottom-24 right-8 hidden rounded-full border border-white/90 bg-white/85 px-5 py-2.5 text-xs text-[#8a70b7] shadow-lg shadow-[#8664c5]/10 backdrop-blur lg:block">一段描述，一幅属于你的作品 <span className="ml-3 text-[#976af4]">✦</span></p>
           </section>
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-[#fcfbff] to-transparent" />
-      </div>
-
-      <div className="relative">
         <section aria-label="创作工具" className="relative mx-auto -mt-16 max-w-7xl px-5 pb-10">
           <h2 className="sr-only">选择你的创作方式</h2>
           <div className="grid grid-cols-4 gap-2 sm:grid-cols-3 sm:gap-3 lg:grid-cols-7">
@@ -86,6 +84,9 @@ export default function LandingPage() {
             ))}
           </div>
         </section>
+      </div>
+
+      <div className="relative">
 
         <section className="mx-auto max-w-7xl px-5 pb-12">
           <div className="flex items-center justify-between gap-4"><h2 className="flex items-center gap-2.5 text-xl font-bold"><IconSparkle className="h-6 w-6 text-[#9761f5]" />更多专业工具</h2><Link to="/tools" className="text-xs font-semibold text-[#8a5ee9]">查看全部工具 →</Link></div>

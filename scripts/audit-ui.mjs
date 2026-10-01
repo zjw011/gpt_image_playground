@@ -33,7 +33,13 @@ try {
       report(`工作台正确选中 ${labels[mode]}`, await browser.evaluate(`Array.from(document.querySelectorAll('button[aria-pressed="true"]')).some((el) => el.innerText.includes(${JSON.stringify(labels[mode])}))`))
     }
   }
-  const widths = process.env.AUDIT_UI_WIDTHS ? process.env.AUDIT_UI_WIDTHS.split(',').map(Number) : [1440, 768, 430, 390, 375, 320]
+  await browser.open('/studio')
+  for (const [ratio, size] of [['3:4', '768x1024'], ['9:16', '720x1280'], ['16:9', '1280x720']]) {
+    await browser.clickByText(ratio)
+    const actual = await browser.evaluate('(async () => (await import("/src/store.ts")).useStore.getState().params.size)()')
+    report(`${ratio} 提交尺寸及选中状态正确`, actual === size && await browser.evaluate(`Array.from(document.querySelectorAll('button[aria-pressed="true"]')).some((el) => el.innerText === ${JSON.stringify(ratio)})`))
+  }
+  const widths = process.env.AUDIT_UI_WIDTHS ? process.env.AUDIT_UI_WIDTHS.split(',').map(Number) : [1920, 1440, 768, 430, 390, 375, 320]
   for (const width of widths) {
     await browser.setViewport(width, 960)
     for (const path of ['/', '/studio', '/studio?mode=inpaint', '/studio?mode=outpaint', '/tools', '/tools?tool=ecommerce', '/tools?tool=product-suite', '/tools?tool=live', '/gallery', '/me?tab=works', '/me?tab=settings', '/me?tab=ledger', '/recharge']) {
@@ -59,6 +65,13 @@ try {
       }
       const name = path === '/' ? 'home' : path.slice(1).replace(/[?=&]/g, '-')
       writeFileSync(resolve(output, `${name}-${width}.png`), Buffer.from(await browser.screenshot(), 'base64'))
+      if (path === '/gallery') {
+        await browser.click('main article button')
+        report(`${width}px 帖子打开并锁定背景`, await browser.evaluate('!!document.querySelector(\'[role="dialog"][aria-label="作品帖子"]\') && document.body.style.overflow === "hidden"'))
+        report(`${width}px 帖子无横向溢出`, await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1'))
+        await browser.evaluate('window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))')
+        report(`${width}px Esc 关闭帖子恢复滚动`, await browser.evaluate('!document.querySelector(\'[aria-label="作品帖子"]\') && document.body.style.overflow !== "hidden"'))
+      }
     }
   }
   // 隔离的 Chrome 临时资料中构造结果，不能用空结果页代替真实结果布局检查。

@@ -495,3 +495,19 @@ input[type="number"] {
     font-size: 16px;
   }
 }
+
+/* 主视觉与工具区共享渐隐背景，避免插画在首屏底部形成硬切口。 */
+.landing-intro::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -20;
+  background: radial-gradient(ellipse at 8% 25%, #f2edff 0%, transparent 55%), radial-gradient(ellipse at 95% 35%, #f0eaff 0%, transparent 55%);
+  -webkit-mask-image: linear-gradient(to bottom, #000, transparent);
+  mask-image: linear-gradient(to bottom, #000, transparent);
+}
+
+.landing-art {
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 40%, rgba(0, 0, 0, 0.7) 65%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 40%, rgba(0, 0, 0, 0.7) 65%, transparent 100%);
+}

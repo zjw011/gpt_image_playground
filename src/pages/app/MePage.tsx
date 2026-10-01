@@ -8,6 +8,8 @@ import { fetchCredits, getBackendUser, getCreditsConfig, getInviteInfo, submitFr
 import { copyTextToClipboard } from '../../lib/clipboard'
 import { useCreditsStore } from '../../lib/creditsStore'
 import { prepareProfileAvatar } from '../../lib/profileImage'
+import { useCloseOnEscape } from '../../hooks/useCloseOnEscape'
+import { usePreventBackgroundScroll } from '../../hooks/usePreventBackgroundScroll'
 import AppShell from './AppShell'
 import { useThumbnail } from './useTaskImage'
 import { IconImage, IconUser, IconLogout, IconSparkle, IconStar, IconEdit, IconUpload, IconTrash } from '../icons'
@@ -124,6 +126,9 @@ export default function MePage() {
   const [profileAvatar, setProfileAvatar] = useState('')
   const [savingProfile, setSavingProfile] = useState(false)
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
+  const profileRef = useRef<HTMLDivElement>(null)
+  useCloseOnEscape(profileOpen, () => { if (!savingProfile) setProfileOpen(false) })
+  usePreventBackgroundScroll(profileOpen, profileRef)
 
   const rawTab = searchParams.get('tab') ?? 'works'
   // 「我的收藏」已并入我的作品：旧链接 ?tab=favorites 等价于 works 页的收藏筛选
@@ -451,7 +456,7 @@ export default function MePage() {
 
       {profileOpen && user && (
         <div className="animate-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-[#33285f]/45 p-4 backdrop-blur-sm" onClick={() => !savingProfile && setProfileOpen(false)}>
-          <div className="animate-modal-in max-h-[85dvh] w-full max-w-md overflow-y-auto rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+          <div ref={profileRef} role="dialog" aria-modal="true" aria-label="编辑个人资料" className="animate-modal-in max-h-[85dvh] w-full max-w-md overflow-y-auto rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-[#f0edf8] px-6 py-4">
               <div><h2 className="text-base font-bold text-[#37335c]">编辑个人资料</h2><p className="mt-1 text-xs text-[#a5a1c4]">头像和昵称会显示在个人中心与顶部账号栏</p></div>
               <button type="button" disabled={savingProfile} onClick={() => setProfileOpen(false)} className="flex h-8 w-8 items-center justify-center rounded-full text-xl text-[#a5a1c4] hover:bg-[#f6f4fc]">×</button>
