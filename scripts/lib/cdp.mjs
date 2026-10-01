@@ -75,6 +75,8 @@ export async function launchChrome({ port, chromePath, onConsoleError, baseUrl, 
   return {
     evaluate,
     sleep,
+    setViewport: (width, height) => send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 768 }),
+    screenshot: async () => (await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })).data,
     /**
      * 等元素出现再继续。
      *

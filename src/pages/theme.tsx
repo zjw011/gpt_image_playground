@@ -74,20 +74,21 @@ export function PublicNav({ active, overlay, inApp }: { active?: string, overlay
   const items = [
     { label: '首页', to: '/', key: 'home' },
     { label: 'AI 绘画', to: '/studio', key: 'studio' },
+    { label: '专业工具', to: '/tools', key: 'tools' },
     { label: '作品广场', to: '/gallery', key: 'gallery' },
     { label: '价格与积分', to: '/pricing', key: 'pricing' },
     { label: '帮助中心', to: '/help', key: 'help' },
   ]
   return (
     <header className={`sticky top-0 z-40 ${overlay ? 'bg-white/70 backdrop-blur-xl' : 'border-b border-[#eceaf6] bg-white/85 backdrop-blur-xl'}`}>
-      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
+      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5">
         <Logo />
         <nav className="hidden items-center gap-1 md:flex">
           {items.map((item) => (
             <NavLink
               key={item.key}
               to={item.to}
-              className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+              className={`rounded-full px-3 py-2 text-sm font-medium transition ${
                 active === item.key
                   ? 'bg-[#efedfd] text-[#6b5ce7]'
                   : 'text-[#6f6a94] hover:bg-[#f3f2fb] hover:text-[#37335c]'
@@ -114,6 +115,9 @@ export function PublicNav({ active, overlay, inApp }: { active?: string, overlay
           </div>
         )}
       </div>
+      <nav aria-label="移动端导航" className="hide-scrollbar flex gap-1 overflow-x-auto border-t border-[#ece7f7] px-4 py-2 md:hidden">
+        {items.map((item) => <Link key={item.key} to={item.to} aria-current={active === item.key ? 'page' : undefined} className={`shrink-0 rounded-full px-3 py-2 text-xs font-medium ${active === item.key ? 'bg-[#efedfd] text-[#6b5ce7]' : 'text-[#6f6a94] hover:bg-[#efedfd]'}`}>{item.label}</Link>)}
+      </nav>
     </header>
   )
 }

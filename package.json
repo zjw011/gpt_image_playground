@@ -1,7 +1,7 @@
 {
   "name": "gpt-image-playground",
   "private": true,
-  "version": "0.8.5",
+  "version": "0.8.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "audit:menu": "node scripts/audit-menu.mjs",
     "audit:server": "npm run build && node scripts/audit-server.mjs",
-    "audit:render": "node scripts/audit-render.mjs"
+    "audit:render": "node scripts/audit-render.mjs",
+    "audit:ui": "node scripts/audit-ui.mjs"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.0",

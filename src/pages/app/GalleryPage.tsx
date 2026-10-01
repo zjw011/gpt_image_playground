@@ -271,6 +271,10 @@ export default function GalleryPage() {
 
   return (
     <AppShell title="作品广场" wide>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-[#e6def6] bg-gradient-to-r from-[#eee6ff] via-[#f8f3ff] to-[#edf4ff] px-5 py-6 sm:px-7">
+        <div><h2 className="text-xl font-bold text-[#35315d]">在这里，遇见更多灵感</h2><p className="mt-2 text-xs leading-6 text-[#817497]">欣赏作品、分享创作故事，打开帖子查看提示词与评论。</p></div>
+        <button type="button" onClick={() => navigate('/studio')} className="rounded-full border border-white bg-white/85 px-5 py-2.5 text-xs font-semibold text-[#795bdb] shadow-sm transition hover:bg-white">开始我的创作 →</button>
+      </div>
       {/* 工具行：Tab + （示例模式的风格筛选）+ 搜索 */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex gap-1 rounded-full border border-[#eceaf6] bg-white p-1">
@@ -288,13 +292,13 @@ export default function GalleryPage() {
           ))}
         </div>
         {!backendMode && (
-          <div className="flex gap-1.5">
+          <div className="hide-scrollbar flex max-w-full gap-1.5 overflow-x-auto pb-1">
             {STYLE_FILTERS.map((item) => (
               <button
                 key={item}
                 type="button"
                 onClick={() => setStyle(item)}
-                className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
+                className={`shrink-0 whitespace-nowrap rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
                   style === item ? 'bg-[#efedfd] text-[#6b5ce7] ring-1 ring-[#7c6cf6]/40' : 'bg-white text-[#8a86ac] ring-1 ring-[#eceaf6] hover:text-[#6b5ce7]'
                 }`}
               >
@@ -303,13 +307,14 @@ export default function GalleryPage() {
             ))}
           </div>
         )}
-        <div className="relative ml-auto">
+        <div className="relative ml-auto w-full sm:w-auto">
           <IconSearch className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#b3aed0]" />
           <input
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
             placeholder="搜索帖子或作者"
-            className="w-56 rounded-full border border-[#eceaf6] bg-white py-2 pl-10 pr-4 text-[13px] outline-none transition placeholder:text-[#b3aed0] focus:border-[#7c6cf6] focus:ring-4 focus:ring-[#7c6cf6]/10"
+            aria-label="搜索帖子或作者"
+            className="w-full rounded-full border border-[#e2daef] bg-white py-2.5 pl-10 pr-4 text-[13px] outline-none transition placeholder:text-[#a398b6] focus:border-[#7c6cf6] focus:ring-4 focus:ring-[#7c6cf6]/10 sm:w-64"
           />
         </div>
       </div>
@@ -342,7 +347,7 @@ export default function GalleryPage() {
             const author = serverItem ? work.ownerName : work.author
             const isMine = serverItem && myId !== null && work.ownerId === myId
             return (
-              <article key={work.id} className="group mb-5 break-inside-avoid overflow-hidden rounded-2xl bg-white transition hover:-translate-y-0.5">
+              <article key={work.id} className="group mb-5 break-inside-avoid overflow-hidden rounded-2xl border border-[#e9e3f4] bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-[#c9bbed] hover:shadow-lg hover:shadow-[#8b72b5]/10">
                 <button type="button" onClick={() => setPreview(work)} className="relative block w-full overflow-hidden">
                   <SafeImg
                     src={serverItem ? work.imageUrl : assetUrl(work.img)}

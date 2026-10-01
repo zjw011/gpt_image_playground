@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useStore, submitTask, addImageFromFile } from '../../store'
 import { getCreditsConfig } from '../../lib/backend'
@@ -65,6 +65,9 @@ export default function StudioPage() {
   const requestedMode = searchParams.get('mode')
   const [tab, setTab] = useState<TabKey>(() => MODES.some((mode) => mode.key === requestedMode) ? requestedMode as TabKey : 'text')
   const [selectedStyle, setSelectedStyle] = useState<StylePresetKey | null>(null)
+  useEffect(() => {
+    setTab(MODES.some((mode) => mode.key === requestedMode) ? requestedMode as TabKey : 'text')
+  }, [requestedMode])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const credits = getCreditsConfig()
@@ -101,9 +104,12 @@ export default function StudioPage() {
       <div className="relative overflow-hidden rounded-[28px] border border-[#e8e5f7] bg-gradient-to-br from-white via-[#fbfaff] to-[#f0efff] p-4 shadow-sm sm:p-6">
         <div className="pointer-events-none absolute -right-24 top-10 h-72 w-72 rounded-full bg-[#c4bcff]/20 blur-3xl" />
         <div className="relative">
-          <div>
-            <h2 className="text-xl font-bold tracking-tight text-[#292650]">用 AI 把想象变成图像</h2>
-            <p className="mt-1 text-xs text-[#918cae]">输入文字、选择风格，即刻生成属于你的作品</p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-bold tracking-tight text-[#292650]">用 AI 把想象变成图像</h2>
+              <p className="mt-1 text-xs text-[#918cae]">输入文字、选择风格，即刻生成属于你的作品</p>
+            </div>
+            <Link to="/me?tab=works" className="rounded-full border border-[#dfd8f6] bg-white px-4 py-2 text-xs font-semibold text-[#7b65d9] transition hover:bg-[#f1ecff]">我的作品与进度 →</Link>
           </div>
 
           <div className="mt-5 grid grid-cols-2 gap-2.5 lg:grid-cols-4">
@@ -124,22 +130,24 @@ export default function StudioPage() {
                     ? 'border-[#7867f5] bg-[#7867f5] text-white shadow-sm'
                     : 'border-[#bbb5d2] bg-white/90 text-transparent group-hover:border-[#8c7cf7]'
                 }`} aria-hidden="true">✓</span>
-                <div className="relative z-10 w-[62%] p-4">
-                  <p className={`text-[15px] font-bold ${tab === mode.key ? 'text-[#6958e9]' : 'text-[#35315d]'}`}>{mode.label}</p>
+                <div className="relative z-10 w-full p-3 sm:w-[62%] sm:p-4">
+                  <p className={`whitespace-nowrap text-[13px] font-bold sm:text-[15px] ${tab === mode.key ? 'text-[#6958e9]' : 'text-[#35315d]'}`}>{mode.label}</p>
                   <p className="mt-1 text-[10px] leading-4 text-[#918cae]">{mode.description}</p>
                 </div>
-                <img src={assetUrl(mode.image)} alt="" className="absolute inset-y-0 right-0 h-full w-[48%] object-cover opacity-85 transition duration-300 group-hover:scale-105" />
-                <span className="absolute inset-y-0 right-[32%] w-20 bg-gradient-to-r from-white via-white/85 to-transparent" />
+                <img src={assetUrl(mode.image)} alt="" className="absolute inset-y-0 right-0 h-full w-full object-cover opacity-20 transition duration-300 group-hover:scale-105 sm:w-[48%] sm:opacity-90" />
+                <span className="absolute inset-y-0 right-[32%] hidden w-20 bg-gradient-to-r from-white via-white/85 to-transparent sm:block" />
                 {tab === mode.key && <span className="absolute -bottom-1 left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 border-b-2 border-r-2 border-[#7867f5] bg-white" />}
               </button>
             ))}
           </div>
 
-          <div className="mt-3 rounded-2xl border border-[#e6e2f4] bg-white/95 p-3 shadow-sm transition focus-within:border-[#9a8ef8] focus-within:ring-4 focus-within:ring-[#7867f5]/8 sm:p-4">
+          <div className="mt-6 rounded-2xl border border-[#e6e2f4] bg-white/95 p-4 shadow-sm transition focus-within:border-[#9a8ef8] focus-within:ring-4 focus-within:ring-[#7867f5]/8 sm:p-5">
+            <label htmlFor="studio-description" className="mb-3 flex items-center gap-2 text-sm font-bold text-[#35315d]"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-[#eee9ff] text-xs text-[#7b65d9]">1</span>描述你的画面</label>
             <textarea
+              id="studio-description"
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
-              rows={3}
+              rows={4}
               placeholder="描述你想要的画面……例如：樱花下的少女，夕阳，唯美，动漫风格"
               className="min-h-[86px] w-full resize-none bg-transparent px-1 text-sm leading-6 text-[#37335c] outline-none placeholder:text-[#aaa5bf]"
             />
@@ -164,7 +172,7 @@ export default function StudioPage() {
               {inputImages.map((img, idx) => (
                 <div key={img.id} className="group relative h-16 w-16 overflow-hidden rounded-xl border border-[#e4e1f2]">
                   <img src={img.dataUrl} alt="" className="h-full w-full object-cover" />
-                  <div className="absolute inset-0 flex items-center justify-center gap-1 bg-black/45 opacity-0 transition group-hover:opacity-100">
+                  <div className="absolute inset-0 flex items-center justify-center gap-1 bg-black/45 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
                     {tab === 'inpaint' && <button type="button" onClick={() => setMaskEditorImageId(img.id)} title="涂抹遮罩" className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/90 text-[#6b5ce7]"><IconEdit className="h-3.5 w-3.5" /></button>}
                     <button type="button" onClick={() => removeInputImage(idx)} title="移除" className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/90 text-red-500"><IconMinus className="h-3.5 w-3.5" /></button>
                   </div>
@@ -177,25 +185,28 @@ export default function StudioPage() {
             </div>
           )}
 
-          <div className="mt-5">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-[#35315d]">选择风格</h3>
-              <span className="text-[11px] text-[#aaa5bf]">风格会在提交时自动应用，不会显示在输入框</span>
+          <div className="mt-5 rounded-2xl border border-[#e9e4f5] bg-white/70 p-4 sm:p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-[#35315d]"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-[#eee9ff] text-xs text-[#7b65d9]">2</span>选择风格</h3>
+              <span className="text-[11px] text-[#918cae]">风格自动应用，输入框只保留你的描述</span>
             </div>
             <div className="hide-scrollbar mt-3 flex gap-2.5 overflow-x-auto pb-1">
-              <button type="button" onClick={() => setSelectedStyle(null)} className={`flex h-[86px] w-[96px] shrink-0 flex-col items-center justify-center gap-2 rounded-xl border-2 transition ${selectedStyle === null ? 'border-[#8c7cf7] bg-[#f3f1ff] text-[#6b5ce7]' : 'border-transparent bg-white text-[#746f92] hover:border-[#dedafa]'}`}>
+              <button type="button" aria-pressed={selectedStyle === null} onClick={() => setSelectedStyle(null)} className={`flex h-[104px] w-[96px] shrink-0 flex-col items-center justify-center gap-2 rounded-xl border-2 transition ${selectedStyle === null ? 'border-[#8c7cf7] bg-[#f3f1ff] text-[#6b5ce7]' : 'border-[#e3ddef] bg-white text-[#746f92] hover:border-[#b3a3e8]'}`}>
                 <IconImage className="h-6 w-6" /><span className="text-[11px] font-semibold">不限风格</span>
               </button>
               {STYLE_PRESETS.map((style) => (
-                <button key={style.key} type="button" onClick={() => setSelectedStyle(style.key)} aria-pressed={selectedStyle === style.key} className={`relative h-[86px] w-[104px] shrink-0 overflow-hidden rounded-xl border-2 text-left transition ${selectedStyle === style.key ? 'border-[#8c7cf7] shadow-md shadow-[#7867f5]/20' : 'border-transparent hover:border-[#dedafa]'}`}>
+                <button key={style.key} type="button" onClick={() => setSelectedStyle(style.key)} aria-pressed={selectedStyle === style.key} className={`relative h-[104px] w-[104px] shrink-0 overflow-hidden rounded-xl border-2 text-left transition ${selectedStyle === style.key ? 'border-[#8c7cf7] shadow-md shadow-[#7867f5]/20' : 'border-[#e3ddef] hover:border-[#b3a3e8]'}`}>
                   <img src={assetUrl(style.image)} alt="" loading="lazy" className="h-full w-full object-cover" />
                   <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 to-transparent px-2 pb-1.5 pt-6 text-center text-[10px] font-semibold text-white">{style.label}</span>
+                  {selectedStyle === style.key && <span aria-hidden="true" className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-[#7867f5] text-xs text-white">✓</span>}
                 </button>
               ))}
             </div>
           </div>
 
-          <div className="mt-5 flex flex-wrap items-end gap-x-12 gap-y-5">
+          <p className="mt-2 px-1 text-[11px] text-[#918cae]">左右滑动查看更多风格</p>
+
+          <div className="mt-5 flex flex-wrap items-end gap-x-12 gap-y-5 rounded-2xl border border-[#e9e4f5] bg-white/70 p-4 sm:p-5">
             <div>
               <h3 className="text-sm font-bold text-[#35315d]">画面比例</h3>
               <div className="mt-2.5 flex flex-wrap gap-2">
@@ -207,9 +218,9 @@ export default function StudioPage() {
             <div>
               <h3 className="text-sm font-bold text-[#35315d]">生成数量</h3>
               <div className="mt-2.5 flex items-center gap-3">
-                <button type="button" onClick={() => setParams({ n: Math.max(1, count - 1) })} className="flex h-9 w-9 items-center justify-center rounded-lg bg-white text-[#77718f] hover:bg-[#efedfd] hover:text-[#6b5ce7]"><IconMinus className="h-4 w-4" /></button>
+                <button type="button" aria-label="减少生成数量" disabled={count === 1} onClick={() => setParams({ n: Math.max(1, count - 1) })} className="flex h-9 w-9 items-center justify-center rounded-lg border border-[#e4def1] bg-white text-[#77718f] hover:bg-[#efedfd] hover:text-[#6b5ce7] disabled:cursor-not-allowed disabled:opacity-40"><IconMinus className="h-4 w-4" /></button>
                 <span className="w-6 text-center text-sm font-bold">{count}</span>
-                <button type="button" onClick={() => setParams({ n: Math.min(4, count + 1) })} className="flex h-9 w-9 items-center justify-center rounded-lg bg-white text-[#77718f] hover:bg-[#efedfd] hover:text-[#6b5ce7]"><IconPlus className="h-4 w-4" /></button>
+                <button type="button" aria-label="增加生成数量" disabled={count === 4} onClick={() => setParams({ n: Math.min(4, count + 1) })} className="flex h-9 w-9 items-center justify-center rounded-lg border border-[#e4def1] bg-white text-[#77718f] hover:bg-[#efedfd] hover:text-[#6b5ce7] disabled:cursor-not-allowed disabled:opacity-40"><IconPlus className="h-4 w-4" /></button>
               </div>
             </div>
             {credits && <p className="ml-auto text-[11px] text-[#aaa5bf]">剩余 {view?.available ?? 0} 积分 · 失败自动退分</p>}

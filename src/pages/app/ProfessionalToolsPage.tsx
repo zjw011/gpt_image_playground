@@ -11,8 +11,8 @@ import AppShell from './AppShell'
 type ToolKey = 'ecommerce' | 'product-suite' | 'live'
 
 const TOOLS: Array<{ key: ToolKey, title: string, eyebrow: string, description: string, image: string }> = [
-  { key: 'ecommerce', title: '电商设计', eyebrow: '单图精修', description: '上传商品图，生成适合详情页、海报和营销场景的成品。', image: '/art/recharge-cat.jpg' },
-  { key: 'product-suite', title: '商品电商套图', eyebrow: '批量出图', description: '围绕同一商品，一次生成视觉统一的成套电商素材。', image: '/art/work-sakura.jpg' },
+  { key: 'ecommerce', title: '电商设计', eyebrow: '单图精修', description: '上传商品图，生成适合详情页、海报和营销场景的成品。', image: '/art/tool-commerce.svg' },
+  { key: 'product-suite', title: '商品电商套图', eyebrow: '批量出图', description: '围绕同一商品，一次生成视觉统一的成套电商素材。', image: '/art/tool-product-suite.svg' },
   { key: 'live', title: 'Live 实况图', eyebrow: 'AI 连续帧', description: '用 AI 生成高度一致的微动作关键帧，合成类似手机实况照片的短动图。', image: '/art/work-seaside.jpg' },
 ]
 
@@ -122,7 +122,7 @@ function ProductImageEditor({ tool }: { tool: Exclude<ToolKey, 'live'> }) {
           {inputImages[0] && <button type="button" onClick={() => fileInputRef.current?.click()} className="mt-3 w-full rounded-xl bg-white py-2.5 text-xs font-semibold text-[#6b5ce7] shadow-sm hover:bg-[#f7f5ff]">更换图片</button>}
           <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(event) => { void upload(event.target.files); event.target.value = '' }} />
         </div>
-        <div className="space-y-6">
+        <div className="space-y-6 rounded-3xl border border-[#e5def2] bg-white/90 p-4 sm:p-6">
           <div><h3 className="text-sm font-bold text-[#35315d]">选择方案</h3><div className="mt-3 grid gap-2 sm:grid-cols-2">{options.map((item) => <button key={item.key} type="button" onClick={() => setScene(item.key)} className={`rounded-2xl border-2 p-4 text-left transition ${scene === item.key ? 'border-[#8c7cf7] bg-[#f3f1ff]' : 'border-[#e8e5f3] bg-white hover:border-[#c6bff5]'}`}><span className={`text-sm font-bold ${scene === item.key ? 'text-[#6b5ce7]' : 'text-[#423d63]'}`}>{item.label}</span><span className="mt-1 block text-[11px] text-[#918cae]">{item.description}</span></button>)}</div></div>
           <div><h3 className="text-sm font-bold text-[#35315d]">补充要求 <span className="font-normal text-[#aaa5bf]">（可选）</span></h3><textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} placeholder="例如：保留瓶身文字，暖色桌面场景，右侧留出标题空间" className="mt-3 w-full resize-none rounded-2xl border border-[#e4e0f2] bg-white p-4 text-sm leading-6 text-[#37335c] outline-none transition placeholder:text-[#aaa5bf] focus:border-[#9588f5] focus:ring-4 focus:ring-[#7867f5]/10" /></div>
           <div className="flex flex-wrap gap-x-10 gap-y-5">
@@ -214,7 +214,12 @@ export default function ProfessionalToolsPage() {
 
   return (
     <AppShell title="专业工具" wide>
-      {tool && <Link to="/tools" className="mb-4 inline-flex items-center gap-1.5 text-xs font-semibold text-[#746e91] hover:text-[#6b5ce7]"><IconArrowLeft className="h-4 w-4" />返回专业工具</Link>}
+      {tool && <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <Link to="/tools" className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#746e91] hover:text-[#6b5ce7]"><IconArrowLeft className="h-4 w-4" />返回专业工具</Link>
+        <nav aria-label="专业工具切换" className="flex flex-wrap gap-2 rounded-2xl border border-[#e7e1f5] bg-white p-1.5">
+          {TOOLS.map((item) => <Link key={item.key} to={`/tools?tool=${item.key}`} aria-current={tool === item.key ? 'page' : undefined} className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${tool === item.key ? 'bg-[#eee8ff] text-[#7352db]' : 'text-[#817695] hover:bg-[#f7f3ff]'}`}>{item.title}</Link>)}
+        </nav>
+      </div>}
       {!tool && <ToolLanding />}
       {tool === 'ecommerce' && <ProductImageEditor key={tool} tool={tool} />}
       {tool === 'product-suite' && <ProductImageEditor key={tool} tool={tool} />}

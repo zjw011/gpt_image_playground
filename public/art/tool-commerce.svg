@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 420" fill="none">
+  <defs>
+    <linearGradient id="bg" x2="600" y2="420" gradientUnits="userSpaceOnUse"><stop stop-color="#FFE9D6"/><stop offset="1" stop-color="#F7CBB5"/></linearGradient>
+    <linearGradient id="glass" x1="235" y1="140" x2="380" y2="340" gradientUnits="userSpaceOnUse"><stop stop-color="#FFF7EC"/><stop offset=".5" stop-color="#E9B895"/><stop offset="1" stop-color="#CF9575"/></linearGradient>
+    <linearGradient id="cap"><stop stop-color="#835238"/><stop offset=".4" stop-color="#ECD1A7"/><stop offset="1" stop-color="#906748"/></linearGradient>
+  </defs>
+  <rect width="600" height="420" fill="url(#bg)"/>
+  <circle cx="470" cy="70" r="160" fill="#FFF7E8" opacity=".6"/>
+  <path d="M0 350Q250 290 600 360V420H0" fill="#F6D8C1"/>
+  <ellipse cx="306" cy="357" rx="120" ry="19" fill="#AC7459" opacity=".18"/>
+  <rect x="210" y="160" width="180" height="186" rx="26" fill="url(#glass)" stroke="#FFF4E9" stroke-width="3"/>
+  <rect x="255" y="103" width="90" height="57" rx="5" fill="url(#cap)"/>
+  <rect x="266" y="90" width="68" height="15" rx="4" fill="url(#cap)"/>
+  <rect x="235" y="211" width="130" height="90" rx="4" fill="#FFF9F0" opacity=".9"/>
+  <path d="M270 240H330M282 252H318M289 277H311" stroke="#B58E73" stroke-width="3" stroke-linecap="round"/>
+  <path d="M225 188V319" stroke="white" stroke-width="5" stroke-linecap="round" opacity=".55"/>
+  <path d="M430 329Q405 241 460 205M445 262Q478 230 498 255Q478 289 445 262M432 300Q405 270 393 292Q400 324 432 300" stroke="#BA9879" stroke-width="4"/>
+  <circle cx="155" cy="121" r="5" fill="white"/><circle cx="429" cy="168" r="4" fill="white"/>
+  <path d="M136 203H156M146 193V213" stroke="white" stroke-width="3" stroke-linecap="round"/>
+</svg>
