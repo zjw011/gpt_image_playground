@@ -243,12 +243,16 @@ export default function GalleryPage() {
       confirmText: '删除',
       tone: 'danger',
       action: async () => {
-        const result = await deleteWorkComment(previewWorkId, comment.id)
-        setComments((current) => current.filter((item) => item.id !== comment.id))
-        setCommentTotal(result.total)
-        setWorks((current) => current.map((work) => work.id === previewWorkId ? { ...work, comments: result.total } : work))
-        setPreview((current) => current && isServerItem(current) && current.id === previewWorkId ? { ...current, comments: result.total } : current)
-        showToast('评论已删除', 'success')
+        try {
+          const result = await deleteWorkComment(previewWorkId, comment.id)
+          setComments((current) => current.filter((item) => item.id !== comment.id))
+          setCommentTotal(result.total)
+          setWorks((current) => current.map((work) => work.id === previewWorkId ? { ...work, comments: result.total } : work))
+          setPreview((current) => current && isServerItem(current) && current.id === previewWorkId ? { ...current, comments: result.total } : current)
+          showToast('评论已删除', 'success')
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : '删除评论失败，请稍后重试', 'error')
+        }
       },
     })
   }

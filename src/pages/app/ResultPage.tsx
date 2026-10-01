@@ -7,7 +7,8 @@ import GeneratingQuote from '../../components/GeneratingQuote'
 import { useFullImage, useThumbnail } from './useTaskImage'
 import { useCreditsStore } from '../../lib/creditsStore'
 import { getImage } from '../../lib/db'
-import { createLiveFrameSequence, exportLiveFrames, preloadLiveFrames } from '../../lib/livePhoto'
+import { exportLiveFrames } from '../../lib/livePhoto'
+import LivePhotoPlayer from '../../components/LivePhotoPlayer'
 import { isLiveProfessionalPreset } from '../../lib/professionalTools'
 import { isBackendMode, getBackendUser } from '../../lib/backend'
 import { publishWork } from '../../lib/galleryApi'
@@ -54,7 +55,6 @@ export default function ResultPage() {
   const [publishTitle, setPublishTitle] = useState('')
   const [publishCaption, setPublishCaption] = useState('')
   const [liveFrames, setLiveFrames] = useState<string[]>([])
-  const [liveFrameIndex, setLiveFrameIndex] = useState(0)
   const [exportingLive, setExportingLive] = useState(false)
   const lastLuckyAt = useCreditsStore((s) => s.lastLuckyAt)
   const imageId = activeImageId && task?.outputImages.includes(activeImageId)
@@ -64,29 +64,18 @@ export default function ResultPage() {
   const liveTask = isLiveProfessionalPreset(task?.professionalPreset)
   const outputKey = task?.outputImages.join('|') ?? ''
 
+  useEffect(() => { setActiveImageId(null) }, [task?.id])
+
   useEffect(() => {
     let alive = true
     setLiveFrames([])
-    setLiveFrameIndex(0)
     if (!liveTask || task?.status !== 'done' || task.outputImages.length < 2) return
-    void Promise.all(task.outputImages.map((id) => getImage(id))).then(async (images) => {
+    void Promise.all(task.outputImages.map((id) => getImage(id))).then((images) => {
       const frames = images.flatMap((image) => image?.dataUrl ? [image.dataUrl] : [])
-      await preloadLiveFrames(frames)
       if (alive) setLiveFrames(frames)
     }).catch((err) => console.warn('读取 Live 连续帧失败', err))
     return () => { alive = false }
   }, [liveTask, task?.id, task?.status, outputKey])
-
-  useEffect(() => {
-    const sequence = createLiveFrameSequence(liveFrames.length)
-    if (sequence.length < 2) return
-    let idx = 0
-    const timer = window.setInterval(() => {
-      idx = (idx + 1) % sequence.length
-      setLiveFrameIndex(sequence[idx])
-    }, 280)
-    return () => window.clearInterval(timer)
-  }, [liveFrames.length])
 
   if (!task) {
     return (
@@ -259,6 +248,12 @@ export default function ResultPage() {
               </div>
             )}
 
+            {task.status === 'done' && Boolean(task.outputErrors?.length) && (
+              <div role="status" className="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs leading-5 text-amber-800">
+                本次部分完成，已保留 {task.outputImages.length} 张图片{liveTask && task.liveFrameCount ? `（目标 ${task.liveFrameCount} 帧）` : ''}。你可以查看和下载已有结果，或点击「再次生成」重新创作。
+              </div>
+            )}
+
             <div className="flex min-h-[420px] items-center justify-center bg-[#faf9fe] p-5">
               {running ? (
                 <div className="flex flex-col items-center text-center">
@@ -292,19 +287,8 @@ export default function ResultPage() {
                     重新生成
                   </button>
                 </div>
-              ) : liveTask && liveFrames.length > 1 ? (
-                <div className="relative flex h-[62vh] max-h-[720px] w-full items-center justify-center overflow-hidden rounded-2xl bg-[#111] shadow-lg">
-                  {liveFrames.map((src, idx) => (
-                    <img
-                      key={idx}
-                      src={src}
-                      alt={`Live 连续帧 ${idx + 1}`}
-                      draggable={false}
-                      className={`absolute inset-0 h-full w-full select-none object-contain transition-opacity duration-[260ms] ease-linear ${idx === liveFrameIndex ? 'opacity-100' : 'opacity-0'}`}
-                    />
-                  ))}
-                  <span className="absolute left-4 top-4 rounded-full bg-black/55 px-3 py-1.5 text-[11px] font-semibold text-white backdrop-blur">LIVE · {liveFrames.length} AI 关键帧</span>
-                </div>
+              ) : liveTask && liveFrames.length > 1 && !activeImageId ? (
+                <LivePhotoPlayer frames={liveFrames} />
               ) : fullSrc ? (
                 <img src={fullSrc} alt={task.prompt} className="max-h-[62vh] rounded-2xl object-contain shadow-lg" />
               ) : (
@@ -319,6 +303,9 @@ export default function ResultPage() {
                   <Thumb key={id} imageId={id} active={id === imageId} onClick={() => setActiveImageId(id)} />
                 ))}
               </div>
+            )}
+            {liveTask && liveFrames.length > 1 && activeImageId && (
+              <button type="button" onClick={() => setActiveImageId(null)} className="mx-5 mb-4 rounded-full bg-[#efedfd] px-4 py-2 text-xs font-semibold text-[#6b5ce7] hover:bg-[#e5e0fc]">返回实况播放</button>
             )}
           </div>
         </div>

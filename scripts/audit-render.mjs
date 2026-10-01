@@ -99,6 +99,20 @@ try {
     report(`${path} 有内容`, textLen > 30, `文本 ${textLen} 字`)
   }
 
+  // 同色帧在混合中点应保持原亮度；旧的双半透明混合会使白色降至约 75%。
+  const liveBrightness = await evaluate(`(async () => {
+    const { preloadLiveFrames, drawLiveFrameBlend } = await import('/src/lib/livePhoto.ts')
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = 16
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, 16, 16)
+    const frames = await preloadLiveFrames([canvas.toDataURL(), canvas.toDataURL()])
+    drawLiveFrameBlend(ctx, frames[0], frames[1], 0.5)
+    return Array.from(ctx.getImageData(8, 8, 1, 1).data)
+  })()`)
+  report('Live 同色帧过渡没有暗闪', liveBrightness.every((value) => value === 255), JSON.stringify(liveBrightness))
+
   report('全流程无控制台报错', consoleErrors.length === 0, consoleErrors.slice(0, 5).join(' || '))
 } catch (error) {
   failed++

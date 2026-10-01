@@ -77,6 +77,7 @@ function WorkCard({ task, streamPreview }: { task: TaskRecord, streamPreview?: s
           <IconStar className="h-3.5 w-3.5 text-[#f0b429]" filled />
         </span>
       )}
+      {task.status === 'error' && <span className="absolute bottom-2 left-2 rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-500">生成失败 · 查看并重试</span>}
     </Link>
   )
 }
@@ -130,7 +131,7 @@ export default function MePage() {
   const favOnly = rawTab === 'favorites' || searchParams.get('fav') === '1'
   const name = user?.displayName || user?.username || '本地创作者'
   const doneCount = tasks.filter((task) => task.status === 'done' && task.outputImages.length > 0).length
-  const workTasks = tasks.filter((task) => task.status === 'running' || (task.status === 'done' && task.outputImages.length > 0))
+  const workTasks = tasks.filter((task) => task.status === 'running' || task.status === 'error' || (task.status === 'done' && task.outputImages.length > 0))
   const favoriteTasks = tasks.filter((task) => task.isFavorite)
 
   const openProfileEditor = () => {
@@ -273,7 +274,7 @@ export default function MePage() {
             </div>
             {gridTasks.length === 0 ? (
               <EmptyState
-                text={favOnly ? '还没有收藏；打开任意作品，点「收藏」加个星标吧' : '还没有作品，第一张图免费画'}
+                text={favOnly ? '还没有收藏；打开任意作品，点「收藏」加个星标吧' : '还没有作品，开始创作第一张图片吧'}
                 cta={favOnly ? undefined : '立即创作'}
               />
             ) : (

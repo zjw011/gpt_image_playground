@@ -20,7 +20,7 @@ function currentProfiles() {
   return new Map(getConfig().users.map((user) => [user.id, {
     name: user.displayName || user.wechatNickname || user.username,
     avatar: user.avatar
-      ? `/api/gallery/avatars/${encodeURIComponent(user.id)}`
+      ? `/api/gallery/avatars/${encodeURIComponent(user.id)}?v=${user.updatedAt}`
       : user.wechatAvatar || '',
   }]))
 }
