@@ -11,7 +11,7 @@ import { getBackendUser, submitFrontLogout } from '../../lib/backend'
 import {
   IconGrid, IconLayers, IconBolt, IconUser, IconCoin,
   IconWechat, IconMail, IconSettings, IconLogout, IconHome,
-  IconMessage,
+  IconMessage, IconShield,
 } from '../icons'
 
 export const ADMIN_TABS = [
@@ -43,33 +43,48 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
   }
 
   return (
-    <div className="flex min-h-screen bg-[#f6f8fb] text-[#334155]">
+    <div className="flex min-h-screen bg-[radial-gradient(circle_at_85%_0%,rgba(219,234,254,0.65),transparent_28%),#f6f8fb] text-[#334155]">
       {/* 侧栏 */}
-      <aside className="sticky top-0 flex h-screen w-[220px] shrink-0 flex-col border-r border-[#e6ebf2] bg-white px-4 py-5">
-        <div className="px-2">
-          <span className="flex items-center gap-2.5">
-            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-[#3b82f6] to-[#60a5fa] font-bold text-white shadow-sm">
+      <aside className="sticky top-0 flex h-screen w-[236px] shrink-0 flex-col overflow-y-auto border-r border-[#e6ebf2] bg-white/95 px-4 py-5 shadow-[8px_0_32px_rgba(148,163,184,0.06)] backdrop-blur">
+        <div className="px-2.5">
+          <span className="flex items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-[14px] bg-gradient-to-br from-[#2563eb] to-[#60a5fa] font-bold text-white shadow-[0_8px_20px_rgba(59,130,246,0.25)]">
               绘
             </span>
-            <span className="text-lg font-bold tracking-wide text-[#1e293b]">后台管理</span>
+            <span>
+              <span className="block text-[17px] font-bold tracking-wide text-[#1e293b]">绘想后台</span>
+              <span className="mt-0.5 block text-[9px] font-semibold tracking-[0.22em] text-[#94a3b8]">CONTROL</span>
+            </span>
           </span>
         </div>
 
         <nav className="mt-8 flex flex-col gap-1">
-          {ADMIN_TABS.map((item) => (
-            <Link
-              key={item.key}
-              to={`/admin?tab=${item.key}`}
-              className={`flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition ${
-                location.pathname === '/admin' && activeTab === item.key
-                  ? 'bg-[#eff6ff] text-[#2563eb]'
-                  : 'text-[#64748b] hover:bg-[#f1f5f9] hover:text-[#1e293b]'
-              }`}
-            >
-              <item.icon className="h-[18px] w-[18px]" />
-              {item.label}
-            </Link>
-          ))}
+          {ADMIN_TABS.map((item, idx) => {
+            const active = location.pathname === '/admin' && activeTab === item.key
+            return (
+              <div key={item.key}>
+                {(idx === 0 || idx === 6) && (
+                  <p className={`${idx === 6 ? 'mt-5' : ''} mb-2 px-3 text-[10px] font-semibold tracking-[0.18em] text-[#a8b3c4]`}>
+                    {idx === 0 ? '运营管理' : '系统配置'}
+                  </p>
+                )}
+                <Link
+                  to={`/admin?tab=${item.key}`}
+                  className={`group relative flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition-all ${
+                    active
+                      ? 'bg-gradient-to-r from-[#eaf3ff] to-[#f3f7ff] text-[#2563eb] shadow-[inset_0_0_0_1px_rgba(96,165,250,0.12)]'
+                      : 'text-[#64748b] hover:bg-[#f5f8fc] hover:text-[#1e293b]'
+                  }`}
+                >
+                  <span className={`flex h-7 w-7 items-center justify-center rounded-lg transition ${active ? 'bg-white text-[#2563eb] shadow-sm' : 'text-[#7c8da6] group-hover:bg-white group-hover:shadow-sm'}`}>
+                    <item.icon className="h-[17px] w-[17px]" />
+                  </span>
+                  {item.label}
+                  {active && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-[#3b82f6] shadow-[0_0_0_4px_rgba(59,130,246,0.1)]" />}
+                </Link>
+              </div>
+            )
+          })}
         </nav>
 
         <div className="mt-auto flex flex-col gap-1 border-t border-[#f1f5f9] pt-4">
@@ -90,16 +105,29 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
 
       {/* 主区 */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-[#e6ebf2] bg-white/90 px-6 backdrop-blur">
-          <h1 className="text-lg font-bold">{title}</h1>
-          <div className="flex items-center gap-3">
-            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-[#3b82f6] to-[#60a5fa] text-sm font-bold text-white">
-              {name.slice(0, 1)}
+        <header className="sticky top-0 z-30 flex h-[72px] items-center justify-between border-b border-[#e6ebf2] bg-white/85 px-7 backdrop-blur-xl">
+          <div>
+            <p className="text-[11px] font-medium text-[#94a3b8]">绘想控制台&nbsp; / &nbsp;{title}</p>
+            <h1 className="mt-1 text-[17px] font-bold text-[#1e293b]">{title}</h1>
+          </div>
+          <div className="flex items-center gap-4">
+            <span className="hidden items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50/80 px-3 py-1.5 text-xs font-medium text-emerald-600 sm:flex">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.1)]" />
+              系统运行中
             </span>
-            <span className="max-w-[10rem] truncate text-sm font-medium text-[#334155]">{name}</span>
+            <span className="h-7 w-px bg-[#e6ebf2]" />
+            <div className="flex items-center gap-2.5 rounded-full border border-[#e6ebf2] bg-white py-1.5 pl-1.5 pr-3 shadow-sm">
+              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-[#2563eb] to-[#60a5fa] text-sm font-bold text-white shadow-sm">
+                {name.slice(0, 1)}
+              </span>
+              <span>
+                <span className="block max-w-[8rem] truncate text-xs font-semibold text-[#334155]">{name}</span>
+                <span className="flex items-center gap-1 text-[9px] text-[#94a3b8]"><IconShield className="h-2.5 w-2.5" />管理员</span>
+              </span>
+            </div>
           </div>
         </header>
-        <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-6">{children}</main>
+        <main className="mx-auto w-full max-w-[1440px] flex-1 px-5 py-6 lg:px-7 lg:py-7">{children}</main>
         {/* 后台所有确认弹窗共用全站样式（store 驱动），替代原生 confirm */}
         <ConfirmDialog />
       </div>
