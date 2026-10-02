@@ -9,6 +9,9 @@ import { useCreditsStore } from '../../lib/creditsStore'
 import { getImage } from '../../lib/db'
 import { exportLiveFrames } from '../../lib/livePhoto'
 import LivePhotoPlayer from '../../components/LivePhotoPlayer'
+import QuickMotionPlayer from '../../components/QuickMotionPlayer'
+import { exportQuickMotion, normalizeQuickMotionOptions } from '../../lib/quickMotion'
+import { isQuickMotionTask } from '../../lib/quickMotionTask'
 import { isLiveProfessionalPreset } from '../../lib/professionalTools'
 import { isBackendMode, getBackendUser } from '../../lib/backend'
 import { publishWork } from '../../lib/galleryApi'
@@ -60,17 +63,26 @@ export default function ResultPage() {
   const [publishCaption, setPublishCaption] = useState('')
   const [liveFrames, setLiveFrames] = useState<string[]>([])
   const [exportingLive, setExportingLive] = useState(false)
+  const exportController = useRef<AbortController | null>(null)
   const lastLuckyAt = useCreditsStore((s) => s.lastLuckyAt)
   const imageId = activeImageId && task?.outputImages.includes(activeImageId)
     ? activeImageId
     : task?.outputImages[0] ?? null
   const fullSrc = useFullImage(imageId)
   const liveTask = isLiveProfessionalPreset(task?.professionalPreset)
+  const quickMotion = useMemo(() => task && isQuickMotionTask(task) ? normalizeQuickMotionOptions(task.quickMotion) : null, [task?.quickMotion, task?.professionalPreset])
   const outputKey = task?.outputImages.join('|') ?? ''
   useCloseOnEscape(publishOpen, () => { if (!publishing) setPublishOpen(false) })
   usePreventBackgroundScroll(publishOpen, publishRef)
 
   useEffect(() => { setActiveImageId(null) }, [task?.id])
+  useEffect(() => {
+    setExportingLive(false)
+    return () => {
+      exportController.current?.abort()
+      exportController.current = null
+    }
+  }, [task?.id])
 
   useEffect(() => {
     let alive = true
@@ -108,10 +120,38 @@ export default function ResultPage() {
       : '系统已尝试可用渠道但仍未生成图片，本次失败不会扣除积分。'
 
   const download = async () => {
+    if (exportingLive) return
+    if (quickMotion && fullSrc) {
+      const controller = new AbortController()
+      exportController.current = controller
+      setExportingLive(true)
+      try {
+        const result = await exportQuickMotion(fullSrc, quickMotion, controller.signal)
+        if (controller.signal.aborted) return
+        const url = URL.createObjectURL(result.blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = `绘想-运镜-${task.id}.${result.extension}`
+        link.click()
+        window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
+        showToast(`${result.extension.toUpperCase()} 运镜视频已导出`, 'success')
+      } catch (err) {
+        if (!controller.signal.aborted) showToast(err instanceof Error ? err.message : '视频导出失败，请稍后重试', 'error')
+      } finally {
+        if (exportController.current === controller) {
+          exportController.current = null
+          setExportingLive(false)
+        }
+      }
+      return
+    }
     if (liveTask && liveFrames.length > 1) {
+      const controller = new AbortController()
+      exportController.current = controller
       setExportingLive(true)
       try {
         const blob = await exportLiveFrames(liveFrames)
+        if (controller.signal.aborted) return
         const url = URL.createObjectURL(blob)
         const link = document.createElement('a')
         link.href = url
@@ -120,9 +160,12 @@ export default function ResultPage() {
         window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
         showToast('Live 实况视频已导出', 'success')
       } catch (err) {
-        showToast(err instanceof Error ? err.message : 'Live 实况视频导出失败', 'error')
+        if (!controller.signal.aborted) showToast(err instanceof Error ? err.message : 'Live 实况视频导出失败', 'error')
       } finally {
-        setExportingLive(false)
+        if (exportController.current === controller) {
+          exportController.current = null
+          setExportingLive(false)
+        }
       }
       return
     }
@@ -134,6 +177,10 @@ export default function ResultPage() {
   }
 
   const regenerate = async () => {
+    if (quickMotion) {
+      navigate(`/tools?tool=live&task=${task.id}`)
+      return
+    }
     await reuseConfig(task)
     // 提交失败（渠道没了之类）就留在当前这件作品上，别把 task 参数清掉
     if (!await submitTask({ stylePreset: task.stylePreset, professionalPreset: task.professionalPreset, liveFrameCount: task.liveFrameCount })) return
@@ -165,10 +212,10 @@ export default function ResultPage() {
 
   // 上传到作品广场：需要登录账号（托管模式）+ 已完成的作品。
   // 未上传的作品只存在这台浏览器里，上传后才会进服务器、公开给所有人看。
-  const canPublish = isBackendMode() && Boolean(getBackendUser()) && task.status === 'done'
+  const canPublish = !quickMotion && isBackendMode() && Boolean(getBackendUser()) && task.status === 'done'
 
   // 幸运免单：这张图完成的时间与最近一次免单命中相隔很近，就认定是这一单免的
-  const luckyHit = task.status === 'done'
+  const luckyHit = !quickMotion && task.status === 'done'
     && task.finishedAt != null
     && lastLuckyAt != null
     && Math.abs(task.finishedAt - lastLuckyAt) < 30_000
@@ -203,7 +250,7 @@ export default function ResultPage() {
   }
 
   const ACTIONS: Array<{ icon: (props: { className?: string }) => React.ReactElement, label: string, onClick: () => void, disabled?: boolean, danger?: boolean }> = [
-    { icon: IconDownload, label: liveTask ? exportingLive ? '导出中' : '下载 Live' : '下载', onClick: () => void download(), disabled: liveTask ? liveFrames.length < 2 || exportingLive : !fullSrc },
+    { icon: IconDownload, label: exportingLive ? '导出中' : quickMotion ? '下载视频' : liveTask ? '下载 Live' : '下载', onClick: () => void download(), disabled: exportingLive || (liveTask ? liveFrames.length < 2 : !fullSrc) },
     { icon: IconHeart, label: '收藏', onClick: () => openFavoritePicker([task.id]) },
     ...(canPublish
       ? [{
@@ -217,14 +264,14 @@ export default function ResultPage() {
           disabled: publishing || published,
         }]
       : []),
-    { icon: IconRefresh, label: '再次生成', onClick: () => void regenerate() },
-    { icon: IconCopy, label: '复制提示词', onClick: () => void copyPrompt() },
+    { icon: IconRefresh, label: quickMotion ? '编辑运镜' : '再次生成', onClick: () => void regenerate() },
+    ...(!quickMotion ? [{ icon: IconCopy, label: '复制提示词', onClick: () => void copyPrompt() }] : []),
     { icon: IconTrash, label: '删除', onClick: confirmDelete, danger: true },
   ]
 
   return (
     <AppShell title="生成结果" wide>
-      <Link to="/studio" className="mb-4 inline-flex items-center gap-1.5 text-[13px] font-medium text-[#8a86ac] transition hover:text-[#6b5ce7]">
+      <Link to={quickMotion ? '/tools?tool=live' : '/studio'} className="mb-4 inline-flex items-center gap-1.5 text-[13px] font-medium text-[#8a86ac] transition hover:text-[#6b5ce7]">
         <IconArrowLeft className="h-4 w-4" />
         继续创作
       </Link>
@@ -244,6 +291,11 @@ export default function ResultPage() {
                 </span>
               </div>
             </div>
+
+            {quickMotion && <div className="border-b border-[#eee9f8] bg-[#f7f4ff] px-5 py-3 text-xs leading-5 text-[#817695]">
+              <p className="font-semibold text-[#6b5ce7]">快速运镜 · {quickMotion.duration} 秒 · {quickMotion.strength}% 幅度 · 0 积分</p>
+              <p className="mt-1">本地作品可随时重新导出。下载为 MP4 / WebM 视频，不是苹果相册中的原生实况照片。</p>
+            </div>}
 
             {luckyHit && (
               <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50 px-5 py-3.5">
@@ -293,6 +345,8 @@ export default function ResultPage() {
                     重新生成
                   </button>
                 </div>
+              ) : quickMotion && fullSrc ? (
+                <QuickMotionPlayer src={fullSrc} options={quickMotion} />
               ) : liveTask && liveFrames.length > 1 && !activeImageId ? (
                 <LivePhotoPlayer frames={liveFrames} />
               ) : fullSrc ? (

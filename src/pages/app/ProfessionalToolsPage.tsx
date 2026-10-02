@@ -8,13 +8,14 @@ import type { ProfessionalPresetKey } from '../../lib/professionalTools'
 import { addImageFromFile, submitTask, useStore } from '../../store'
 import { IconArrowLeft, IconArrowRight, IconMinus, IconPlus, IconSparkle, IconUpload } from '../icons'
 import AppShell from './AppShell'
+import QuickMotionEditor from '../../components/QuickMotionEditor'
 
 type ToolKey = 'ecommerce' | 'product-suite' | 'live'
 
 const TOOLS: Array<{ key: ToolKey, title: string, eyebrow: string, description: string, image: string }> = [
   { key: 'ecommerce', title: '电商设计', eyebrow: '单图精修', description: '上传商品图，生成适合详情页、海报和营销场景的成品。', image: '/art/cover-commerce-v2.jpg' },
   { key: 'product-suite', title: '商品电商套图', eyebrow: '批量出图', description: '围绕同一商品，一次生成视觉统一的成套电商素材。', image: '/art/cover-suite-v2.jpg' },
-  { key: 'live', title: 'Live 实况图', eyebrow: 'AI 连续帧', description: '用 AI 生成高度一致的微动作关键帧，合成类似手机实况照片的短动图。', image: '/art/work-seaside.jpg' },
+  { key: 'live', title: 'Live 实况图', eyebrow: '快速运镜 / AI 微动作', description: '单图轻微缩放、平移，或用 AI 创作微动作，预览并导出短视频。', image: '/art/work-seaside.jpg' },
 ]
 
 const ECOMMERCE_SCENES: Array<{ key: ProfessionalPresetKey, label: string, description: string }> = [
@@ -130,7 +131,7 @@ function ProductImageEditor({ tool }: { tool: Exclude<ToolKey, 'live'> }) {
   )
 }
 
-function LiveEditor() {
+function AiLiveEditor() {
   const navigate = useNavigate()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputImages = useStore((s) => s.inputImages)
@@ -190,13 +191,39 @@ function LiveEditor() {
           <h3 className="mt-5 text-sm font-bold text-[#35315d]">AI 关键帧</h3><div className="mt-3 grid grid-cols-2 gap-2">{frameOptions.map((count) => <button key={count} type="button" onClick={() => setFrameCount(count)} className={`rounded-xl py-2.5 text-xs font-semibold transition ${frameCount === count ? 'bg-[#7867f5] text-white' : 'bg-[#f5f3fb] text-[#77718f] hover:bg-[#ece9fc]'}`}>{count} 张{count === 8 ? ' · 更自然' : ' · 更省积分'}</button>)}</div>
           <h3 className="mt-5 text-sm font-bold text-[#35315d]">画面比例</h3><div className="mt-3 flex flex-wrap gap-2">{RATIOS.map((ratio) => <button key={ratio.label} type="button" onClick={() => setParams({ size: ratio.size })} className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${currentRatio === ratio.label ? 'bg-[#efedfd] text-[#6b5ce7] ring-1 ring-[#8c7cf7]' : 'bg-[#f7f6fc] text-[#77718f] hover:bg-[#efedfd]'}`}>{ratio.label}</button>)}</div>
           <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} placeholder="可选：补充希望发生的极轻微动作" className="mt-5 w-full resize-none rounded-2xl border border-[#e4e0f2] bg-white p-3.5 text-sm leading-6 text-[#37335c] outline-none placeholder:text-[#aaa5bf] focus:border-[#9588f5]" />
-          <p className="mt-3 text-[11px] leading-5 text-[#aaa5bf]">系统会依次提交 {frameCount} 次单图任务，上一帧返回后才继续下一帧；完成后按往返顺序补成约 2–3 秒的短实况效果。</p>
+          <p className="mt-3 text-[11px] leading-5 text-[#aaa5bf]">系统会依次提交 {frameCount} 次单图任务，上一帧返回后才继续下一帧；完成后按往返顺序平滑混合成约 {((frameCount * 2 - 2) * 0.28).toFixed(1)} 秒的短视频。视频不是苹果相册中的原生实况照片。</p>
           <button type="button" disabled={submitting} onClick={() => void generate()} className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#7462f3] to-[#9b76f6] px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-[#7867f5]/25 transition disabled:cursor-wait disabled:opacity-60"><IconSparkle className="h-4 w-4" />{submitting ? '正在提交…' : `生成 Live 实况${credits ? ` · ${cost} 积分` : ''}`}</button>
           {credits && <p className="mt-2 text-center text-[11px] text-[#aaa5bf]">剩余 {view?.available ?? 0} 积分 · 按本次提交帧数计费 · 失败自动退分</p>}
           <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(event) => { void upload(event.target.files); event.target.value = '' }} />
         </div>
       </div>
     </section>
+  )
+}
+
+function LiveEditor() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const ai = searchParams.get('liveMode') === 'ai'
+
+  return (
+    <div>
+      <div role="tablist" aria-label="实况制作方式" className="mb-5 grid max-w-lg grid-cols-2 gap-2 rounded-2xl border border-[#e7e1f5] bg-white p-1.5">
+        {[{ key: 'quick', label: '快速运镜', note: '原图轻动 · 0 积分' }, { key: 'ai', label: 'AI 微动作', note: '眨眼 / 微风 / 呼吸' }].map((item) => (
+          <button key={item.key} id={`live-tab-${item.key}`} type="button" role="tab" aria-selected={ai === (item.key === 'ai')} aria-controls={`live-panel-${item.key}`} onClick={() => {
+            const next = new URLSearchParams(searchParams)
+            next.set('liveMode', item.key)
+            next.delete('task')
+            setSearchParams(next, { replace: true })
+          }} className={`rounded-xl px-3 py-3 text-left transition ${ai === (item.key === 'ai') ? 'bg-[#eee8ff] text-[#7352db] shadow-sm' : 'text-[#817695] hover:bg-[#f7f3ff]'}`}>
+            <span className="block text-sm font-bold">{item.label}</span>
+            <span className="mt-1 block text-[11px] opacity-80">{item.note}</span>
+          </button>
+        ))}
+      </div>
+      <div role="tabpanel" id={`live-panel-${ai ? 'ai' : 'quick'}`} aria-labelledby={`live-tab-${ai ? 'ai' : 'quick'}`}>
+        {ai ? <AiLiveEditor /> : <QuickMotionEditor />}
+      </div>
+    </div>
   )
 }
 

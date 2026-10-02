@@ -177,6 +177,12 @@ export interface AgentInputDraft {
 
 export type TaskStatus = 'running' | 'done' | 'error'
 
+export interface QuickMotionOptions {
+  effect: 'zoom' | 'pan-left' | 'pan-right'
+  duration: number
+  strength: number
+}
+
 export interface TaskRecord {
   id: string
   prompt: string
@@ -188,6 +194,8 @@ export interface TaskRecord {
   liveFrameCount?: number
   /** 已完成的 Live 帧数，用于结果页与作品列表展示进度。 */
   liveFramesCompleted?: number
+  /** 本地快速运镜参数，不调用绘图渠道，也不改变原始图片。 */
+  quickMotion?: QuickMotionOptions
   params: TaskParams
   /** 生成时使用的 Provider 类型 */
   apiProvider?: ApiProvider

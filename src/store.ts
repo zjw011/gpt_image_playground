@@ -13,6 +13,7 @@ import type {
   InputImage,
   MaskDraft,
   TaskRecord,
+  QuickMotionOptions,
   FavoriteCollection,
   ResponsesOutputItem,
   StoredImage,
@@ -74,6 +75,7 @@ import { stripInjectedCodexCliSizePrompt } from './lib/size'
 import { appendStylePreset } from './lib/stylePresets'
 import { appendProfessionalPreset, isLiveProfessionalPreset } from './lib/professionalTools'
 import { generateLiveFrameSequence } from './lib/liveGeneration'
+import { isQuickMotionTask, normalizeQuickMotionTask, saveQuickMotionTask } from './lib/quickMotionTask'
 
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
@@ -1020,8 +1022,9 @@ function genId(): string {
 }
 
 function getPersistableTask(task: TaskRecord): TaskRecord {
-  const rawResponsePayload = getPersistableRawResponsePayload(task.rawResponsePayload)
-  return rawResponsePayload === task.rawResponsePayload ? task : { ...task, rawResponsePayload }
+  const normalized = normalizeQuickMotionTask(task)
+  const rawResponsePayload = getPersistableRawResponsePayload(normalized.rawResponsePayload)
+  return rawResponsePayload === normalized.rawResponsePayload ? normalized : { ...normalized, rawResponsePayload }
 }
 
 function putTask(task: TaskRecord): Promise<IDBValidKey> {
@@ -1395,6 +1398,7 @@ async function recoverFalTask(taskId: string) {
 
 /** 初始化：从 IndexedDB 加载任务，按需恢复输入图片，并清理孤立图片 */
 export async function initStore() {
+  const initialTasks = useStore.getState().tasks
   const legacyAgentConversations = normalizeAgentConversations(useStore.getState().agentConversations)
   const storedTasks = await getAllTasks()
   const storedAgentConversations = normalizeAgentConversations(await getAllAgentConversations())
@@ -1443,10 +1447,17 @@ export async function initStore() {
     useStore.getState().setDefaultFavoriteCollectionId(normalizedFavorites.defaultFavoriteCollectionId)
   }
   await Promise.all(tasks
-    .filter((task, index) => normalizedFavorites.changed || interruptedTaskIds.has(task.id) || task.rawResponsePayload !== markedTasks[index]?.rawResponsePayload)
+    .filter((task, index) => normalizedFavorites.changed || interruptedTaskIds.has(task.id) || task.rawResponsePayload !== markedTasks[index]?.rawResponsePayload || task.quickMotion !== markedTasks[index]?.quickMotion)
     .map((task) => putTask(task)))
-  useStore.getState().setTasks(tasks)
-  for (const task of tasks) {
+  const latestTasks = useStore.getState().tasks
+  const initialTaskIds = new Set(initialTasks.map((task) => task.id))
+  const latestTaskIds = new Set(latestTasks.map((task) => task.id))
+  // 初始化期间创建/修改/删除的任务以当前状态为准，不能被迟到的数据库快照覆盖。
+  useStore.getState().setTasks(latestTasks === initialTasks
+    ? tasks
+    : [...latestTasks, ...tasks.filter((task) => !initialTaskIds.has(task.id) && !latestTaskIds.has(task.id))])
+  for (const task of useStore.getState().tasks) {
+    if (task.quickMotion) continue
     if (
       task.apiProvider === 'fal' &&
       task.falRequestId &&
@@ -1490,9 +1501,15 @@ export async function initStore() {
   const imageIds = await getAllImageIds()
   const referencedImageIds: string[] = []
   for (const imgId of imageIds) {
-    if (referencedIds.has(imgId)) {
+    const latestState = useStore.getState()
+    if (referencedIds.has(imgId) || isImageReferencedByState(latestState, imgId)) {
       referencedImageIds.push(imgId)
-    } else {
+    } else if (
+      latestState.tasks === state.tasks && latestState.inputImages === persistedInputImages &&
+      latestState.galleryInputDraft === galleryInputDraft && latestState.agentInputDrafts === agentInputDrafts &&
+      latestState.agentConversations === agentConversations
+    ) {
+      // 任何引用集合发生变化都跳过本轮清理，宁可暂留孤立图，不能删刚被恢复/上传的原图。
       await deleteImage(imgId)
     }
   }
@@ -1511,8 +1528,12 @@ export async function initStore() {
       cacheImage(img.id, storedImage.dataUrl)
     }
   }
-  if (restoredInputImages.length !== persistedInputImages.length || restoredInputImages.some((img, index) => img.dataUrl !== persistedInputImages[index]?.dataUrl)) {
-    useStore.getState().setInputImages(restoredInputImages)
+  if (
+    useStore.getState().inputImages === persistedInputImages &&
+    (restoredInputImages.length !== persistedInputImages.length || restoredInputImages.some((img, index) => img.dataUrl !== persistedInputImages[index]?.dataUrl))
+  ) {
+    // 这是水合而非用户编辑；草稿在下方各自恢复，不能刷新其保留时间或覆盖新草稿。
+    useStore.setState(updateInputDraftImages(useStore.getState(), restoredInputImages))
   }
 
   if (galleryInputDraft) {
@@ -1541,17 +1562,19 @@ export async function initStore() {
     if (galleryDraftsChanged) {
       const latestState = useStore.getState()
       const nextGalleryInputDraft = isEmptyAgentInputDraft(restoredGalleryDraft) ? null : restoredGalleryDraft
-      useStore.setState({
-        galleryInputDraft: nextGalleryInputDraft,
-        ...(latestState.appMode === 'gallery'
-          ? restoreGalleryInputDraftState(nextGalleryInputDraft)
-          : {}),
-      })
+      if (latestState.galleryInputDraft === galleryInputDraft) {
+        useStore.setState({
+          galleryInputDraft: nextGalleryInputDraft,
+          ...(latestState.appMode === 'gallery' && latestState.inputImages === persistedInputImages && latestState.prompt === state.prompt && latestState.maskDraft === state.maskDraft && latestState.maskEditorImageId === state.maskEditorImageId
+            ? restoreGalleryInputDraftState(nextGalleryInputDraft)
+            : {}),
+        })
+      }
     }
   }
 
   const restoredAgentInputDrafts: Record<string, AgentInputDraft> = {}
-  let agentDraftsChanged = false
+  const changedAgentDraftIds = new Set<string>()
   for (const [conversationId, draft] of Object.entries(agentInputDrafts)) {
     const restoredDraftImages: InputImage[] = []
     for (const img of draft.inputImages) {
@@ -1578,17 +1601,27 @@ export async function initStore() {
       restoredDraftImages.some((img, index) => img.dataUrl !== draft.inputImages[index]?.dataUrl) ||
       shouldClearMask
     ) {
-      agentDraftsChanged = true
+      changedAgentDraftIds.add(conversationId)
     }
   }
-  if (agentDraftsChanged) {
+  if (changedAgentDraftIds.size) {
     const latestState = useStore.getState()
-    useStore.setState({
-      agentInputDrafts: restoredAgentInputDrafts,
-      ...(latestState.appMode === 'agent'
-        ? restoreAgentInputDraftState(restoredAgentInputDrafts, latestState.activeAgentConversationId)
-        : {}),
-    })
+    const drafts = { ...latestState.agentInputDrafts }
+    let changed = false
+    for (const id of changedAgentDraftIds) {
+      if (latestState.agentInputDrafts[id] !== agentInputDrafts[id]) continue
+      if (restoredAgentInputDrafts[id]) drafts[id] = restoredAgentInputDrafts[id]
+      else delete drafts[id]
+      changed = true
+    }
+    if (changed) {
+      useStore.setState({
+        agentInputDrafts: drafts,
+        ...(latestState.appMode === 'agent' && latestState.activeAgentConversationId === state.activeAgentConversationId && latestState.inputImages === persistedInputImages && latestState.prompt === state.prompt && latestState.maskDraft === state.maskDraft && latestState.maskEditorImageId === state.maskEditorImageId
+          ? restoreAgentInputDraftState(drafts, latestState.activeAgentConversationId)
+          : {}),
+      })
+    }
   }
 }
 
@@ -1596,6 +1629,11 @@ export async function initStore() {
 export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; stylePreset?: string; professionalPreset?: string; liveFrameCount?: number } = {}): Promise<boolean> {
   const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, showToast, setConfirmDialog } =
     useStore.getState()
+
+  if (options.professionalPreset === 'live-quick') {
+    showToast('快速运镜不使用 AI 绘图，请在 Live 实况工具中制作', 'info')
+    return false
+  }
 
   const normalizedSettings = normalizeSettings(settings)
   let activeProfile = getActiveApiProfile(settings)
@@ -1738,6 +1776,25 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   // 异步调用 API
   executeTask(taskId)
   return true
+}
+
+/** 免费本地运镜：原图和参数持久化成功后，才加入我的作品。 */
+export async function submitQuickMotionTask(options: QuickMotionOptions, sourceImage?: InputImage): Promise<string | null> {
+  const input = sourceImage ?? useStore.getState().inputImages[0]
+  if (!input) {
+    useStore.getState().showToast('请先上传一张图片', 'error')
+    return null
+  }
+  try {
+    const task = await saveQuickMotionTask(input, options, genId())
+    useStore.setState((state) => ({ tasks: [task, ...state.tasks] }))
+    useStore.getState().showToast('快速运镜已保存，不扣积分', 'success')
+    return task.id
+  } catch (err) {
+    console.warn('快速运镜作品保存失败', err)
+    useStore.getState().showToast(err instanceof Error ? err.message : '快速运镜保存失败，请检查本地存储后再试', 'error')
+    return null
+  }
 }
 
 function getActiveAgentConversation(): AgentConversation {
@@ -3495,7 +3552,7 @@ async function executeAgentRound(
 async function executeTask(taskId: string) {
   const { settings } = useStore.getState()
   const task = useStore.getState().tasks.find((t) => t.id === taskId)
-  if (!task) return
+  if (!task || isQuickMotionTask(task)) return
   const taskProfile = getTaskApiProfile(settings, task)
   if (!taskProfile && task.apiProfileId) {
     updateTaskInStore(taskId, {
@@ -3858,6 +3915,16 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
 
 /** 重试失败的任务：创建新任务并执行 */
 export async function retryTask(task: TaskRecord) {
+  if (isQuickMotionTask(task)) {
+    const normalized = normalizeQuickMotionTask(task)
+    const id = task.inputImageIds[0] ?? task.outputImages[0]
+    if (!id) {
+      useStore.getState().showToast('原始图片已丢失，请重新上传后再试', 'error')
+      return
+    }
+    await submitQuickMotionTask(normalized.quickMotion!, { id, dataUrl: '' })
+    return
+  }
   const { settings } = useStore.getState()
   const activeProfile = getActiveApiProfile(settings)
   const normalizedParams = normalizeParamsForSettings(task.params, settings, { hasInputImages: task.inputImageIds.length > 0 })
@@ -3905,6 +3972,22 @@ export async function retryTask(task: TaskRecord) {
 /** 复用配置 */
 export async function reuseConfig(task: TaskRecord) {
   const { settings, setPrompt, setParams, setInputImages, setMaskDraft, clearMaskDraft, showToast, setConfirmDialog, setReusedTaskApiProfile } = useStore.getState()
+  if (isQuickMotionTask(task)) {
+    try {
+      const id = task.inputImageIds[0] ?? task.outputImages[0]
+      const image = id ? await getImage(id) : undefined
+      if (!image) throw new Error('原始图片已丢失，请重新上传后再试')
+      setInputImages([{ id: image.id, dataUrl: image.dataUrl }])
+      setPrompt('')
+      clearMaskDraft()
+      setReusedTaskApiProfile(null)
+      showToast('已恢复原图，请在 Live 实况工具中选择快速运镜', 'success')
+    } catch (err) {
+      console.warn('快速运镜原图恢复失败', err)
+      showToast(err instanceof Error ? err.message : '原图恢复失败', 'error')
+    }
+    return
+  }
   const normalizedSettings = normalizeSettings(settings)
   const currentProfile = getActiveApiProfile(settings)
   const taskProfile = normalizedSettings.reuseTaskApiProfileTemporarily ? getTaskApiProfile(normalizedSettings, task) : null
@@ -4514,7 +4597,7 @@ export async function importData(input: File | File[], options: ImportOptions = 
         await putTask(task)
       }
 
-      const tasks = await getAllTasks()
+      const tasks = (await getAllTasks()).map(getPersistableTask)
       const state = useStore.getState()
       const importedFavoriteCollections = selected.flatMap((part) => part.manifest.favoriteCollections ?? [])
       const mergedFavorites = mergeFavoriteCollections(state.favoriteCollections, importedFavoriteCollections)

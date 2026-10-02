@@ -9,6 +9,10 @@ import { deleteAgentRoundFromConversation, getActiveAgentRounds, getAgentConvers
 import { cleanStaleAgentInputDrafts } from './lib/inputDraftState'
 import { normalizePersistedState } from './lib/persistedState'
 import { setPresetConfig } from './lib/presetConfig'
+vi.mock('./lib/livePhoto', async () => {
+  const actual = await vi.importActual<typeof import('./lib/livePhoto')>('./lib/livePhoto')
+  return { ...actual, preloadLiveFrames: vi.fn(async () => [{ naturalWidth: 1024, naturalHeight: 1024 } as HTMLImageElement]) }
+})
 vi.mock('./lib/db', () => {
   const tasks = new Map<string, TaskRecord>()
   const images = new Map<string, StoredImage>()
@@ -132,11 +136,13 @@ vi.mock('./lib/agentApi', async (importOriginal) => {
   }
 })
 import { clearAgentConversations, clearImages, clearTasks, commitTaskDeletion, deleteImage as deleteDbImage, deleteTask as deleteDbTask, getAllAgentConversations, getAllImageIds, getAllTasks, getImage, getStoredFreshImageThumbnail, putAgentConversation, putImage, putImageThumbnail, putTask as putDbTask } from './lib/db'
+import * as db from './lib/db'
 import { callImageApi } from './lib/api'
+import { preloadLiveFrames } from './lib/livePhoto'
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
-import { clearData, clearFailedTasks, deleteFavoriteCollection, editOutputs, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, regenerateAgentAssistantMessage, removeMultipleTasks, removeTask, restoreExplicitPresetConfig, reuseConfig, stopAgentResponse, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { clearData, clearFailedTasks, deleteFavoriteCollection, editOutputs, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, regenerateAgentAssistantMessage, removeMultipleTasks, removeTask, restoreExplicitPresetConfig, retryTask, reuseConfig, stopAgentResponse, submitAgentMessage, submitQuickMotionTask, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const commitTaskDeletionImplementation = vi.mocked(commitTaskDeletion).getMockImplementation()!
 const deleteDbImageImplementation = vi.mocked(deleteDbImage).getMockImplementation()!
@@ -202,6 +208,246 @@ function importFile(data: ExportData, files: Record<string, Uint8Array> = {}): F
   const buffer = zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength)
   return { name: 'backup.zip', size: zipped.byteLength, arrayBuffer: async () => buffer.slice(0) } as File
 }
+
+describe('quick motion store actions', () => {
+  beforeEach(async () => {
+    await clearTasks()
+    await clearImages()
+    vi.mocked(callImageApi).mockClear()
+    vi.mocked(preloadLiveFrames).mockResolvedValue([{ naturalWidth: 1024, naturalHeight: 1024 } as HTMLImageElement])
+    useStore.setState({
+      tasks: [],
+      inputImages: [imageA],
+      galleryInputDraft: null,
+      settings: normalizeSettings({ ...DEFAULT_SETTINGS, apiKey: '', profiles: [] }),
+      prompt: '',
+      showToast: vi.fn(),
+      confirmDialog: null,
+      reusedTaskApiProfileId: null,
+      reusedTaskApiProfileMissing: false,
+    })
+  })
+
+  afterEach(() => vi.restoreAllMocks())
+
+  it('saves a local done work without API credentials, prompt or a credit request', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const id = await submitQuickMotionTask({ effect: 'zoom', duration: 2, strength: 3 })
+    expect(id).toBeTruthy()
+    expect(useStore.getState().tasks[0]).toMatchObject({
+      id, status: 'done', quickMotion: { effect: 'zoom', duration: 2, strength: 3 },
+      inputImageIds: [imageA.id], outputImages: [imageA.id],
+    })
+    expect((await getAllTasks())[0].id).toBe(id)
+    expect(await getImage(imageA.id)).toMatchObject(imageA)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('does not expose a task before persistence completes', async () => {
+    const pending = deferred<IDBValidKey>()
+    const originalPutTask = db.putTask
+    vi.spyOn(db, 'putTask').mockImplementationOnce(async (task) => {
+      await pending.promise
+      return originalPutTask(task)
+    })
+    const submitted = submitQuickMotionTask({ effect: 'pan-left', duration: 1, strength: 2 })
+    await vi.waitFor(() => expect(db.putTask).toHaveBeenCalledOnce())
+    expect(useStore.getState().tasks).toEqual([])
+    pending.resolve('saved')
+    expect(await submitted).toBeTruthy()
+    expect(useStore.getState().tasks).toHaveLength(1)
+  })
+
+  it('returns no task on persistence failure and leaves existing works and original untouched', async () => {
+    const existing = task({ id: 'existing' })
+    await putDbTask(existing)
+    useStore.setState({ tasks: [existing] })
+    vi.spyOn(db, 'putTask').mockRejectedValueOnce(new Error('空间不足'))
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    expect(await submitQuickMotionTask({ effect: 'zoom', duration: 2, strength: 3 })).toBeNull()
+    expect(useStore.getState().tasks).toEqual([existing])
+    expect(await getAllTasks()).toEqual([existing])
+    expect(useStore.getState().showToast).toHaveBeenCalledWith('空间不足', 'error')
+    expect(callImageApi).not.toHaveBeenCalled()
+  })
+
+  it('shows a failure and no completed work when decoding the original fails', async () => {
+    vi.mocked(preloadLiveFrames).mockRejectedValueOnce(new Error('图片读取失败'))
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    expect(await submitQuickMotionTask({ effect: 'zoom', duration: 2, strength: 3 })).toBeNull()
+    expect(useStore.getState().tasks).toEqual([])
+    expect(await getAllTasks()).toEqual([])
+    expect(await getImage(imageA.id)).toBeUndefined()
+    expect(useStore.getState().showToast).toHaveBeenCalledWith('图片读取失败', 'error')
+    expect(callImageApi).not.toHaveBeenCalled()
+  })
+
+  it('normalizes restored recipes before startup cleanup and retains their original', async () => {
+    const restored = task({
+      quickMotion: { effect: 'zoom', duration: 99, strength: -1 },
+      inputImageIds: [imageA.id], outputImages: [imageA.id],
+    })
+    await putDbTask(restored)
+    await putImage(imageA)
+    useStore.setState({ inputImages: [] })
+    await initStore()
+    expect(useStore.getState().tasks[0].quickMotion).toEqual({ effect: 'zoom', duration: 3, strength: 2 })
+    expect((await getAllTasks())[0].quickMotion).toEqual({ effect: 'zoom', duration: 3, strength: 2 })
+    expect(await getImage(imageA.id)).toMatchObject(imageA)
+    expect(callImageApi).not.toHaveBeenCalled()
+  })
+
+  it('retries locally and never falls into AI submission, even for a malformed recipe', async () => {
+    await putImage(imageA)
+    const source = task({
+      professionalPreset: 'live-quick',
+      quickMotion: null,
+      inputImageIds: [imageA.id], outputImages: [imageA.id],
+    } as unknown as Partial<TaskRecord>)
+    await retryTask(source)
+    expect(useStore.getState().tasks).toHaveLength(1)
+    expect(useStore.getState().tasks[0].quickMotion).toEqual({ effect: 'zoom', duration: 2, strength: 3 })
+    expect(await submitTask({ professionalPreset: 'live-quick' })).toBe(false)
+    expect(callImageApi).not.toHaveBeenCalled()
+  })
+
+  it('restores only the source for local reuse and never shows missing API configuration', async () => {
+    await putImage(imageA)
+    await reuseConfig(task({
+      quickMotion: { effect: 'pan-right', duration: 1, strength: 4 },
+      inputImageIds: [imageA.id], outputImages: [imageA.id],
+    }))
+    expect(useStore.getState().inputImages).toEqual([imageA])
+    expect(useStore.getState().prompt).toBe('')
+    expect(useStore.getState().reusedTaskApiProfileMissing).toBe(false)
+    expect(useStore.getState().confirmDialog).toBeNull()
+  })
+
+  it('retains and normalizes recipes when importing a ZIP backup', async () => {
+    const restored = task({
+      quickMotion: { effect: 'pan-left', duration: 100, strength: 100 },
+      inputImageIds: [imageA.id], outputImages: [imageA.id],
+    })
+    const file = importFile({ version: 3, exportedAt: '', tasks: [restored] })
+    expect(await importData(file, { importConfig: false, importTasks: true })).toBe(true)
+    expect(useStore.getState().tasks[0].quickMotion).toEqual({ effect: 'pan-left', duration: 3, strength: 5 })
+    expect((await getAllTasks())[0].quickMotion).toEqual({ effect: 'pan-left', duration: 3, strength: 5 })
+    expect(callImageApi).not.toHaveBeenCalled()
+  })
+})
+
+describe('startup image and draft hydration races', () => {
+  beforeEach(async () => {
+    await clearTasks()
+    await clearImages()
+    await clearAgentConversations()
+    vi.clearAllMocks()
+    useStore.setState({
+      settings: normalizeSettings(DEFAULT_SETTINGS),
+      appMode: 'gallery',
+      tasks: [],
+      agentConversations: [],
+      activeAgentConversationId: null,
+      agentInputDrafts: {},
+      galleryInputDraft: null,
+      inputImages: [],
+      prompt: '',
+      maskDraft: null,
+      maskEditorImageId: null,
+      showToast: vi.fn(),
+    })
+  })
+
+  afterEach(() => vi.restoreAllMocks())
+
+  it('keeps a newly selected source and prompt while the old source is being hydrated', async () => {
+    await putImage(imageA)
+    await putImage(imageB)
+    const oldImages = [{ id: imageA.id, dataUrl: '' }]
+    useStore.setState({
+      inputImages: oldImages,
+      prompt: '旧草稿',
+      galleryInputDraft: { prompt: '旧草稿', inputImages: oldImages, maskDraft: null, maskEditorImageId: null },
+    })
+    const read = deferred<StoredImage | undefined>()
+    vi.spyOn(db, 'getImage').mockImplementationOnce(() => read.promise)
+    const loading = initStore()
+    await vi.waitFor(() => expect(db.getImage).toHaveBeenCalledWith(imageA.id))
+    useStore.getState().setInputImages([imageB])
+    useStore.getState().setPrompt('用户的新描述')
+    read.resolve(imageA)
+    await loading
+    expect(useStore.getState().inputImages).toEqual([imageB])
+    expect(useStore.getState().prompt).toBe('用户的新描述')
+    expect(useStore.getState().galleryInputDraft).toMatchObject({ prompt: '用户的新描述', inputImages: [imageB] })
+  })
+
+  it('does not delete a task source newly restored during a delayed orphan scan', async () => {
+    await putImage(imageA)
+    await putImage(imageB)
+    const oldImages = [{ id: imageA.id, dataUrl: '' }]
+    useStore.setState({
+      inputImages: oldImages,
+      galleryInputDraft: { prompt: '旧草稿', inputImages: oldImages, maskDraft: null, maskEditorImageId: null },
+    })
+    const scan = deferred<string[]>()
+    vi.spyOn(db, 'getAllImageIds').mockImplementationOnce(() => scan.promise)
+    const loading = initStore()
+    await vi.waitFor(() => expect(db.getAllImageIds).toHaveBeenCalledOnce())
+    useStore.getState().setInputImages([imageB])
+    useStore.getState().setPrompt('从作品恢复的原图')
+    scan.resolve([imageA.id, imageB.id])
+    await loading
+    expect(useStore.getState().inputImages).toEqual([imageB])
+    expect(useStore.getState().prompt).toBe('从作品恢复的原图')
+    expect(await getImage(imageB.id)).toEqual(imageB)
+    expect(deleteDbImage).not.toHaveBeenCalledWith(imageB.id)
+  })
+
+  it('merges a newly saved local task with a delayed task snapshot and keeps both originals', async () => {
+    const old = task({ id: 'stored-old', outputImages: [imageA.id] })
+    await putDbTask(old)
+    await putImage(imageA)
+    useStore.getState().setInputImages([imageB])
+    const read = deferred<TaskRecord[]>()
+    vi.spyOn(db, 'getAllTasks').mockImplementationOnce(() => read.promise)
+    const loading = initStore()
+    const id = await submitQuickMotionTask({ effect: 'zoom', duration: 2, strength: 3 })
+    read.resolve([old])
+    await loading
+    expect(useStore.getState().tasks.map((task) => task.id)).toEqual([id, old.id])
+    expect(await getImage(imageA.id)).toEqual(imageA)
+    expect(await getImage(imageB.id)).toMatchObject(imageB)
+    expect(callImageApi).not.toHaveBeenCalled()
+  })
+
+  it('keeps the active agent draft edited during a delayed original read', async () => {
+    const conversation = agentConversation({ id: 'race-conversation' })
+    await putAgentConversation(conversation)
+    await putImage(imageA)
+    await putImage(imageB)
+    useStore.setState({
+      appMode: 'agent',
+      agentConversations: [conversation],
+      activeAgentConversationId: conversation.id,
+      agentInputDrafts: {
+        [conversation.id]: { prompt: '旧 Agent 草稿', inputImages: [{ id: imageA.id, dataUrl: '' }], maskDraft: null, maskEditorImageId: null },
+      },
+    })
+    const read = deferred<StoredImage | undefined>()
+    vi.spyOn(db, 'getImage').mockImplementationOnce(() => read.promise)
+    const loading = initStore()
+    await vi.waitFor(() => expect(db.getImage).toHaveBeenCalledWith(imageA.id))
+    useStore.getState().setInputImages([imageB])
+    useStore.getState().setPrompt('新的 Agent 描述')
+    read.resolve(imageA)
+    await loading
+    expect(useStore.getState().inputImages).toEqual([imageB])
+    expect(useStore.getState().prompt).toBe('新的 Agent 描述')
+    expect(useStore.getState().agentInputDrafts[conversation.id]).toMatchObject({ prompt: '新的 Agent 描述', inputImages: [imageB] })
+  })
+})
 
 describe('data operation locking', () => {
   it('detects running and recoverable work before import or export', () => {
