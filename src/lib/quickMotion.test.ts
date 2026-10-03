@@ -204,4 +204,51 @@ describe('快速运镜视频导出', () => {
     expect(stopTrack).toHaveBeenCalledOnce()
     expect(vi.getTimerCount()).toBe(0)
   })
+
+  it('空图片集合拒绝导出，避免读取首帧时崩溃', async () => {
+    vi.mocked(preloadLiveFrames).mockResolvedValue([])
+    await expect(exportQuickMotion('invalid', opts)).rejects.toThrow('图片尺寸无效')
+    expect(stopTrack).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('取消后迟到的图片解码不会再创建录制器', async () => {
+    let finish!: (images: HTMLImageElement[]) => void
+    vi.mocked(preloadLiveFrames).mockReturnValue(new Promise((resolve) => { finish = resolve }))
+    const controller = new AbortController()
+    const output = exportQuickMotion('image', opts, controller.signal)
+    const failure = expect(output).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.advanceTimersByTimeAsync(100)
+    controller.abort()
+    await failure
+    finish([image])
+    await vi.advanceTimersByTimeAsync(100)
+    expect(recorders).toHaveLength(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('录制结束没有数据时不能假装下载成功', async () => {
+    supported.add('video/webm')
+    vi.spyOn(Recorder.prototype, 'stop').mockImplementation(function (this: Recorder) {
+      this.state = 'inactive'
+      this.onstop?.()
+    })
+    const output = exportQuickMotion('image', opts)
+    const failure = expect(output).rejects.toThrow('没有输出视频数据')
+    await vi.advanceTimersByTimeAsync(1100)
+    await failure
+    expect(stopTrack).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('编码器不回调停止时由截止时间释放轨道', async () => {
+    supported.add('video/webm')
+    vi.spyOn(Recorder.prototype, 'stop').mockImplementation(function (this: Recorder) { this.state = 'inactive' })
+    const output = exportQuickMotion('image', opts)
+    const failure = expect(output).rejects.toThrow('视频导出超时')
+    await vi.advanceTimersByTimeAsync(11001)
+    await failure
+    expect(stopTrack).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
 })

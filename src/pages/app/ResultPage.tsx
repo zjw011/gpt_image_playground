@@ -154,15 +154,16 @@ export default function ResultPage() {
       exportController.current = controller
       setExportingLive(true)
       try {
-        const blob = await exportLiveFrames(liveFrames)
+        const blob = await exportLiveFrames(liveFrames, 280, controller.signal)
         if (controller.signal.aborted) return
+        const extension = blob.type.startsWith('video/mp4') ? 'mp4' : 'webm'
         const url = URL.createObjectURL(blob)
         const link = document.createElement('a')
         link.href = url
-        link.download = `绘想-Live-${task.id}.webm`
+        link.download = `绘想-Live-${task.id}.${extension}`
         link.click()
-        window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
-        showToast('Live 实况视频已导出', 'success')
+        window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
+        showToast(`${extension.toUpperCase()} 实况视频已导出`, 'success')
       } catch (err) {
         if (!controller.signal.aborted) showToast(err instanceof Error ? err.message : 'Live 实况视频导出失败', 'error')
       } finally {
@@ -258,7 +259,7 @@ export default function ResultPage() {
   }
 
   const ACTIONS: Array<{ icon: (props: { className?: string }) => React.ReactElement, label: string, onClick: () => void, disabled?: boolean, danger?: boolean }> = [
-    { icon: IconDownload, label: exportingLive ? '导出中' : quickMotion ? '下载视频' : exportAsLive ? '下载 Live' : '下载', onClick: () => void download(), disabled: exportingLive || (exportAsLive ? liveFrames.length < 2 : !fullSrc) },
+    { icon: IconDownload, label: exportingLive ? '导出中' : quickMotion || exportAsLive ? '下载视频' : '下载', onClick: () => void download(), disabled: exportingLive || (exportAsLive ? liveFrames.length < 2 : !fullSrc) },
     { icon: IconHeart, label: '收藏', onClick: () => openFavoritePicker([task.id]) },
     ...(canPublish
       ? [{
@@ -303,6 +304,11 @@ export default function ResultPage() {
             {quickMotion && <div className="border-b border-[#eee9f8] bg-[#f7f4ff] px-5 py-3 text-xs leading-5 text-[#817695]">
               <p className="font-semibold text-[#6b5ce7]">快速运镜 · {quickMotion.duration} 秒 · {quickMotion.strength}% 幅度 · 0 积分</p>
               <p className="mt-1">本地作品可随时重新导出。下载为 MP4 / WebM 视频，不是苹果相册中的原生实况照片。</p>
+            </div>}
+
+            {exportAsLive && !quickMotion && !running && task.outputImages.length > 1 && <div className="border-b border-[#eee9f8] bg-[#f7f4ff] px-5 py-3 text-xs leading-5 text-[#817695]">
+              <p className="font-semibold text-[#6b5ce7]">AI 微动作 · {task.outputImages.length} 张关键帧 · 平滑往返播放</p>
+              <p className="mt-1">优先导出 MP4，不支持时使用 WebM。下载的视频不是苹果相册中的原生实况照片；需通过支持视频转实况的工具另行转换并导入。</p>
             </div>}
 
             {luckyHit && (

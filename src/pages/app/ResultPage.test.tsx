@@ -162,7 +162,7 @@ describe('ResultPage', () => {
     expect(container.querySelector('[role="status"]')?.textContent).toContain('已保留 1')
     expect(container.querySelector('img[alt="部分生成的画面"]')?.getAttribute('src')).toBe(state.fullSrc)
     expect(container.querySelector('[aria-label="AI 连续帧"]')).toBeNull()
-    expect(container.textContent).not.toContain('下载 Live')
+    expect(container.textContent).not.toContain('下载视频')
     const download = Array.from(container.querySelectorAll('button')).find((button) => /^下载(?:图片)?$/.test(button.textContent ?? ''))!
     expect(download).toBeTruthy()
     expect(download.disabled).toBe(false)
@@ -195,7 +195,7 @@ describe('ResultPage', () => {
     expect(submitTask).not.toHaveBeenCalled()
   })
 
-  it('失败 Live 保留多帧时读取已有帧并可播放与导出，不重新调用 AI', async () => {
+  it.each(['mp4', 'webm'])('失败 Live 保留多帧时按真实 %s 格式导出，不重新调用 AI', async (extension) => {
     const frames = ['data:image/png;base64,first', 'data:image/png;base64,second']
     state.fullSrc = frames[0]
     state.getImage.mockImplementation(async (id: string) => ({ dataUrl: id === 'frame-1' ? frames[0] : frames[1] }))
@@ -205,17 +205,19 @@ describe('ResultPage', () => {
     expect(state.getImage).toHaveBeenCalledWith('frame-2')
     expect(container.querySelector('[aria-label="AI 连续帧"]')?.getAttribute('data-frames')).toBe(JSON.stringify(frames))
     expect(container.querySelector('[role="status"]')?.textContent).toContain('已保留 2')
-    const download = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '下载 Live')!
+    const download = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '下载视频')!
     expect(download).toBeTruthy()
     expect(download.disabled).toBe(false)
-    vi.mocked(exportLiveFrames).mockResolvedValueOnce(new Blob(['video'], { type: 'video/webm' }))
+    expect(container.textContent).toContain('不是苹果相册中的原生实况照片')
+    vi.mocked(exportLiveFrames).mockResolvedValueOnce(new Blob(['video'], { type: `video/${extension}` }))
     vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:live'), revokeObjectURL: vi.fn() })
     let filename = ''
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { filename = this.download })
     vi.useFakeTimers()
     await act(async () => download.click())
-    expect(exportLiveFrames).toHaveBeenCalledWith(frames)
-    expect(filename).toMatch(/\.webm$/)
+    expect(exportLiveFrames).toHaveBeenCalledWith(frames, 280, expect.any(AbortSignal))
+    expect(filename.endsWith(`.${extension}`)).toBe(true)
+    expect(state.toast).toHaveBeenCalledWith(`${extension.toUpperCase()} 实况视频已导出`, 'success')
     await act(async () => vi.runOnlyPendingTimersAsync())
     expect(submitTask).not.toHaveBeenCalled()
     expect(reuseConfig).not.toHaveBeenCalled()
@@ -237,7 +239,7 @@ describe('ResultPage', () => {
     state.fullSrc = 'data:image/png;base64,single-done'
     state.tasks = [task({ professionalPreset: 'live-blink', liveFrameCount: 8 })]
     await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
-    const download = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '下载 Live')!
+    const download = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '下载视频')!
     expect(download).toBeTruthy()
     expect(download.disabled).toBe(true)
     expect(container.querySelector('[aria-label="AI 连续帧"]')).toBeNull()
@@ -384,7 +386,7 @@ describe('ResultPage', () => {
     vi.mocked(exportQuickMotion).mockReturnValue(new Promise((resolve) => { finishQuick = resolve }))
     const renderPage = () => <MemoryRouter><ResultPage /></MemoryRouter>
     await act(async () => root.render(renderPage()))
-    await act(async () => Array.from(container.querySelectorAll('button')).find((el) => el.textContent === '下载 Live')?.click())
+    await act(async () => Array.from(container.querySelectorAll('button')).find((el) => el.textContent === '下载视频')?.click())
     expect(exportLiveFrames).toHaveBeenCalledOnce()
     state.tasks = [{ ...state.tasks[0], id: 'quick-task', professionalPreset: 'live-quick', outputImages: ['frame-1'], quickMotion: { effect: 'zoom', duration: 2, strength: 3 } }]
     await act(async () => root.render(renderPage()))

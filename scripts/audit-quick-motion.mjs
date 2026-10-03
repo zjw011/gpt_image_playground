@@ -139,12 +139,15 @@ try {
   await openAudited(resultPath)
   const encoded = await browser.evaluate(`(async () => {
     const { exportQuickMotion } = await import('/src/lib/quickMotion.ts')
+    const { exportLiveFrames } = await import('/src/lib/livePhoto.ts')
     const { getImage } = await import('/src/lib/db.ts')
     const image = await getImage(${JSON.stringify(sourceId)})
     const mp4Supported = ['video/mp4;codecs=avc1.42E01E', 'video/mp4'].some((type) => MediaRecorder.isTypeSupported(type))
     const outputs = []
-    for (const effect of ['zoom', 'pan-left', 'pan-right']) {
-      const result = await exportQuickMotion(image.dataUrl, { effect, duration: 1, strength: 3 })
+    for (const effect of ['zoom', 'pan-left', 'pan-right', 'ai-frames']) {
+      const result = effect === 'ai-frames'
+        ? await exportLiveFrames([image.dataUrl, image.dataUrl, image.dataUrl], 250).then((blob) => ({ blob, extension: blob.type.startsWith('video/mp4') ? 'mp4' : 'webm' }))
+        : await exportQuickMotion(image.dataUrl, { effect, duration: 1, strength: 3 })
       const url = URL.createObjectURL(result.blob)
       const video = document.createElement('video')
       video.muted = true
@@ -176,6 +179,25 @@ try {
   for (const video of encoded) {
     report(`${video.effect} 真实视频编码与扩展名一致`, video.bytes > 0 && video.type.startsWith(`video/${video.extension}`) && (video.mp4Supported ? video.extension === 'mp4' : video.extension === 'webm'), JSON.stringify(video))
     report(`${video.effect} 真实视频可解码且时长约 1 秒`, video.width > 0 && video.height > 0 && video.duration >= 0.8 && video.duration <= 1.4)
+  }
+
+  // 只构造隔离资料中的本地连续帧记录，不提交绘图请求。
+  await browser.evaluate(`(async () => {
+    const { useStore } = await import('/src/store.ts')
+    const { putTask } = await import('/src/lib/db.ts')
+    const original = useStore.getState().tasks.find((task) => task.id === ${JSON.stringify(taskId)})
+    const ai = { ...original, id: 'audit-ai-live-export', prompt: '本地 AI 关键帧导出验证', professionalPreset: 'live-blink', quickMotion: undefined, outputImages: Array(3).fill(${JSON.stringify(sourceId)}), liveFrameCount: 3, liveFramesCompleted: 3 }
+    await putTask(ai)
+    useStore.setState({ tasks: [ai, ...useStore.getState().tasks] })
+  })()`)
+  for (const width of [1440, 390, 320]) {
+    await browser.setViewport(width, 900)
+    await openAudited('/result?task=audit-ai-live-export')
+    report(`${width}px AI 实况结果完成解码`, await waitUntil('document.querySelector(\'canvas[aria-label="Live 实况预览"]\')?.width > 10'))
+    const text = await browser.text()
+    report(`${width}px AI 实况明确视频格式与苹果原生边界`, text.includes('优先导出 MP4') && text.includes('不是苹果相册中的原生实况照片') && text.includes('下载视频'))
+    report(`${width}px AI 实况结果无横向溢出`, await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1'))
+    writeFileSync(resolve(output, `ai-result-${width}.png`), Buffer.from(await browser.screenshot(), 'base64'))
   }
 
   const opaque = await browser.evaluate(`(async () => {

@@ -1,3 +1,5 @@
+import { recordCanvasVideo } from './canvasVideo'
+
 function loadImage(dataUrl: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image()
@@ -39,59 +41,20 @@ export function createLiveFrameSequence(frameCount: number) {
   return [...forward, ...forward.slice(1, -1).reverse()]
 }
 
-/** 把 AI 生成的连续帧按往返顺序合成为可播放、可下载的 WebM 实况短片。 */
-export async function exportLiveFrames(dataUrls: string[], transitionDurationMs = 280) {
+/** 按实际时间混合往返关键帧；AI 关键帧数不同于编码视频的 30fps 播放帧数。 */
+export async function exportLiveFrames(dataUrls: string[], transitionDurationMs = 280, signal?: AbortSignal) {
   if (dataUrls.length < 2) throw new Error('至少需要两张 AI 连续帧才能生成实况视频')
-  if (typeof MediaRecorder === 'undefined') throw new Error('当前浏览器不支持生成实况视频，请使用最新版 Chrome')
-
-  const images = await preloadLiveFrames(dataUrls)
-  const first = images[0]
-  const maxEdge = 1280
-  const ratio = Math.min(1, maxEdge / Math.max(first.naturalWidth, first.naturalHeight))
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.max(2, Math.round(first.naturalWidth * ratio / 2) * 2)
-  canvas.height = Math.max(2, Math.round(first.naturalHeight * ratio / 2) * 2)
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('浏览器无法创建视频画布')
-
-  const stream = canvas.captureStream(30)
-  const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
-    .find((type) => MediaRecorder.isTypeSupported(type))
-  if (!mimeType) {
-    for (const track of stream.getTracks()) track.stop()
-    throw new Error('当前浏览器不支持 WebM 视频编码')
-  }
-
-  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 5_000_000 })
-  const chunks: Blob[] = []
-  recorder.ondataavailable = (event) => {
-    if (event.data.size > 0) chunks.push(event.data)
-  }
-  const finished = new Promise<Blob>((resolve, reject) => {
-    recorder.onerror = () => reject(new Error('实况视频编码失败'))
-    recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }))
-  })
-
-  const sequence = createLiveFrameSequence(images.length)
-  const transitionDuration = Math.max(120, Math.min(500, transitionDurationMs))
-  drawLiveFrameBlend(ctx, first, first, 0)
-  recorder.start(250)
-  try {
-    for (let idx = 0; idx < sequence.length; idx += 1) {
-      const from = images[sequence[idx]]
-      const to = images[sequence[(idx + 1) % sequence.length]]
-      const steps = Math.max(3, Math.round(transitionDuration / (1000 / 30)))
-      for (let step = 0; step < steps; step += 1) {
-        const mix = step / steps
-        drawLiveFrameBlend(ctx, from, to, mix)
-        await new Promise((resolve) => window.setTimeout(resolve, transitionDuration / steps))
-      }
-    }
-    drawLiveFrameBlend(ctx, first, first, 0)
-    recorder.stop()
-    return await finished
-  } finally {
-    if (recorder.state !== 'inactive') recorder.stop()
-    for (const track of stream.getTracks()) track.stop()
-  }
+  const sequence = createLiveFrameSequence(dataUrls.length)
+  const transitionDuration = Number.isFinite(transitionDurationMs) ? Math.max(120, Math.min(500, transitionDurationMs)) : 280
+  const result = await recordCanvasVideo(
+    () => preloadLiveFrames(dataUrls),
+    sequence.length * transitionDuration,
+    (ctx, images, progress) => {
+      const position = progress >= 1 ? 0 : progress * sequence.length
+      const idx = Math.floor(position)
+      drawLiveFrameBlend(ctx, images[sequence[idx]], images[sequence[(idx + 1) % sequence.length]], position - idx)
+    },
+    signal,
+  )
+  return result.blob
 }
