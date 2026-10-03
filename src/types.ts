@@ -184,10 +184,13 @@ export interface QuickMotionOptions {
 }
 
 export interface TryOnOptions {
-  mode: 'wear' | 'hold'
+  mode: 'wear' | 'hold' | 'reference'
   category: 'clothing' | 'shoes' | 'bag' | 'accessory' | 'other'
   scene: 'street' | 'cafe' | 'studio' | 'outdoors'
-  pose: 'natural' | 'walking' | 'sitting' | 'showcase'
+  pose: 'natural' | 'walking' | 'sitting' | 'showcase' | 'reference' | 'random'
+  referenceElements?: Array<'outfit' | 'scene' | 'style'>
+  /** 随机姿势在提交时抽取；同一任务和失败重试保持稳定。 */
+  poseVariant?: number
 }
 
 export interface TaskRecord {
@@ -203,7 +206,7 @@ export interface TaskRecord {
   liveFramesCompleted?: number
   /** 本地快速运镜参数，不调用绘图渠道，也不改变原始图片。 */
   quickMotion?: QuickMotionOptions
-  /** 双图试衣/种草参数；参考图顺序固定为人物、商品，增强词仅在请求阶段拼接。 */
+  /** 双图创作参数；顺序固定为人物、商品或风格参考，增强词仅在请求阶段拼接。 */
   tryOn?: TryOnOptions
   params: TaskParams
   /** 生成时使用的 Provider 类型 */

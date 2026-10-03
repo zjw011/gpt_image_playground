@@ -65,7 +65,7 @@ const SCENARIOS = [
       { path: '/studio', has: ['AI 绘画', '选择风格', '生成'], hasNot: ['设置'] },
       { path: '/tools?tool=live', has: ['快速运镜', '本地制作 · 0 积分', '保存作品与预览'], hasNot: ['AI 关键帧'] },
       { path: '/tools?tool=live&liveMode=ai', has: ['AI 微动作', 'AI 关键帧', '自然眨眼'], hasNot: ['保存作品与预览'] },
-      { path: '/tools?tool=try-on', expect: '/tools?tool=try-on', has: ['AI 换装与种草', '人物图', '商品图', '上身穿搭', '手持商品'], hasNot: ['新增渠道', 'API Key'] },
+      { path: '/tools?tool=try-on', expect: '/tools?tool=try-on', has: ['AI 换装与种草', '人物图', '商品图', '上身穿搭', '手持商品', '爆款参考', '随机自然姿势'], hasNot: ['新增渠道', 'API Key'] },
       // 没开积分制就不该有人对着一个买不到的价签点支付
       { path: '/recharge', has: ['本站未开启积分制'], hasNot: ['立即支付'] },
     ],

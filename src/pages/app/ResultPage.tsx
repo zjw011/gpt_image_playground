@@ -23,11 +23,13 @@ import {
   IconTrash, IconImage, IconSparkle, IconUpload,
 } from '../icons'
 
-function Thumb({ imageId, active, onClick }: { imageId: string, active: boolean, onClick: () => void }) {
+function Thumb({ imageId, active, label, onClick }: { imageId: string, active: boolean, label: string, onClick: () => void }) {
   const src = useThumbnail(imageId)
   return (
     <button
       type="button"
+      aria-label={label}
+      aria-pressed={active}
       onClick={onClick}
       className={`h-16 w-16 shrink-0 overflow-hidden rounded-xl border-2 transition ${active ? 'border-[#7c6cf6] shadow-md shadow-[#7c6cf6]/20' : 'border-transparent opacity-70 hover:opacity-100'}`}
     >
@@ -369,8 +371,8 @@ export default function ResultPage() {
             {/* 缩略图条 */}
             {task.outputImages.length > 1 && (
               <div className="flex gap-2.5 overflow-x-auto border-t border-[#f1effa] px-5 py-3.5">
-                {task.outputImages.map((id) => (
-                  <Thumb key={id} imageId={id} active={id === imageId} onClick={() => setActiveImageId(id)} />
+                {task.outputImages.map((id, idx) => (
+                  <Thumb key={`${id}-${idx}`} imageId={id} active={id === imageId} label={`查看第 ${idx + 1} 张图片`} onClick={() => setActiveImageId(id)} />
                 ))}
               </div>
             )}

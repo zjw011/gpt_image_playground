@@ -17,7 +17,7 @@ const TOOLS: Array<{ key: ToolKey, title: string, eyebrow: string, description: 
   { key: 'ecommerce', title: '电商设计', eyebrow: '单图精修', description: '上传商品图，生成适合详情页、海报和营销场景的成品。', image: '/art/cover-commerce-v2.jpg' },
   { key: 'product-suite', title: '商品电商套图', eyebrow: '批量出图', description: '围绕同一商品，一次生成视觉统一的成套电商素材。', image: '/art/cover-suite-v2.jpg' },
   { key: 'live', title: 'Live 实况图', eyebrow: '快速运镜 / AI 微动作', description: '单图轻微缩放、平移，或用 AI 创作微动作，预览并导出短视频。', image: '/art/work-seaside.jpg' },
-  { key: 'try-on', title: 'AI 换装与种草', eyebrow: '人物 + 商品 · 双图参考', description: '上传人物与商品，创作自然穿搭、手持展示与真实感种草图。', image: '/art/cover-try-on.svg' },
+  { key: 'try-on', title: 'AI 换装与种草', eyebrow: '单品上身 / 爆款参考', description: '人物搭配商品或穿搭参考，支持自然手持、整套换装与随机姿势。', image: '/art/cover-try-on.svg' },
 ]
 
 const ECOMMERCE_SCENES: Array<{ key: ProfessionalPresetKey, label: string, description: string }> = [

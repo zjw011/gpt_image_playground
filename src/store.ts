@@ -77,7 +77,7 @@ import { appendStylePreset } from './lib/stylePresets'
 import { appendProfessionalPreset, isLiveProfessionalPreset } from './lib/professionalTools'
 import { generateLiveFrameSequence } from './lib/liveGeneration'
 import { isQuickMotionTask, normalizeQuickMotionTask, saveQuickMotionTask } from './lib/quickMotionTask'
-import { appendTryOnPrompt, assertTryOnProviderSupportsReferences, isTryOnTask, normalizeTryOnOptions, normalizeTryOnTask, validateTryOnImages } from './lib/tryOn'
+import { appendTryOnPrompt, assertTryOnProviderSupportsReferences, isTryOnTask, normalizeTryOnOptions, normalizeTryOnTask, prepareTryOnSubmissionOptions, validateTryOnImages } from './lib/tryOn'
 
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
@@ -1657,7 +1657,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     return false
   }
   if ((options.professionalPreset === 'try-on' || options.tryOn) && (!options.tryOn || !options.inputSnapshot || inputImages.length !== 2)) {
-    showToast('请在 AI 试衣工具中分别选择人物图和商品图后生成', 'error')
+    showToast('请在 AI 换装工具中分别选择人物图和第二张参考图后生成', 'error')
     return false
   }
 
@@ -1830,16 +1830,16 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
 export async function submitTryOnTask(input: { person: InputImage; product: InputImage; prompt: string; options: TryOnOptions; size: string; count: number }): Promise<boolean> {
   const person = { ...input.person }
   const product = { ...input.product }
-  const tryOn = normalizeTryOnOptions(input.options)
-  const prompt = input.prompt.trim() || (tryOn.mode === 'hold' ? '生成真实自然的人物手持商品种草图' : '生成真实自然的人物穿搭种草图')
+  const tryOn = prepareTryOnSubmissionOptions(input.options)
+  const prompt = input.prompt.trim() || (tryOn.mode === 'reference' ? '生成自然的人物参考照片' : tryOn.mode === 'hold' ? '生成真实自然的人物手持商品种草图' : '生成真实自然的人物穿搭种草图')
   const params = { ...DEFAULT_PARAMS, size: input.size, n: Number.isFinite(input.count) ? Math.max(1, Math.min(4, Math.trunc(input.count))) : 1 }
   for (const image of [person, product]) pendingTryOnImageReferences.set(image.id, (pendingTryOnImageReferences.get(image.id) ?? 0) + 1)
   try {
     await validateTryOnImages(person, product)
     return await submitTask({ professionalPreset: 'try-on', tryOn, inputSnapshot: { prompt, inputImages: [person, product], params } })
   } catch (err) {
-    console.warn('AI 试衣任务提交失败', err)
-    useStore.getState().showToast(err instanceof Error ? err.message : '试衣任务提交失败，请稍后重试', 'error')
+    console.warn('AI 换装任务提交失败', err)
+    useStore.getState().showToast(err instanceof Error ? err.message : '换装任务提交失败，请稍后重试', 'error')
     return false
   } finally {
     for (const image of [person, product]) {
@@ -3703,7 +3703,7 @@ async function runTaskWithProfile(
   try {
     // 获取输入图片 data URLs
     if (isTryOnTask(task)) {
-      if (task.inputImageIds.length !== 2) throw new Error('此试衣作品缺少人物或商品参考图，请重新上传')
+      if (task.inputImageIds.length !== 2) throw new Error('此换装作品缺少人物图或第二张参考图，请重新上传')
       assertTryOnProviderSupportsReferences(getCustomProviderDefinition(requestSettings, activeProfile.provider))
     }
     const inputDataUrls: string[] = []
@@ -3722,7 +3722,7 @@ async function runTaskWithProfile(
       ? task.transparentPrompt
       : task.prompt
     const requestPrompt = isTryOnTask(task)
-      ? appendTryOnPrompt(requestBasePrompt, normalizeTryOnOptions(task.tryOn))
+      ? appendTryOnPrompt(requestBasePrompt, normalizeTryOnOptions(task.tryOn), task.params.n)
       : appendProfessionalPreset(appendStylePreset(requestBasePrompt, task.stylePreset), task.professionalPreset)
 
     const apiOptions: CallApiOptions = {
@@ -3994,15 +3994,16 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
 /** 重试失败的任务：创建新任务并执行 */
 export async function retryTask(task: TaskRecord) {
   if (isTryOnTask(task)) {
+    const restored = normalizeTryOnTask(task)
     try {
-      if (task.inputImageIds.length !== 2) throw new Error('此试衣作品缺少人物或商品参考图，请重新上传')
-      const person = await getImage(task.inputImageIds[0])
-      const product = await getImage(task.inputImageIds[1])
-      if (!person || !product) throw new Error('人物或商品参考图已丢失，请重新上传')
-      await submitTryOnTask({ person, product, prompt: task.prompt, options: normalizeTryOnOptions(task.tryOn), size: task.params.size, count: task.params.n })
+      if (restored.inputImageIds.length !== 2) throw new Error('此换装作品缺少人物图或第二张参考图，请重新上传')
+      const person = await getImage(restored.inputImageIds[0])
+      const product = await getImage(restored.inputImageIds[1])
+      if (!person || !product) throw new Error('人物图或第二张参考图已丢失，请重新上传')
+      await submitTryOnTask({ person, product, prompt: restored.prompt, options: restored.tryOn!, size: restored.params.size, count: restored.params.n })
     } catch (err) {
-      console.warn('AI 试衣重试失败', err)
-      useStore.getState().showToast(err instanceof Error ? err.message : '试衣重试失败', 'error')
+      console.warn('AI 换装重试失败', err)
+      useStore.getState().showToast(err instanceof Error ? err.message : '换装重试失败', 'error')
     }
     return
   }
@@ -4064,7 +4065,7 @@ export async function retryTask(task: TaskRecord) {
 export async function reuseConfig(task: TaskRecord) {
   const { settings, setPrompt, setParams, setInputImages, setMaskDraft, clearMaskDraft, showToast, setConfirmDialog, setReusedTaskApiProfile } = useStore.getState()
   if (isTryOnTask(task)) {
-    showToast('试衣配置和双图已保留，请在 AI 试衣工具中编辑此作品', 'info')
+    showToast('换装配置和双图已保留，请在 AI 换装工具中编辑此作品', 'info')
     return
   }
   if (isQuickMotionTask(task)) {

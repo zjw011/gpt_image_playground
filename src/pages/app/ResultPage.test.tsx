@@ -180,6 +180,21 @@ describe('ResultPage', () => {
     expect(state.publishWork).not.toHaveBeenCalled()
   })
 
+  it('渠道返回相同图片时按输出槽位显示缩略图，不出现重复key错误', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    state.fullSources = { 'frame-1': 'data:image/png;base64,first' }
+    state.tasks = [task({ outputImages: ['frame-1', 'frame-1'], params: { ...DEFAULT_PARAMS, n: 2 } })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    expect(container.querySelector('[aria-label="查看第 1 张图片"]')).not.toBeNull()
+    const second = container.querySelector<HTMLButtonElement>('[aria-label="查看第 2 张图片"]')!
+    expect(second).toBeTruthy()
+    await act(async () => second.click())
+    expect(container.querySelector('img[alt="部分生成的画面"]')?.getAttribute('src')).toBe(state.fullSources['frame-1'])
+    expect(errors).not.toHaveBeenCalled()
+    expect(state.tasks[0].outputImages).toEqual(['frame-1', 'frame-1'])
+    expect(submitTask).not.toHaveBeenCalled()
+  })
+
   it('失败 Live 保留多帧时读取已有帧并可播放与导出，不重新调用 AI', async () => {
     const frames = ['data:image/png;base64,first', 'data:image/png;base64,second']
     state.fullSrc = frames[0]

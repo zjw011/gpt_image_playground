@@ -82,7 +82,7 @@ function WorkCard({ task, streamPreview }: { task: TaskRecord, streamPreview?: s
       )}
       {task.status === 'error' && <span className="absolute bottom-2 left-2 rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-500">生成失败 · 查看并重试</span>}
       {task.quickMotion && task.status === 'done' && <span className="absolute bottom-2 left-2 rounded-full bg-[#6b5ce7]/90 px-3 py-1 text-[11px] font-semibold text-white shadow-sm">运镜 · {task.quickMotion.duration} 秒</span>}
-      {task.tryOn && task.status === 'done' && <span className="absolute bottom-2 left-2 rounded-full bg-[#6b5ce7]/90 px-3 py-1 text-[11px] font-semibold text-white shadow-sm">{task.tryOn.mode === 'wear' ? '人物换装' : '商品种草'}</span>}
+      {task.tryOn && task.status === 'done' && <span className="absolute bottom-2 left-2 rounded-full bg-[#6b5ce7]/90 px-3 py-1 text-[11px] font-semibold text-white shadow-sm">{task.tryOn.mode === 'reference' ? '爆款参考' : task.tryOn.mode === 'wear' ? '人物换装' : '商品种草'}</span>}
     </Link>
   )
 }
