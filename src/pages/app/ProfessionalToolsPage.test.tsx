@@ -28,6 +28,7 @@ vi.mock('../../store', () => ({
   createInputImageFromFile: state.upload,
   submitQuickMotionTask: state.save,
   submitTask: vi.fn(),
+  submitTryOnTask: vi.fn(),
   addImageFromFile: vi.fn(),
 }))
 vi.mock('../../lib/backend', () => ({ getCreditsConfig: () => null }))

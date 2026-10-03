@@ -9,13 +9,15 @@ import { addImageFromFile, submitTask, useStore } from '../../store'
 import { IconArrowLeft, IconArrowRight, IconMinus, IconPlus, IconSparkle, IconUpload } from '../icons'
 import AppShell from './AppShell'
 import QuickMotionEditor from '../../components/QuickMotionEditor'
+import TryOnEditor from '../../components/TryOnEditor'
 
-type ToolKey = 'ecommerce' | 'product-suite' | 'live'
+type ToolKey = 'ecommerce' | 'product-suite' | 'live' | 'try-on'
 
 const TOOLS: Array<{ key: ToolKey, title: string, eyebrow: string, description: string, image: string }> = [
   { key: 'ecommerce', title: '电商设计', eyebrow: '单图精修', description: '上传商品图，生成适合详情页、海报和营销场景的成品。', image: '/art/cover-commerce-v2.jpg' },
   { key: 'product-suite', title: '商品电商套图', eyebrow: '批量出图', description: '围绕同一商品，一次生成视觉统一的成套电商素材。', image: '/art/cover-suite-v2.jpg' },
   { key: 'live', title: 'Live 实况图', eyebrow: '快速运镜 / AI 微动作', description: '单图轻微缩放、平移，或用 AI 创作微动作，预览并导出短视频。', image: '/art/work-seaside.jpg' },
+  { key: 'try-on', title: 'AI 换装与种草', eyebrow: '人物 + 商品 · 双图参考', description: '上传人物与商品，创作自然穿搭、手持展示与真实感种草图。', image: '/art/cover-try-on.svg' },
 ]
 
 const ECOMMERCE_SCENES: Array<{ key: ProfessionalPresetKey, label: string, description: string }> = [
@@ -39,7 +41,7 @@ function ToolLanding() {
         <h2 className="mt-4 text-2xl font-bold tracking-tight text-[#292650]">选择一个专业工具</h2>
         <p className="mt-2 text-sm leading-6 text-[#817b9f]">从商品视觉到动态内容，每个功能都可以直接完成真实创作。</p>
       </div>
-      <div className="mt-7 grid gap-5 lg:grid-cols-3">
+      <div className="mt-7 grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
         {TOOLS.map((tool) => (
           <Link key={tool.key} to={`/tools?tool=${tool.key}`} className="group overflow-hidden rounded-[26px] border border-[#e3dff4] bg-white shadow-sm transition duration-300 hover:-translate-y-1 hover:border-[#a99df6] hover:shadow-xl hover:shadow-[#7867f5]/10">
             <div className="relative h-52 overflow-hidden bg-[#f1effa]">
@@ -57,7 +59,7 @@ function ToolLanding() {
   )
 }
 
-function ProductImageEditor({ tool }: { tool: Exclude<ToolKey, 'live'> }) {
+function ProductImageEditor({ tool }: { tool: 'ecommerce' | 'product-suite' }) {
   const navigate = useNavigate()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputImages = useStore((s) => s.inputImages)
@@ -244,6 +246,7 @@ export default function ProfessionalToolsPage() {
       {tool === 'ecommerce' && <ProductImageEditor key={tool} tool={tool} />}
       {tool === 'product-suite' && <ProductImageEditor key={tool} tool={tool} />}
       {tool === 'live' && <LiveEditor />}
+      {tool === 'try-on' && <TryOnEditor />}
     </AppShell>
   )
 }

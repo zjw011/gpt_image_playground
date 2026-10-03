@@ -42,7 +42,7 @@ try {
   const widths = process.env.AUDIT_UI_WIDTHS ? process.env.AUDIT_UI_WIDTHS.split(',').map(Number) : [1920, 1440, 768, 430, 390, 375, 320]
   for (const width of widths) {
     await browser.setViewport(width, 960)
-    for (const path of ['/', '/studio', '/studio?mode=inpaint', '/studio?mode=outpaint', '/tools', '/tools?tool=ecommerce', '/tools?tool=product-suite', '/tools?tool=live', '/gallery', '/me?tab=works', '/me?tab=settings', '/me?tab=ledger', '/recharge']) {
+    for (const path of ['/', '/studio', '/studio?mode=inpaint', '/studio?mode=outpaint', '/tools', '/tools?tool=ecommerce', '/tools?tool=product-suite', '/tools?tool=live', '/tools?tool=try-on', '/gallery', '/me?tab=works', '/me?tab=settings', '/me?tab=ledger', '/recharge']) {
       await browser.open(path)
       report(`${width}px ${path} 落点`, (await browser.url()) === path)
       report(`${width}px ${path} 无横向溢出`, await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1'))

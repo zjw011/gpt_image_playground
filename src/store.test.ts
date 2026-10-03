@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { strToU8, zipSync } from 'fflate'
 import { DEFAULT_PARAMS } from './types'
 import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
-import type { AgentConversation, ExportData, StoredImage, StoredImageThumbnail, TaskRecord } from './types'
+import type { AgentConversation, ExportData, StoredImage, StoredImageThumbnail, TaskRecord, TryOnOptions } from './types'
 import { getSelectedImageMentionLabel } from './lib/promptImageMentions'
 import { hasActiveDataOperations } from './lib/dataOperations'
 import { deleteAgentRoundFromConversation, getActiveAgentRounds, getAgentConversationTaskIds, getAgentRoundTaskIds, remapAgentRoundMentionsForPathChange } from './lib/agentConversationState'
@@ -142,7 +142,7 @@ import { preloadLiveFrames } from './lib/livePhoto'
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
-import { clearData, clearFailedTasks, deleteFavoriteCollection, editOutputs, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, regenerateAgentAssistantMessage, removeMultipleTasks, removeTask, restoreExplicitPresetConfig, retryTask, reuseConfig, stopAgentResponse, submitAgentMessage, submitQuickMotionTask, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { clearData, clearFailedTasks, createInputImageFromFile, deleteFavoriteCollection, editOutputs, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, regenerateAgentAssistantMessage, removeMultipleTasks, removeTask, restoreExplicitPresetConfig, retryTask, reuseConfig, stopAgentResponse, submitAgentMessage, submitQuickMotionTask, submitTask, submitTryOnTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const commitTaskDeletionImplementation = vi.mocked(commitTaskDeletion).getMockImplementation()!
 const deleteDbImageImplementation = vi.mocked(deleteDbImage).getMockImplementation()!
@@ -337,6 +337,162 @@ describe('quick motion store actions', () => {
   })
 })
 
+describe('try-on isolated task submission', () => {
+  const options: TryOnOptions = { mode: 'wear', category: 'clothing', scene: 'street', pose: 'natural' }
+  const profile = createDefaultOpenAIProfile({ id: 'try-channel', name: '试衣测试', apiKey: 'test-key', apiMode: 'images', streamImages: false })
+  const submission = { person: imageA, product: imageB, prompt: '午后的自然穿搭', options, size: '768x1024', count: 1 }
+  const decoded = [{ naturalWidth: 768, naturalHeight: 1024 }, { naturalWidth: 1024, naturalHeight: 1024 }] as HTMLImageElement[]
+
+  beforeEach(async () => {
+    await clearTasks()
+    await clearImages()
+    await clearAgentConversations()
+    vi.mocked(preloadLiveFrames).mockReset().mockResolvedValue(decoded)
+    vi.mocked(callImageApi).mockReset().mockResolvedValue({ images: ['data:image/png;base64,try-on-result'], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    useStore.setState({
+      appMode: 'gallery',
+      settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile], activeProfileId: profile.id, clearInputAfterSubmit: true, clearInputImagesAfterSubmit: true }),
+      tasks: [],
+      inputImages: [{ id: 'unrelated', dataUrl: 'data:image/png;base64,unrelated' }],
+      prompt: 'Studio 中未提交的草稿',
+      params: { ...DEFAULT_PARAMS, n: 9, size: '1536x1024', transparent_output: true },
+      galleryInputDraft: null,
+      agentConversations: [],
+      agentInputDrafts: {},
+      maskDraft: { targetImageId: 'unrelated', maskDataUrl: 'data:image/png;base64,mask', updatedAt: 1 },
+      maskEditorImageId: 'unrelated',
+      reusedTaskApiProfileId: 'stale-profile',
+      reusedTaskApiProfileMissing: true,
+      reusedTaskApiProfileName: '无关旧渠道',
+      confirmDialog: null,
+      showToast: vi.fn(),
+    })
+  })
+
+  afterEach(() => vi.restoreAllMocks())
+
+  it('submits both reference roles with private photo directives and leaves unrelated drafts unchanged', async () => {
+    const before = useStore.getState()
+    expect(await submitTryOnTask(submission)).toBe(true)
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
+    const request = vi.mocked(callImageApi).mock.calls[0][0]
+    expect(request.inputImageDataUrls).toEqual([imageA.dataUrl, imageB.dataUrl])
+    expect(request.prompt).toContain('第一张参考图是人物')
+    expect(request.prompt).toContain('第二张参考图是商品')
+    expect(request.prompt).toContain('午后的自然穿搭')
+    expect(request.maskDataUrl).toBeUndefined()
+    expect(request.params).toMatchObject({ size: '768x1024', n: 1, transparent_output: false })
+    expect(useStore.getState().tasks[0]).toMatchObject({ prompt: submission.prompt, professionalPreset: 'try-on', tryOn: options, inputImageIds: [imageA.id, imageB.id], maskImageId: null })
+    expect(useStore.getState().tasks[0].prompt).not.toContain('第一张参考图')
+    expect(useStore.getState().prompt).toBe(before.prompt)
+    expect(useStore.getState().inputImages).toBe(before.inputImages)
+    expect(useStore.getState().params).toBe(before.params)
+    expect(useStore.getState().maskDraft).toBe(before.maskDraft)
+    expect(useStore.getState().reusedTaskApiProfileId).toBe(before.reusedTaskApiProfileId)
+    expect(useStore.getState().reusedTaskApiProfileMissing).toBe(true)
+    expect(useStore.getState().confirmDialog).toBeNull()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+  })
+
+  it('snapshots roles, options, prompt and size before awaiting decoding, without overwriting newer Studio input', async () => {
+    const pending = deferred<HTMLImageElement[]>()
+    vi.mocked(preloadLiveFrames).mockImplementationOnce(() => pending.promise)
+    const input = { ...submission, person: { ...imageA }, product: { ...imageB }, options: { ...options } }
+    const submitting = submitTryOnTask(input)
+    input.person.dataUrl = 'data:image/png;base64,changed-person'
+    input.options.mode = 'hold'
+    input.prompt = '被改过的描述'
+    input.size = '1024x1024'
+    input.count = 4
+    useStore.getState().setPrompt('更新后的 Studio 草稿')
+    pending.resolve(decoded)
+    expect(await submitting).toBe(true)
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
+    expect(vi.mocked(callImageApi).mock.calls[0][0].inputImageDataUrls).toEqual([imageA.dataUrl, imageB.dataUrl])
+    expect(useStore.getState().tasks[0]).toMatchObject({ prompt: submission.prompt, tryOn: options, params: { n: 1, size: '768x1024' } })
+    expect(useStore.getState().prompt).toBe('更新后的 Studio 草稿')
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+  })
+
+  it('uses clean plain fallbacks rather than exposing the hidden directive in an empty prompt', async () => {
+    expect(await submitTryOnTask({ ...submission, prompt: '', options: { ...options, mode: 'hold', category: 'other' }, count: NaN })).toBe(true)
+    expect(useStore.getState().tasks[0]).toMatchObject({ prompt: '生成真实自然的人物手持商品种草图', params: { n: 1 } })
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+  })
+
+  it('rejects duplicate or damaged references without a task or any AI request', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    expect(await submitTryOnTask({ ...submission, product: imageA })).toBe(false)
+    vi.mocked(preloadLiveFrames).mockRejectedValueOnce(new Error('参考图损坏'))
+    expect(await submitTryOnTask(submission)).toBe(false)
+    expect(useStore.getState().tasks).toEqual([])
+    expect(await getAllTasks()).toEqual([])
+    expect(callImageApi).not.toHaveBeenCalled()
+  })
+
+  it('refuses provable single-reference custom mappings before submitting or reserving credits', async () => {
+    const custom = { ...profile, provider: 'single-reference' }
+    useStore.setState({ settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [custom], activeProfileId: custom.id, customProviders: [{ id: custom.provider, name: '单图模板', submit: { path: '/generate', body: { image: '$inputImages.dataUrls.0' } } }] }) })
+    expect(await submitTryOnTask(submission)).toBe(false)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks).toEqual([])
+    expect(useStore.getState().showToast).toHaveBeenCalledWith(expect.stringContaining('没有双图参考映射'), 'error')
+  })
+
+  it('does not leave a visible task when persistence fails', async () => {
+    vi.spyOn(db, 'putTask').mockRejectedValueOnce(new Error('空间不足'))
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    expect(await submitTryOnTask(submission)).toBe(false)
+    expect(useStore.getState().tasks).toEqual([])
+    expect(callImageApi).not.toHaveBeenCalled()
+  })
+
+  it('retains reference order and options on retry without importing the Studio mask', async () => {
+    await putImage(imageA)
+    await putImage(imageB)
+    const source = task({ professionalPreset: 'try-on', tryOn: { ...options, mode: 'hold', scene: 'cafe' }, inputImageIds: [imageA.id, imageB.id], params: { ...DEFAULT_PARAMS, size: '1024x1024', n: 2 } })
+    await retryTask(source)
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
+    expect(useStore.getState().tasks[0]).toMatchObject({ tryOn: source.tryOn, inputImageIds: source.inputImageIds, params: { n: 2, size: '1024x1024' }, maskImageId: null })
+    expect(vi.mocked(callImageApi).mock.calls[0][0].inputImageDataUrls).toEqual([imageA.dataUrl, imageB.dataUrl])
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+  })
+
+  it('does not route an incomplete restored try-on work through ordinary AI retry or reuse', async () => {
+    const before = useStore.getState()
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const source = task({ professionalPreset: 'try-on', inputImageIds: [imageA.id] })
+    await retryTask(source)
+    await reuseConfig(source)
+    expect(await submitTask({ professionalPreset: 'try-on' })).toBe(false)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().inputImages).toBe(before.inputImages)
+    expect(useStore.getState().prompt).toBe(before.prompt)
+    expect(useStore.getState().tasks).toEqual([])
+  })
+
+  it('normalizes imported try-on metadata while keeping both reference IDs and public prompt', async () => {
+    const source = task({ professionalPreset: 'try-on', tryOn: { ...options, mode: 'invalid', scene: 'invalid' } as unknown as TryOnOptions, inputImageIds: [imageA.id, imageB.id], prompt: '用户公开文案' })
+    expect(await importData(importFile({ version: 3, exportedAt: '', tasks: [source] }), { importConfig: false, importTasks: true })).toBe(true)
+    expect(useStore.getState().tasks[0]).toMatchObject({ tryOn: options, inputImageIds: [imageA.id, imageB.id], prompt: '用户公开文案' })
+    expect((await getAllTasks())[0].tryOn).toEqual(options)
+  })
+
+  it('protects in-flight reference images from concurrent initialization cleanup', async () => {
+    await putImage(imageA)
+    await putImage(imageB)
+    const pending = deferred<HTMLImageElement[]>()
+    vi.mocked(preloadLiveFrames).mockImplementationOnce(() => pending.promise)
+    const submitting = submitTryOnTask(submission)
+    await initStore()
+    expect(await getImage(imageA.id)).toEqual(imageA)
+    expect(await getImage(imageB.id)).toEqual(imageB)
+    pending.resolve(decoded)
+    expect(await submitting).toBe(true)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+  })
+})
+
 describe('startup image and draft hydration races', () => {
   beforeEach(async () => {
     await clearTasks()
@@ -360,6 +516,43 @@ describe('startup image and draft hydration races', () => {
   })
 
   afterEach(() => vi.restoreAllMocks())
+
+  it('keeps newly uploaded component-local references while task hydration is pending', async () => {
+    await putImage({ id: 'old-orphan', dataUrl: imageA.dataUrl })
+    const read = deferred<TaskRecord[]>()
+    vi.spyOn(db, 'getAllTasks').mockImplementationOnce(() => read.promise)
+    const loading = initStore()
+    await vi.waitFor(() => expect(db.getAllTasks).toHaveBeenCalledOnce())
+    const person = await createInputImageFromFile(new File(['person'], 'person.png', { type: 'image/png' }))
+    const product = await createInputImageFromFile(new File(['product'], 'product.png', { type: 'image/png' }))
+    expect(person).not.toBeNull()
+    expect(product).not.toBeNull()
+    expect(useStore.getState().inputImages).toEqual([])
+    read.resolve([])
+    await loading
+    expect(await getImage(person!.id)).toMatchObject(person!)
+    expect(await getImage(product!.id)).toMatchObject(product!)
+    expect(deleteDbImage).not.toHaveBeenCalledWith(person!.id)
+    expect(deleteDbImage).not.toHaveBeenCalledWith(product!.id)
+    expect(await getImage('old-orphan')).toBeUndefined()
+  })
+
+  it('keeps a component-local upload that deduplicates to an old unreferenced hash', async () => {
+    const existing = { id: 'old-deduplicated-hash', dataUrl: 'data:image/png;base64,cGVyc29u' }
+    await putImage(existing)
+    const read = deferred<TaskRecord[]>()
+    vi.spyOn(db, 'getAllTasks').mockImplementationOnce(() => read.promise)
+    vi.spyOn(db, 'storeImage').mockResolvedValueOnce(existing.id)
+    const loading = initStore()
+    await vi.waitFor(() => expect(db.getAllTasks).toHaveBeenCalledOnce())
+    const person = await createInputImageFromFile(new File(['person'], 'person.png', { type: 'image/png' }))
+    expect(person).toEqual(existing)
+    expect(useStore.getState().inputImages).toEqual([])
+    read.resolve([])
+    await loading
+    expect(await getImage(existing.id)).toEqual(existing)
+    expect(deleteDbImage).not.toHaveBeenCalledWith(existing.id)
+  })
 
   it('keeps a newly selected source and prompt while the old source is being hydrated', async () => {
     await putImage(imageA)

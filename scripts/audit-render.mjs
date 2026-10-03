@@ -23,6 +23,7 @@ const PAGES = [
   { path: '/tools?tool=ecommerce', expect: '/tools?tool=ecommerce' },
   { path: '/tools?tool=product-suite', expect: '/tools?tool=product-suite' },
   { path: '/tools?tool=live', expect: '/tools?tool=live' },
+  { path: '/tools?tool=try-on', expect: '/tools?tool=try-on' },
   { path: '/gallery', expect: '/gallery' },
   { path: '/me', expect: '/me' },
   { path: '/me?tab=works', expect: '/me?tab=works' },

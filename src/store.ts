@@ -14,6 +14,7 @@ import type {
   MaskDraft,
   TaskRecord,
   QuickMotionOptions,
+  TryOnOptions,
   FavoriteCollection,
   ResponsesOutputItem,
   StoredImage,
@@ -76,6 +77,7 @@ import { appendStylePreset } from './lib/stylePresets'
 import { appendProfessionalPreset, isLiveProfessionalPreset } from './lib/professionalTools'
 import { generateLiveFrameSequence } from './lib/liveGeneration'
 import { isQuickMotionTask, normalizeQuickMotionTask, saveQuickMotionTask } from './lib/quickMotionTask'
+import { appendTryOnPrompt, assertTryOnProviderSupportsReferences, isTryOnTask, normalizeTryOnOptions, normalizeTryOnTask, validateTryOnImages } from './lib/tryOn'
 
 const FAL_RECOVERY_POLL_MS = 10_000
 const CUSTOM_RECOVERY_POLL_MS = 10_000
@@ -85,6 +87,9 @@ const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const agentRoundControllers = new Map<string, AbortController>()
 const agentRecoveryContinuations = new Set<string>()
 const deletedActiveAgentTasks = new Map<string, { task: TaskRecord; controller: AbortController }>()
+const pendingTryOnImageReferences = new Map<string, number>()
+const initializationUploadedImageIds = new Set<Set<string>>()
+let pendingInputImageUploads = 0
 let agentConversationPersistenceReady = false
 let agentConversationMigrationPending = false
 const AGENT_STOPPED_MESSAGE = '已停止生成。'
@@ -386,6 +391,8 @@ interface AppState {
 }
 
 function isImageReferencedByState(state: AppState, imageId: string) {
+  if (pendingTryOnImageReferences.has(imageId)) return true
+  if ([...initializationUploadedImageIds].some((ids) => ids.has(imageId))) return true
   if (state.inputImages.some((img) => img.id === imageId)) return true
   if (state.galleryInputDraft?.inputImages.some((img) => img.id === imageId)) return true
   if (Object.values(state.agentInputDrafts).some((draft) => draft.inputImages.some((img) => img.id === imageId))) return true
@@ -1022,7 +1029,7 @@ function genId(): string {
 }
 
 function getPersistableTask(task: TaskRecord): TaskRecord {
-  const normalized = normalizeQuickMotionTask(task)
+  const normalized = normalizeTryOnTask(normalizeQuickMotionTask(task))
   const rawResponsePayload = getPersistableRawResponsePayload(normalized.rawResponsePayload)
   return rawResponsePayload === normalized.rawResponsePayload ? normalized : { ...normalized, rawResponsePayload }
 }
@@ -1398,9 +1405,20 @@ async function recoverFalTask(taskId: string) {
 
 /** 初始化：从 IndexedDB 加载任务，按需恢复输入图片，并清理孤立图片 */
 export async function initStore() {
+  const uploadedImageIds = new Set<string>()
+  initializationUploadedImageIds.add(uploadedImageIds)
+  try {
+    await hydrateStore()
+  } finally {
+    initializationUploadedImageIds.delete(uploadedImageIds)
+  }
+}
+
+async function hydrateStore() {
   const initialTasks = useStore.getState().tasks
   const legacyAgentConversations = normalizeAgentConversations(useStore.getState().agentConversations)
-  const storedTasks = await getAllTasks()
+  // 编辑器可只在组件内保留上传图；启动时先拍 key 快照，不能清掉等待水合期间的新上传。
+  const [initialImageIds, storedTasks] = await Promise.all([getAllImageIds(), getAllTasks()])
   const storedAgentConversations = normalizeAgentConversations(await getAllAgentConversations())
   let loadedAgentConversations = mergePersistedAgentConversations(storedAgentConversations, legacyAgentConversations)
   const currentAgentConversations = normalizeAgentConversations(useStore.getState().agentConversations)
@@ -1447,7 +1465,7 @@ export async function initStore() {
     useStore.getState().setDefaultFavoriteCollectionId(normalizedFavorites.defaultFavoriteCollectionId)
   }
   await Promise.all(tasks
-    .filter((task, index) => normalizedFavorites.changed || interruptedTaskIds.has(task.id) || task.rawResponsePayload !== markedTasks[index]?.rawResponsePayload || task.quickMotion !== markedTasks[index]?.quickMotion)
+    .filter((task, index) => normalizedFavorites.changed || interruptedTaskIds.has(task.id) || task.rawResponsePayload !== markedTasks[index]?.rawResponsePayload || task.quickMotion !== markedTasks[index]?.quickMotion || task.tryOn !== markedTasks[index]?.tryOn)
     .map((task) => putTask(task)))
   const latestTasks = useStore.getState().tasks
   const initialTaskIds = new Set(initialTasks.map((task) => task.id))
@@ -1498,13 +1516,13 @@ export async function initStore() {
   }
 
   // 只枚举 key 清理孤立图片，避免启动时把所有 4K 原图读进内存。
-  const imageIds = await getAllImageIds()
   const referencedImageIds: string[] = []
-  for (const imgId of imageIds) {
+  for (const imgId of initialImageIds) {
     const latestState = useStore.getState()
     if (referencedIds.has(imgId) || isImageReferencedByState(latestState, imgId)) {
       referencedImageIds.push(imgId)
     } else if (
+      pendingInputImageUploads === 0 &&
       latestState.tasks === state.tasks && latestState.inputImages === persistedInputImages &&
       latestState.galleryInputDraft === galleryInputDraft && latestState.agentInputDrafts === agentInputDrafts &&
       latestState.agentConversations === agentConversations
@@ -1626,19 +1644,27 @@ export async function initStore() {
 }
 
 /** 提交新任务 */
-export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; stylePreset?: string; professionalPreset?: string; liveFrameCount?: number } = {}): Promise<boolean> {
-  const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, showToast, setConfirmDialog } =
-    useStore.getState()
+export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; stylePreset?: string; professionalPreset?: string; liveFrameCount?: number; tryOn?: TryOnOptions; inputSnapshot?: { prompt: string; inputImages: InputImage[]; params: TaskParams } } = {}): Promise<boolean> {
+  const state = useStore.getState()
+  const { settings, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, showToast, setConfirmDialog } = state
+  const prompt = options.inputSnapshot?.prompt ?? state.prompt
+  const inputImages = options.inputSnapshot?.inputImages ?? state.inputImages
+  const params = options.inputSnapshot?.params ?? state.params
+  const maskDraft = options.inputSnapshot ? null : state.maskDraft
 
   if (options.professionalPreset === 'live-quick') {
     showToast('快速运镜不使用 AI 绘图，请在 Live 实况工具中制作', 'info')
+    return false
+  }
+  if ((options.professionalPreset === 'try-on' || options.tryOn) && (!options.tryOn || !options.inputSnapshot || inputImages.length !== 2)) {
+    showToast('请在 AI 试衣工具中分别选择人物图和商品图后生成', 'error')
     return false
   }
 
   const normalizedSettings = normalizeSettings(settings)
   let activeProfile = getActiveApiProfile(settings)
   let requestSettings = createSettingsForApiProfile(normalizedSettings, activeProfile)
-  if (normalizedSettings.reuseTaskApiProfileTemporarily && (reusedTaskApiProfileId || reusedTaskApiProfileMissing)) {
+  if (!options.inputSnapshot && normalizedSettings.reuseTaskApiProfileTemporarily && (reusedTaskApiProfileId || reusedTaskApiProfileMissing)) {
     const reusedProfile = getReusedTaskApiProfile(normalizedSettings, reusedTaskApiProfileId)
     if (!reusedProfile) {
       if (options.useCurrentApiProfileWhenReusedMissing) {
@@ -1672,6 +1698,14 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     )
     useStore.getState().setShowSettings(true)
     return false
+  }
+  if (options.tryOn) {
+    try {
+      assertTryOnProviderSupportsReferences(getCustomProviderDefinition(requestSettings, activeProfile.provider))
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '当前服务不支持双图参考', 'error')
+      return false
+    }
   }
 
   if (!prompt.trim()) {
@@ -1713,7 +1747,14 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
 
   // 持久化输入图片到 IndexedDB（此前只在内存缓存中）
   for (const img of orderedInputImages) {
-    await storeImage(img.dataUrl)
+    if (options.inputSnapshot) {
+      const stored = await getImage(img.id)
+      if (stored && stored.dataUrl !== img.dataUrl) throw new Error('参考图身份与本地记录不一致，请重新上传')
+      if (!stored) await putImage({ ...img, source: 'upload', createdAt: Date.now() })
+      cacheImage(img.id, img.dataUrl)
+    } else {
+      await storeImage(img.dataUrl)
+    }
   }
 
   const liveFrameCount = isLiveProfessionalPreset(options.professionalPreset)
@@ -1730,7 +1771,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     ? createTransparentOutputMeta(prompt.trim())
     : null
   const normalizedParamPatch = getChangedParams(params, taskParams)
-  if (Object.keys(normalizedParamPatch).length) {
+  if (!options.inputSnapshot && Object.keys(normalizedParamPatch).length) {
     useStore.getState().setParams(normalizedParamPatch)
   }
 
@@ -1740,6 +1781,8 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     prompt: prompt.trim(),
     stylePreset: options.stylePreset,
     professionalPreset: options.professionalPreset,
+    ...(options.tryOn ? { tryOn: normalizeTryOnOptions(options.tryOn) } : {}),
+    ...(options.inputSnapshot ? { sourceMode: 'gallery' as const } : {}),
     liveFrameCount,
     liveFramesCompleted: liveFrameCount ? 0 : undefined,
     params: taskParams,
@@ -1761,21 +1804,50 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     elapsed: null,
   }
 
-  const latestTasks = useStore.getState().tasks
-  useStore.getState().setTasks([task, ...latestTasks])
-  await putTask(task)
+  if (options.inputSnapshot) {
+    await putTask(task)
+    useStore.setState((state) => ({ tasks: [task, ...state.tasks] }))
+  } else {
+    const latestTasks = useStore.getState().tasks
+    useStore.getState().setTasks([task, ...latestTasks])
+    await putTask(task)
+  }
   useStore.getState().showToast('任务已提交', 'success')
 
-  if (settings.clearInputAfterSubmit) {
+  if (!options.inputSnapshot && settings.clearInputAfterSubmit) {
     useStore.getState().setPrompt('')
     // 参考图默认留着：图生图常要对同一张图连改几版，清掉就得重新上传。
     if (settings.clearInputImagesAfterSubmit) useStore.getState().clearInputImages()
   }
-  useStore.getState().setReusedTaskApiProfile(null)
+  if (!options.inputSnapshot) useStore.getState().setReusedTaskApiProfile(null)
 
   // 异步调用 API
   executeTask(taskId)
   return true
+}
+
+/** 独立双图快照复用已有生成/计费流程，不能暂时覆盖 Studio 草稿来提交。 */
+export async function submitTryOnTask(input: { person: InputImage; product: InputImage; prompt: string; options: TryOnOptions; size: string; count: number }): Promise<boolean> {
+  const person = { ...input.person }
+  const product = { ...input.product }
+  const tryOn = normalizeTryOnOptions(input.options)
+  const prompt = input.prompt.trim() || (tryOn.mode === 'hold' ? '生成真实自然的人物手持商品种草图' : '生成真实自然的人物穿搭种草图')
+  const params = { ...DEFAULT_PARAMS, size: input.size, n: Number.isFinite(input.count) ? Math.max(1, Math.min(4, Math.trunc(input.count))) : 1 }
+  for (const image of [person, product]) pendingTryOnImageReferences.set(image.id, (pendingTryOnImageReferences.get(image.id) ?? 0) + 1)
+  try {
+    await validateTryOnImages(person, product)
+    return await submitTask({ professionalPreset: 'try-on', tryOn, inputSnapshot: { prompt, inputImages: [person, product], params } })
+  } catch (err) {
+    console.warn('AI 试衣任务提交失败', err)
+    useStore.getState().showToast(err instanceof Error ? err.message : '试衣任务提交失败，请稍后重试', 'error')
+    return false
+  } finally {
+    for (const image of [person, product]) {
+      const count = (pendingTryOnImageReferences.get(image.id) ?? 1) - 1
+      if (count > 0) pendingTryOnImageReferences.set(image.id, count)
+      else pendingTryOnImageReferences.delete(image.id)
+    }
+  }
 }
 
 /** 免费本地运镜：原图和参数持久化成功后，才加入我的作品。 */
@@ -3630,6 +3702,10 @@ async function runTaskWithProfile(
 
   try {
     // 获取输入图片 data URLs
+    if (isTryOnTask(task)) {
+      if (task.inputImageIds.length !== 2) throw new Error('此试衣作品缺少人物或商品参考图，请重新上传')
+      assertTryOnProviderSupportsReferences(getCustomProviderDefinition(requestSettings, activeProfile.provider))
+    }
     const inputDataUrls: string[] = []
     for (const imgId of task.inputImageIds) {
       const dataUrl = await ensureImageCached(imgId)
@@ -3645,7 +3721,9 @@ async function runTaskWithProfile(
     const requestBasePrompt = task.transparentOutput && task.transparentPrompt
       ? task.transparentPrompt
       : task.prompt
-    const requestPrompt = appendProfessionalPreset(appendStylePreset(requestBasePrompt, task.stylePreset), task.professionalPreset)
+    const requestPrompt = isTryOnTask(task)
+      ? appendTryOnPrompt(requestBasePrompt, normalizeTryOnOptions(task.tryOn))
+      : appendProfessionalPreset(appendStylePreset(requestBasePrompt, task.stylePreset), task.professionalPreset)
 
     const apiOptions: CallApiOptions = {
       settings: requestSettings,
@@ -3699,7 +3777,7 @@ async function runTaskWithProfile(
       outputImageSizes,
     )
     const actualParams = deriveGalleryActualParams(taskProvider, isAsyncCustomTask, result.actualParams, actualParamsList, outputIds.length)
-    const shouldStoreRevisedPrompts = taskProvider !== 'fal' && !isAsyncCustomTask && !task.stylePreset && !task.professionalPreset
+    const shouldStoreRevisedPrompts = taskProvider !== 'fal' && !isAsyncCustomTask && !task.stylePreset && !task.professionalPreset && !isTryOnTask(task)
     const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
     const revisedPrompts = activeProfile.codexCli && task.sourceMode !== 'agent'
       ? result.revisedPrompts?.map((prompt) => prompt == null ? prompt : stripInjectedCodexCliSizePrompt(prompt, requestPrompt, task.params.size))
@@ -3915,6 +3993,19 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
 
 /** 重试失败的任务：创建新任务并执行 */
 export async function retryTask(task: TaskRecord) {
+  if (isTryOnTask(task)) {
+    try {
+      if (task.inputImageIds.length !== 2) throw new Error('此试衣作品缺少人物或商品参考图，请重新上传')
+      const person = await getImage(task.inputImageIds[0])
+      const product = await getImage(task.inputImageIds[1])
+      if (!person || !product) throw new Error('人物或商品参考图已丢失，请重新上传')
+      await submitTryOnTask({ person, product, prompt: task.prompt, options: normalizeTryOnOptions(task.tryOn), size: task.params.size, count: task.params.n })
+    } catch (err) {
+      console.warn('AI 试衣重试失败', err)
+      useStore.getState().showToast(err instanceof Error ? err.message : '试衣重试失败', 'error')
+    }
+    return
+  }
   if (isQuickMotionTask(task)) {
     const normalized = normalizeQuickMotionTask(task)
     const id = task.inputImageIds[0] ?? task.outputImages[0]
@@ -3972,6 +4063,10 @@ export async function retryTask(task: TaskRecord) {
 /** 复用配置 */
 export async function reuseConfig(task: TaskRecord) {
   const { settings, setPrompt, setParams, setInputImages, setMaskDraft, clearMaskDraft, showToast, setConfirmDialog, setReusedTaskApiProfile } = useStore.getState()
+  if (isTryOnTask(task)) {
+    showToast('试衣配置和双图已保留，请在 AI 试衣工具中编辑此作品', 'info')
+    return
+  }
   if (isQuickMotionTask(task)) {
     try {
       const id = task.inputImageIds[0] ?? task.outputImages[0]
@@ -4681,10 +4776,17 @@ export async function addImageFromFile(file: File): Promise<void> {
 
 export async function createInputImageFromFile(file: File): Promise<InputImage | null> {
   if (!file.type.startsWith('image/')) return null
-  const dataUrl = await fileToDataUrl(file)
-  const id = await storeImage(dataUrl, 'upload')
-  cacheImage(id, dataUrl)
-  return { id, dataUrl }
+  pendingInputImageUploads += 1
+  try {
+    const dataUrl = await fileToDataUrl(file)
+    const id = await storeImage(dataUrl, 'upload')
+    // 相同文件可能复用启动快照里的旧 hash；局部编辑器未入 store 也要保留。
+    for (const ids of initializationUploadedImageIds) ids.add(id)
+    cacheImage(id, dataUrl)
+    return { id, dataUrl }
+  } finally {
+    pendingInputImageUploads -= 1
+  }
 }
 
 /** 添加图片到输入（右键菜单）—— 支持 data/blob/http URL */

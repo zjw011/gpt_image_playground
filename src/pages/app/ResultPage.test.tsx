@@ -198,6 +198,17 @@ describe('ResultPage', () => {
     expect(container.querySelector('output')?.textContent).toBe('/tools?tool=live&task=quick-task')
   })
 
+  it('换装结果返回专用编辑器，不用创作台旧蒙版直接重新收费生成', async () => {
+    state.fullSrc = 'data:image/png;base64,preview'
+    state.tasks = [{ id: 'try-on-task', prompt: '街边穿搭', params: DEFAULT_PARAMS, inputImageIds: ['person', 'product'], outputImages: ['out'], status: 'done', error: null, createdAt: 1, finishedAt: 2, elapsed: 1, professionalPreset: 'try-on', tryOn: { mode: 'wear', category: 'clothing', scene: 'street', pose: 'natural' } }]
+    await act(async () => root.render(<MemoryRouter initialEntries={['/result?task=try-on-task']}><ResultPage /><Location /></MemoryRouter>))
+    expect(container.querySelector('a')?.getAttribute('href')).toBe('/tools?tool=try-on')
+    await act(async () => Array.from(container.querySelectorAll('button')).find((el) => el.textContent === '编辑换装')?.click())
+    expect(container.querySelector('output')?.textContent).toBe('/tools?tool=try-on&task=try-on-task')
+    expect(reuseConfig).not.toHaveBeenCalled()
+    expect(submitTask).not.toHaveBeenCalled()
+  })
+
   it('下载视频使用实际编码的扩展名，并防止重复导出', async () => {
     state.fullSrc = 'data:image/png;base64,preview'
     state.tasks = [{ id: 'quick-task', prompt: '快速运镜', params: DEFAULT_PARAMS, inputImageIds: ['img-1'], outputImages: ['img-1'], status: 'done', error: null, createdAt: 1, finishedAt: 2, elapsed: 1, quickMotion: { effect: 'zoom', duration: 2, strength: 3 } }]

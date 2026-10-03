@@ -181,6 +181,10 @@ export default function ResultPage() {
       navigate(`/tools?tool=live&task=${task.id}`)
       return
     }
+    if (task.tryOn) {
+      navigate(`/tools?tool=try-on&task=${task.id}`)
+      return
+    }
     await reuseConfig(task)
     // 提交失败（渠道没了之类）就留在当前这件作品上，别把 task 参数清掉
     if (!await submitTask({ stylePreset: task.stylePreset, professionalPreset: task.professionalPreset, liveFrameCount: task.liveFrameCount })) return
@@ -264,14 +268,14 @@ export default function ResultPage() {
           disabled: publishing || published,
         }]
       : []),
-    { icon: IconRefresh, label: quickMotion ? '编辑运镜' : '再次生成', onClick: () => void regenerate() },
+    { icon: IconRefresh, label: quickMotion ? '编辑运镜' : task.tryOn ? '编辑换装' : '再次生成', onClick: () => void regenerate() },
     ...(!quickMotion ? [{ icon: IconCopy, label: '复制提示词', onClick: () => void copyPrompt() }] : []),
     { icon: IconTrash, label: '删除', onClick: confirmDelete, danger: true },
   ]
 
   return (
     <AppShell title="生成结果" wide>
-      <Link to={quickMotion ? '/tools?tool=live' : '/studio'} className="mb-4 inline-flex items-center gap-1.5 text-[13px] font-medium text-[#8a86ac] transition hover:text-[#6b5ce7]">
+      <Link to={quickMotion ? '/tools?tool=live' : task.tryOn ? '/tools?tool=try-on' : '/studio'} className="mb-4 inline-flex items-center gap-1.5 text-[13px] font-medium text-[#8a86ac] transition hover:text-[#6b5ce7]">
         <IconArrowLeft className="h-4 w-4" />
         继续创作
       </Link>

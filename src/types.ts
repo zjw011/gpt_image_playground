@@ -183,6 +183,13 @@ export interface QuickMotionOptions {
   strength: number
 }
 
+export interface TryOnOptions {
+  mode: 'wear' | 'hold'
+  category: 'clothing' | 'shoes' | 'bag' | 'accessory' | 'other'
+  scene: 'street' | 'cafe' | 'studio' | 'outdoors'
+  pose: 'natural' | 'walking' | 'sitting' | 'showcase'
+}
+
 export interface TaskRecord {
   id: string
   prompt: string
@@ -196,6 +203,8 @@ export interface TaskRecord {
   liveFramesCompleted?: number
   /** 本地快速运镜参数，不调用绘图渠道，也不改变原始图片。 */
   quickMotion?: QuickMotionOptions
+  /** 双图试衣/种草参数；参考图顺序固定为人物、商品，增强词仅在请求阶段拼接。 */
+  tryOn?: TryOnOptions
   params: TaskParams
   /** 生成时使用的 Provider 类型 */
   apiProvider?: ApiProvider
