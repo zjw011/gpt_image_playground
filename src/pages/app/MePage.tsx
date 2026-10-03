@@ -1,5 +1,5 @@
 // 个人中心。左侧导航承担分区入口（作品/积分中心/账号设置）；
-// 「我的收藏」不单独占一栏——收藏就是打了星标的作品，在「我的作品」里用页签切换查看。
+// 收藏与失败任务都在「我的作品」里切换，失败记录不混入正常作品展示。
 import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useStore } from '../../store'
@@ -52,6 +52,7 @@ function WorkCard({ task, streamPreview }: { task: TaskRecord, streamPreview?: s
   return (
     <Link
       to={`/result?task=${task.id}`}
+      aria-label={task.status === 'error' ? `生成失败，查看并重试：${task.prompt}` : undefined}
       className="group relative aspect-square overflow-hidden rounded-2xl border border-[#eceaf6] bg-[#faf9fe]"
     >
       {task.status === 'running' ? (
@@ -135,11 +136,12 @@ export default function MePage() {
   const rawTab = searchParams.get('tab') ?? 'works'
   // 「我的收藏」已并入我的作品：旧链接 ?tab=favorites 等价于 works 页的收藏筛选
   const tab: MenuKey = (MENU.some((item) => item.key === rawTab) ? rawTab : 'works') as MenuKey
-  const favOnly = rawTab === 'favorites' || searchParams.get('fav') === '1'
+  const workFilter = searchParams.get('filter') === 'failed' ? 'failed' : rawTab === 'favorites' || searchParams.get('fav') === '1' ? 'fav' : 'all'
   const name = user?.displayName || user?.username || '本地创作者'
   const doneCount = tasks.filter((task) => task.status === 'done' && task.outputImages.length > 0).length
-  const workTasks = tasks.filter((task) => task.status === 'running' || task.status === 'error' || (task.status === 'done' && task.outputImages.length > 0))
-  const favoriteTasks = tasks.filter((task) => task.isFavorite)
+  const workTasks = tasks.filter((task) => task.status === 'running' || (task.status === 'done' && task.outputImages.length > 0))
+  const favoriteTasks = workTasks.filter((task) => task.isFavorite)
+  const failedTasks = tasks.filter((task) => task.status === 'error')
 
   const openProfileEditor = () => {
     if (!user) return
@@ -192,6 +194,7 @@ export default function MePage() {
   // 作品多了不能一把全渲染：每张缩略图都要从 IndexedDB 读一次，
   // 一次几百张会明显卡顿。先出 48 张，剩下的点「加载更多」。
   const [visibleCount, setVisibleCount] = useState(48)
+  useEffect(() => setVisibleCount(48), [tab, workFilter])
 
   // 邀请链接带上 ref（就是自己的用户 id），注册页会把它带上。
   // BASE_URL 是 './' 这类相对值，必须交给 URL 解析而不是字符串拼接
@@ -201,7 +204,7 @@ export default function MePage() {
     : ''
 
   const isWorks = tab === 'works'
-  const gridTasks = isWorks ? (favOnly ? favoriteTasks : workTasks) : workTasks
+  const gridTasks = workFilter === 'failed' ? failedTasks : workFilter === 'fav' ? favoriteTasks : workTasks
   const currentLabel = MENU.find((item) => item.key === tab)?.label ?? '我的作品'
 
   // 生图回执只同步余额，不带整本流水；进入积分中心时主动拉一次，
@@ -259,18 +262,20 @@ export default function MePage() {
         <div className="mt-4 min-w-0">
           {isWorks && (
             <>
-            {/* 全部 / 收藏 页签：收藏就是打了星标的作品，不再单独占一个侧栏入口 */}
-            <div className="flex gap-1 rounded-full border border-[#eceaf6] bg-white p-1 w-fit">
+            {/* 失败记录仍保留查看和重试入口，但不再混进正常作品与收藏。 */}
+            <nav aria-label="作品筛选" className="flex w-fit max-w-full flex-wrap gap-1 rounded-full border border-[#eceaf6] bg-white p-1">
               {([
-                { key: 'all', label: `全部 ${workTasks.length}` },
-                { key: 'fav', label: `收藏 ${favoriteTasks.length}` },
+                { key: 'all', label: `全部 ${workTasks.length}`, to: '/me?tab=works' },
+                { key: 'fav', label: `收藏 ${favoriteTasks.length}`, to: '/me?tab=works&fav=1' },
+                { key: 'failed', label: `失败 ${failedTasks.length}`, to: '/me?tab=works&filter=failed' },
               ]).map((item) => {
-                const active = (item.key === 'fav') === favOnly
+                const active = item.key === workFilter
                 return (
                   <Link
                     key={item.key}
-                    to={item.key === 'fav' ? '/me?tab=works&fav=1' : '/me?tab=works'}
-                    className={`rounded-full px-4 py-1.5 text-[13px] font-medium transition ${
+                    to={item.to}
+                    aria-current={active ? 'page' : undefined}
+                    className={`inline-flex min-h-11 items-center justify-center whitespace-nowrap rounded-full px-4 py-1.5 text-[13px] font-medium transition ${
                       active ? 'bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] text-white shadow-sm' : 'text-[#6f6a94] hover:text-[#37335c]'
                     }`}
                   >
@@ -278,11 +283,11 @@ export default function MePage() {
                   </Link>
                 )
               })}
-            </div>
+            </nav>
             {gridTasks.length === 0 ? (
               <EmptyState
-                text={favOnly ? '还没有收藏；打开任意作品，点「收藏」加个星标吧' : '还没有作品，开始创作第一张图片吧'}
-                cta={favOnly ? undefined : '立即创作'}
+                text={workFilter === 'failed' ? '暂无失败记录，生成失败的任务会保留在这里，可查看详情并重试' : workFilter === 'fav' ? '还没有收藏；打开任意作品，点「收藏」加个星标吧' : '还没有作品，开始创作第一张图片吧'}
+                cta={workFilter === 'all' ? '立即创作' : undefined}
               />
             ) : (
               <>
@@ -298,7 +303,7 @@ export default function MePage() {
                     onClick={() => setVisibleCount((count) => count + 48)}
                     className="rounded-full border border-[#dcd8f0] px-6 py-2.5 text-sm font-medium text-[#6f6a94] transition hover:border-[#7c6cf6] hover:text-[#7c6cf6]"
                   >
-                    加载更多（还有 {gridTasks.length - visibleCount} 张）
+                    加载更多（还有 {gridTasks.length - visibleCount} {workFilter === 'failed' ? '条' : '张'}）
                   </button>
                 </div>
               )}

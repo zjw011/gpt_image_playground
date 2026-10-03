@@ -122,23 +122,46 @@ try {
 
   // 个人中心不能再出现"第二列菜单"：分区入口只归左侧主导航。
   // 这是用户报过的原话——「里面怎么又内嵌一个菜单栏」。
-  // 例外：「我的作品」里的 全部/收藏 页签是正文内容，不算第二列导航。
+  // 例外：「我的作品」里的 全部/收藏/失败 页签是正文内容，不算第二列导航。
   // favorites 是旧地址别名（收藏已并入我的作品），必须仍能打开。
   for (const tab of ['works', 'favorites', 'ledger', 'settings']) {
     await open(`/me?tab=${tab}`, 2400)
     const insideMain = await evaluate(`document.querySelectorAll('main a[href^="/me?tab="]').length`)
     const inAside = await evaluate(`document.querySelectorAll('aside a[href^="/me?tab="]').length`)
     const isWorks = tab === 'works' || tab === 'favorites'
-    const ok = inAside === 3 && (isWorks ? insideMain === 2 : insideMain === 0)
+    const ok = inAside === 3 && (isWorks ? insideMain === 3 : insideMain === 0)
     report(`个人中心「${tab}」无第二列菜单`, ok, `内容区入口=${insideMain} 侧栏入口=${inAside}`)
   }
 
-  // 我的作品内嵌「全部 / 收藏」页签（收藏带星标，不再单独设侧栏入口）
+  // 三个作品筛选保留单层路由；失败优先于收藏旧地址，不能成为额外侧栏菜单。
   await open('/me?tab=works', 2400)
   const favTab = await evaluate('(() => { const el = Array.from(document.querySelectorAll("main a")).find((a) => a.innerText.includes("收藏")); return el ? el.getAttribute("href") : null })()')
   report('我的作品含收藏页签', favTab === '/me?tab=works&fav=1', String(favTab))
   await open('/me?tab=works&fav=1', 2400)
   report('收藏页签可打开', (await browser.url()) === '/me?tab=works&fav=1', await browser.url())
+  const filters = await evaluate('Array.from(document.querySelectorAll(\'nav[aria-label="作品筛选"] a\')).map((a) => ({ href: a.getAttribute("href"), text: a.innerText }))')
+  report('作品筛选顺序为全部、收藏、失败', filters.length === 3 && ['全部', '收藏', '失败'].every((label, index) => filters[index].text.startsWith(label)) && filters[2].href === '/me?tab=works&filter=failed', JSON.stringify(filters))
+  for (const [path, expected] of [
+    ['/me?tab=works', '/me?tab=works'],
+    ['/me?tab=works&fav=1', '/me?tab=works&fav=1'],
+    ['/me?tab=works&filter=failed', '/me?tab=works&filter=failed'],
+  ]) {
+    const state = await click(`nav[aria-label="作品筛选"] a[href="${path}"]`, 300)
+    const active = await evaluate('document.querySelector(\'nav[aria-label="作品筛选"] a[aria-current="page"]\')?.getAttribute("href")')
+    report(`作品筛选切换 ${path}`, state === 'clicked' && await currentUrl() === expected && active === expected, await currentUrl())
+  }
+  for (const [path, active] of [
+    ['/me?tab=favorites', '/me?tab=works&fav=1'],
+    ['/me?tab=works&fav=1', '/me?tab=works&fav=1'],
+    ['/me?tab=favorites&fav=1&filter=failed', '/me?tab=works&filter=failed'],
+    ['/me?tab=works&fav=1&filter=failed', '/me?tab=works&filter=failed'],
+  ]) {
+    await open(path, 1600)
+    const selected = await evaluate('document.querySelector(\'nav[aria-label="作品筛选"] a[aria-current="page"]\')?.getAttribute("href")')
+    report(`旧作品链接兼容及失败优先 ${path}`, await currentUrl() === path && selected === active, `${await currentUrl()} | 选中 ${selected}`)
+  }
+  await open('/me?tab=works&filter=failed', 1600)
+  report('失败空态不引导盲目生成', await evaluate('document.querySelector("main").innerText.includes("暂无失败记录") && !document.querySelector(\'main a[href="/studio"]\')') && await currentUrl() === '/me?tab=works&filter=failed')
 
   // 创作台模式切换
   await open('/studio', 2600)

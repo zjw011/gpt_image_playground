@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   backend: false,
   user: null as { id: string } | null,
   fullSrc: null as string | null,
+  fullSources: {} as Record<string, string>,
   getImage: vi.fn(),
   publishWork: vi.fn(),
   toast: vi.fn(),
@@ -38,8 +39,8 @@ vi.mock('./AppShell', () => ({
 }))
 
 vi.mock('./useTaskImage', () => ({
-  useFullImage: () => state.fullSrc,
-  useThumbnail: () => null,
+  useFullImage: (id: string | null) => id ? state.fullSources[id] ?? state.fullSrc : state.fullSrc,
+  useThumbnail: (id: string) => state.fullSources[id] ?? null,
 }))
 
 vi.mock('../../lib/creditsStore', () => ({
@@ -56,7 +57,7 @@ vi.mock('../../lib/galleryApi', () => ({ publishWork: state.publishWork }))
 vi.mock('../../components/QuickMotionPlayer', () => ({
   default: () => <div aria-label="快速运镜预览" />,
 }))
-vi.mock('../../components/LivePhotoPlayer', () => ({ default: () => <div aria-label="AI 连续帧" /> }))
+vi.mock('../../components/LivePhotoPlayer', () => ({ default: ({ frames }: { frames: string[] }) => <div aria-label="AI 连续帧" data-frames={JSON.stringify(frames)} /> }))
 vi.mock('../../lib/livePhoto', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../lib/livePhoto')>(),
   exportLiveFrames: vi.fn(),
@@ -71,6 +72,10 @@ function Location() {
   return <output>{location.pathname + location.search}</output>
 }
 
+function task(patch: Partial<TaskRecord> = {}): TaskRecord {
+  return { id: 'partial-task', prompt: '部分生成的画面', params: DEFAULT_PARAMS, inputImageIds: [], outputImages: ['frame-1'], status: 'done', error: null, createdAt: 1, finishedAt: 2, elapsed: 1, ...patch }
+}
+
 describe('ResultPage', () => {
   let container: HTMLDivElement
   let root: Root
@@ -80,6 +85,7 @@ describe('ResultPage', () => {
     state.backend = false
     state.user = null
     state.fullSrc = null
+    state.fullSources = {}
     state.getImage.mockReset()
     state.publishWork.mockReset()
     state.toast.mockReset()
@@ -97,6 +103,130 @@ describe('ResultPage', () => {
     container.remove()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('无图片的失败仍显示错误详情与明确的重新生成入口，不会自动提交', async () => {
+    state.tasks = [task({ status: 'error', outputImages: [], error: '生成请求中断' })]
+    await act(async () => root.render(<MemoryRouter initialEntries={['/result?task=partial-task']}><ResultPage /><Location /></MemoryRouter>))
+    expect(container.textContent).toContain('这次没有生成成功')
+    expect(container.querySelector('details')?.textContent).toContain('生成请求中断')
+    expect(container.querySelector('[role="status"]')).toBeNull()
+    expect(container.querySelector('img')).toBeNull()
+    expect(submitTask).not.toHaveBeenCalled()
+    expect(reuseConfig).not.toHaveBeenCalled()
+    const regenerate = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '重新生成')!
+    expect(regenerate).toBeTruthy()
+    vi.mocked(submitTask).mockResolvedValueOnce(false)
+    await act(async () => regenerate.click())
+    expect(reuseConfig).toHaveBeenCalledWith(state.tasks[0])
+    expect(submitTask).toHaveBeenCalledOnce()
+    expect(container.querySelector('output')?.textContent).toBe('/result?task=partial-task')
+  })
+
+  it('失败但保存了图片时保留查看、缩略切换和下载，不会冒充全失败或自动发布重试', async () => {
+    state.backend = true
+    state.user = { id: 'u-1' }
+    state.fullSources = { 'frame-1': 'data:image/png;base64,first', 'frame-2': 'data:image/png;base64,second' }
+    state.tasks = [task({ status: 'error', outputImages: ['frame-1', 'frame-2'], error: '后续图片未能完成' })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('已保留 2')
+    const details = container.querySelector('details')!
+    expect(details).toBeTruthy()
+    expect(details.open).toBe(false)
+    expect(details.textContent).toContain('后续图片未能完成')
+    expect(container.textContent).not.toContain('这次没有生成成功')
+    expect(container.textContent).not.toContain('仍未生成图片')
+    expect(container.textContent).not.toContain('本次失败不会扣除积分')
+    expect(container.textContent).not.toContain('发布帖子')
+    expect(container.querySelector('img[alt="部分生成的画面"]')?.getAttribute('src')).toBe(state.fullSources['frame-1'])
+    const thumbs = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).filter((button) => button.querySelector('img[alt=""]'))
+    expect(thumbs).toHaveLength(2)
+    await act(async () => thumbs[1].click())
+    expect(container.querySelector('img[alt="部分生成的画面"]')?.getAttribute('src')).toBe(state.fullSources['frame-2'])
+    const download = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '下载')!
+    expect(download.disabled).toBe(false)
+    let downloadedSrc = ''
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { downloadedSrc = this.href })
+    await act(async () => download.click())
+    expect(downloadedSrc).toBe(state.fullSources['frame-2'])
+    expect(submitTask).not.toHaveBeenCalled()
+    expect(reuseConfig).not.toHaveBeenCalled()
+    expect(state.publishWork).not.toHaveBeenCalled()
+  })
+
+  it('失败 Live 只保存一帧时下载静态图片，不展示不可用的实况播放或导出', async () => {
+    state.fullSrc = 'data:image/png;base64,single-frame'
+    state.tasks = [task({ status: 'error', professionalPreset: 'live-blink', liveFrameCount: 8, error: '第二帧生成失败' })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('已保留 1')
+    expect(container.querySelector('img[alt="部分生成的画面"]')?.getAttribute('src')).toBe(state.fullSrc)
+    expect(container.querySelector('[aria-label="AI 连续帧"]')).toBeNull()
+    expect(container.textContent).not.toContain('下载 Live')
+    const download = Array.from(container.querySelectorAll('button')).find((button) => /^下载(?:图片)?$/.test(button.textContent ?? ''))!
+    expect(download).toBeTruthy()
+    expect(download.disabled).toBe(false)
+    let filename = ''
+    let downloadedSrc = ''
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      filename = this.download
+      downloadedSrc = this.href
+    })
+    await act(async () => download.click())
+    expect(filename).toMatch(/\.png$/)
+    expect(downloadedSrc).toBe(state.fullSrc)
+    expect(exportLiveFrames).not.toHaveBeenCalled()
+    expect(submitTask).not.toHaveBeenCalled()
+    expect(state.publishWork).not.toHaveBeenCalled()
+  })
+
+  it('失败 Live 保留多帧时读取已有帧并可播放与导出，不重新调用 AI', async () => {
+    const frames = ['data:image/png;base64,first', 'data:image/png;base64,second']
+    state.fullSrc = frames[0]
+    state.getImage.mockImplementation(async (id: string) => ({ dataUrl: id === 'frame-1' ? frames[0] : frames[1] }))
+    state.tasks = [task({ status: 'error', outputImages: ['frame-1', 'frame-2'], professionalPreset: 'live-blink', liveFrameCount: 8, error: '第三帧生成失败' })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    expect(state.getImage).toHaveBeenCalledWith('frame-1')
+    expect(state.getImage).toHaveBeenCalledWith('frame-2')
+    expect(container.querySelector('[aria-label="AI 连续帧"]')?.getAttribute('data-frames')).toBe(JSON.stringify(frames))
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('已保留 2')
+    const download = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '下载 Live')!
+    expect(download).toBeTruthy()
+    expect(download.disabled).toBe(false)
+    vi.mocked(exportLiveFrames).mockResolvedValueOnce(new Blob(['video'], { type: 'video/webm' }))
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:live'), revokeObjectURL: vi.fn() })
+    let filename = ''
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { filename = this.download })
+    vi.useFakeTimers()
+    await act(async () => download.click())
+    expect(exportLiveFrames).toHaveBeenCalledWith(frames)
+    expect(filename).toMatch(/\.webm$/)
+    await act(async () => vi.runOnlyPendingTimersAsync())
+    expect(submitTask).not.toHaveBeenCalled()
+    expect(reuseConfig).not.toHaveBeenCalled()
+    expect(state.publishWork).not.toHaveBeenCalled()
+  })
+
+  it('已完成但存在部分输出错误时继续保留原部分完成横幅与图片', async () => {
+    state.fullSrc = 'data:image/png;base64,retained'
+    state.tasks = [task({ status: 'done', outputErrors: [{ requestIndex: 1, error: '另一张图片失败' }] })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('部分完成')
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('已保留 1')
+    expect(container.querySelector('img[alt="部分生成的画面"]')?.getAttribute('src')).toBe(state.fullSrc)
+    expect(container.textContent).not.toContain('这次没有生成成功')
+    expect(submitTask).not.toHaveBeenCalled()
+  })
+
+  it('正常完成的单帧 Live 仍保留原来的禁用 Live 导出行为', async () => {
+    state.fullSrc = 'data:image/png;base64,single-done'
+    state.tasks = [task({ professionalPreset: 'live-blink', liveFrameCount: 8 })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    const download = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '下载 Live')!
+    expect(download).toBeTruthy()
+    expect(download.disabled).toBe(true)
+    expect(container.querySelector('[aria-label="AI 连续帧"]')).toBeNull()
+    expect(exportLiveFrames).not.toHaveBeenCalled()
   })
 
   it('刷新后任务从持久化存储恢复时保持 Hook 调用顺序稳定', async () => {

@@ -87,7 +87,7 @@ export default function ResultPage() {
   useEffect(() => {
     let alive = true
     setLiveFrames([])
-    if (!liveTask || task?.status !== 'done' || task.outputImages.length < 2) return
+    if (!liveTask || (task?.status !== 'done' && task?.status !== 'error') || task.outputImages.length < 2) return
     void Promise.all(task.outputImages.map((id) => getImage(id))).then((images) => {
       const frames = images.flatMap((image) => image?.dataUrl ? [image.dataUrl] : [])
       if (alive) setLiveFrames(frames)
@@ -113,6 +113,8 @@ export default function ResultPage() {
   }
 
   const running = task.status === 'running'
+  const failedWithOutput = task.status === 'error' && task.outputImages.length > 0
+  const exportAsLive = liveTask && (!failedWithOutput || task.outputImages.length > 1)
   const errorHint = task.error && /insufficient[_\s-]*(account[_\s-]*)?balance|余额不足|欠费/i.test(task.error)
     ? '部分绘图渠道余额不足，系统已尝试其他可用渠道。请稍后重试或联系管理员处理渠道余额。'
     : task.error && /尺寸|size|宽.?高|width.?height/i.test(task.error)
@@ -145,7 +147,7 @@ export default function ResultPage() {
       }
       return
     }
-    if (liveTask && liveFrames.length > 1) {
+    if (exportAsLive && liveFrames.length > 1) {
       const controller = new AbortController()
       exportController.current = controller
       setExportingLive(true)
@@ -254,7 +256,7 @@ export default function ResultPage() {
   }
 
   const ACTIONS: Array<{ icon: (props: { className?: string }) => React.ReactElement, label: string, onClick: () => void, disabled?: boolean, danger?: boolean }> = [
-    { icon: IconDownload, label: exportingLive ? '导出中' : quickMotion ? '下载视频' : liveTask ? '下载 Live' : '下载', onClick: () => void download(), disabled: exportingLive || (liveTask ? liveFrames.length < 2 : !fullSrc) },
+    { icon: IconDownload, label: exportingLive ? '导出中' : quickMotion ? '下载视频' : exportAsLive ? '下载 Live' : '下载', onClick: () => void download(), disabled: exportingLive || (exportAsLive ? liveFrames.length < 2 : !fullSrc) },
     { icon: IconHeart, label: '收藏', onClick: () => openFavoritePicker([task.id]) },
     ...(canPublish
       ? [{
@@ -310,9 +312,13 @@ export default function ResultPage() {
               </div>
             )}
 
-            {task.status === 'done' && Boolean(task.outputErrors?.length) && (
+            {(failedWithOutput || (task.status === 'done' && Boolean(task.outputErrors?.length))) && (
               <div role="status" className="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs leading-5 text-amber-800">
-                本次部分完成，已保留 {task.outputImages.length} 张图片{liveTask && task.liveFrameCount ? `（目标 ${task.liveFrameCount} 帧）` : ''}。你可以查看和下载已有结果，或点击「再次生成」重新创作。
+                本次部分完成，已保留 {task.outputImages.length} 张图片{liveTask && task.liveFrameCount ? `（目标 ${task.liveFrameCount} 帧）` : ''}。你可以查看和下载已有结果，或点击「{quickMotion ? '编辑运镜' : task.tryOn ? '编辑换装' : '再次生成'}」重新创作。
+                {failedWithOutput && task.error && <details className="mt-2 rounded-xl border border-amber-200 bg-white/80 px-3 py-2 text-left">
+                  <summary className="cursor-pointer font-medium">查看错误详情</summary>
+                  <p className="mt-2 whitespace-pre-wrap break-words text-[11px] leading-5">{task.error}</p>
+                </details>}
               </div>
             )}
 
@@ -330,7 +336,7 @@ export default function ResultPage() {
                   {liveTask && <div className="mt-4 h-1.5 w-56 overflow-hidden rounded-full bg-[#e5e1f5]"><div className="h-full rounded-full bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] transition-all" style={{ width: `${((task.liveFramesCompleted ?? 0) / Math.max(1, task.liveFrameCount ?? 1)) * 100}%` }} /></div>}
                   <GeneratingQuote />
                 </div>
-              ) : task.status === 'error' ? (
+              ) : task.status === 'error' && !failedWithOutput ? (
                 <div className="w-full max-w-xl px-4 text-center">
                   <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50 text-2xl">!</span>
                   <p className="mt-4 text-sm font-semibold text-red-500">这次没有生成成功</p>
@@ -351,7 +357,7 @@ export default function ResultPage() {
                 </div>
               ) : quickMotion && fullSrc ? (
                 <QuickMotionPlayer src={fullSrc} options={quickMotion} />
-              ) : liveTask && liveFrames.length > 1 && !activeImageId ? (
+              ) : exportAsLive && liveFrames.length > 1 && !activeImageId ? (
                 <LivePhotoPlayer frames={liveFrames} />
               ) : fullSrc ? (
                 <img src={fullSrc} alt={task.prompt} className="max-h-[62vh] max-w-full rounded-2xl object-contain shadow-lg" />
@@ -368,7 +374,7 @@ export default function ResultPage() {
                 ))}
               </div>
             )}
-            {liveTask && liveFrames.length > 1 && activeImageId && (
+            {exportAsLive && liveFrames.length > 1 && activeImageId && (
               <button type="button" onClick={() => setActiveImageId(null)} className="mx-5 mb-4 rounded-full bg-[#efedfd] px-4 py-2 text-xs font-semibold text-[#6b5ce7] hover:bg-[#e5e0fc]">返回实况播放</button>
             )}
           </div>
