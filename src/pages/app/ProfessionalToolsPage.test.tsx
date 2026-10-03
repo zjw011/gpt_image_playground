@@ -134,6 +134,36 @@ describe('专业工具快速运镜', () => {
     expect(el.querySelector('output')?.textContent).toBe('/tools?tool=live&liveMode=ai')
   })
 
+  it('四个工具卡片保持真实路由和当前选中状态', async () => {
+    await render('/tools?tool=ecommerce')
+    const nav = el.querySelector('nav[aria-label="专业工具切换"]')!
+    expect(Array.from(nav.querySelectorAll('a')).map((link) => link.getAttribute('href'))).toEqual(['/tools?tool=ecommerce', '/tools?tool=product-suite', '/tools?tool=live', '/tools?tool=try-on'])
+    expect(nav.querySelector('[aria-current="page"]')?.textContent).toContain('电商设计')
+    expect(Array.from(el.querySelectorAll('a')).find((link) => link.textContent?.includes('创作记录'))?.getAttribute('href')).toBe('/me?tab=works')
+  })
+
+  it('方案示意明确标注且补充描述没有字数限制', async () => {
+    await render('/tools?tool=ecommerce')
+    expect(el.querySelector('img[alt="设计方案示意，非生成结果"]')).not.toBeNull()
+    expect(el.textContent).toContain('不是你的商品生成结果')
+    expect(el.querySelector('textarea[aria-label="补充要求"]')?.hasAttribute('maxlength')).toBe(false)
+    await click('高级质感')
+    expect(Array.from(el.querySelectorAll('button[aria-pressed="true"]')).some((button) => button.textContent?.includes('高级质感'))).toBe(true)
+    expect(el.textContent).toContain('精致布光与品牌氛围')
+  })
+
+  it('套图保留三种方案和原有生成数量上下限', async () => {
+    await render('/tools?tool=product-suite')
+    const increase = el.querySelector<HTMLButtonElement>('button[aria-label="增加生成数量"]')!
+    expect(increase.disabled).toBe(true)
+    for (let idx = 0; idx < 3; idx += 1) {
+      await act(async () => el.querySelector<HTMLButtonElement>('button[aria-label="减少生成数量"]')!.click())
+    }
+    expect(el.querySelector('[aria-label="生成数量"]')?.textContent).toBe('1')
+    expect(el.querySelector<HTMLButtonElement>('button[aria-label="减少生成数量"]')!.disabled).toBe(true)
+    expect(state.save).not.toHaveBeenCalled()
+  })
+
   it('保存后离开快速模式，迟到保存不强制跳走', async () => {
     let finish!: (id: string) => void
     state.inputImages = [{ id: 'source', dataUrl: 'data:image/png;base64,image' }]

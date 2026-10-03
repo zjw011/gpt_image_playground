@@ -6,6 +6,7 @@ import { getImage } from '../lib/db'
 import { createInputImageFromFile, submitQuickMotionTask, useStore } from '../store'
 import { IconSparkle, IconUpload } from '../pages/icons'
 import QuickMotionPlayer from './QuickMotionPlayer'
+import ProfessionalStep from './ProfessionalStep'
 
 const EFFECTS: Array<{ key: QuickMotionOptions['effect'], label: string, description: string }> = [
   { key: 'zoom', label: '轻微缩放', description: '缓慢推近，再轻轻回到原位' },
@@ -87,13 +88,14 @@ export default function QuickMotionEditor() {
   }
 
   return (
-    <section className="overflow-hidden rounded-[28px] border border-[#e7e3f7] bg-gradient-to-br from-white via-[#fbfaff] to-[#efedff] p-5 shadow-sm sm:p-7">
+    <section className="professional-editor">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div><h2 className="text-2xl font-bold text-[#292650]">快速运镜</h2><p className="mt-2 text-sm leading-6 text-[#817b9f]">让原图轻轻动一下。无需 AI 重绘，人物、商品与细节保持原样。</p></div>
         <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-600">本地制作 · 0 积分</span>
       </div>
-      <div className="mt-6 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="min-w-0">
+      <div className="mt-6 grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <div className="professional-panel min-w-0 p-4 lg:order-2 sm:p-6">
+          <div className="mb-4 flex items-center justify-between gap-3"><h3 className="text-base font-bold text-[#35315d]">实时预览</h3><span className="rounded-full bg-[#f2ecff] px-3 py-1.5 text-[11px] text-[#9278ca]">原图轻动</span></div>
           <div className="flex min-h-[260px] items-center justify-center overflow-hidden rounded-3xl border border-[#e5e1f3] bg-[#f7f6fd] p-3 sm:min-h-[420px] sm:p-5">
             {image ? <QuickMotionPlayer src={image.dataUrl} options={options} /> : (
               <button type="button" disabled={uploading} onClick={() => fileRef.current?.click()} className="flex min-h-[230px] w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-[#d9d4ef] text-[#8d86aa] transition hover:border-[#8c7cf7] hover:bg-white">
@@ -109,16 +111,16 @@ export default function QuickMotionEditor() {
           </div>
           <input id="quick-motion-upload" aria-label="上传运镜图片" ref={fileRef} type="file" accept="image/*" hidden onChange={(event) => { void upload(event.target.files?.[0]); event.target.value = '' }} />
         </div>
-        <div className="rounded-3xl border border-[#e5e1f3] bg-white p-5">
-          <h3 className="text-sm font-bold text-[#35315d]">运镜效果</h3>
+        <div className="professional-panel min-w-0 p-4 lg:order-1 sm:p-6">
+          <ProfessionalStep step={1}>运镜效果</ProfessionalStep>
           <div className="mt-3 space-y-2">{EFFECTS.map((item) => (
             <button key={item.key} type="button" aria-pressed={options.effect === item.key} onClick={() => setOptions((current) => ({ ...current, effect: item.key }))} className={`w-full rounded-2xl border-2 p-4 text-left transition ${options.effect === item.key ? 'border-[#8c7cf7] bg-[#f3f1ff]' : 'border-[#ebe8f4] hover:border-[#c6bff5]'}`}>
               <span className={`text-sm font-bold ${options.effect === item.key ? 'text-[#6b5ce7]' : 'text-[#423d63]'}`}>{item.label}</span><span className="mt-1 block text-[11px] text-[#918cae]">{item.description}</span>
             </button>
           ))}</div>
-          <h3 className="mt-5 text-sm font-bold text-[#35315d]">播放时长</h3>
+          <div className="mt-6"><ProfessionalStep step={2}>播放时长</ProfessionalStep></div>
           <div className="mt-3 grid grid-cols-3 gap-2">{[1, 2, 3].map((duration) => <button key={duration} type="button" aria-pressed={options.duration === duration} onClick={() => setOptions((current) => ({ ...current, duration }))} className={`min-h-11 rounded-xl py-3 text-xs font-semibold transition ${options.duration === duration ? 'bg-[#7867f5] text-white' : 'bg-[#f5f3fb] text-[#77718f] hover:bg-[#ece9fc]'}`}>{duration} 秒</button>)}</div>
-          <h3 className="mt-5 text-sm font-bold text-[#35315d]">运动幅度</h3>
+          <div className="mt-6"><ProfessionalStep step={3}>运动幅度</ProfessionalStep></div>
           <div className="mt-3 grid grid-cols-3 gap-2">{[{ value: 2, label: '轻柔' }, { value: 3, label: '自然' }, { value: 5, label: '明显' }].map((item) => <button key={item.value} type="button" aria-pressed={options.strength === item.value} onClick={() => setOptions((current) => ({ ...current, strength: item.value }))} className={`min-h-11 rounded-xl py-3 text-xs font-semibold transition ${options.strength === item.value ? 'bg-[#efedfd] text-[#6b5ce7] ring-1 ring-[#8c7cf7]' : 'bg-[#f5f3fb] text-[#77718f] hover:bg-[#ece9fc]'}`}>{item.label} · {item.value}%</button>)}</div>
           <p className="mt-4 text-[11px] leading-5 text-[#918cae]">仅模拟镜头运动，不会生成眨眼或新的画面。平移会轻微裁切边缘，避免露出黑边。</p>
           <button type="button" disabled={!image || uploading || saving} onClick={() => void save()} className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#7462f3] to-[#9b76f6] px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-[#7867f5]/25 transition disabled:cursor-not-allowed disabled:opacity-40"><IconSparkle className="h-4 w-4" />{saving ? '正在保存…' : '保存作品与预览'}</button>

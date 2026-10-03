@@ -1,0 +1,52 @@
+.professional-workspace {
+  background: radial-gradient(ellipse at 50% 25%, #eae3ff50, transparent 70%);
+}
+
+.professional-panel {
+  border: 1px solid #ece7f7;
+  border-radius: 24px;
+  background: #ffffff;
+  box-shadow: 0 8px 32px #65529c06;
+}
+
+.professional-editor {
+  border: 0;
+  border-radius: 24px;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.professional-panel.border-dashed {
+  border: 2px dashed #d9d4ef;
+  background: #faf8ff;
+}
+
+.professional-panel.border-dashed:hover {
+  border-color: #aa8ff8;
+  background: #f5f0ff;
+}
+
+.professional-editor > div:first-child {
+  padding: 8px 4px 0;
+}
+
+.professional-editor > div:first-child h2 {
+  font-size: 22px;
+}
+
+.professional-editor > div:first-child p {
+  line-height: 1.7;
+}
+
+.professional-workspace button:focus-visible,
+.professional-workspace a:focus-visible {
+  outline: 3px solid #a795f7;
+  outline-offset: 3px;
+}
+
+@media (max-width: 639px) {
+  .professional-editor > div:first-child h2 {
+    font-size: 20px;
+  }
+}

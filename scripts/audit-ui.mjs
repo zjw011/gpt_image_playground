@@ -51,7 +51,7 @@ try {
   const widths = process.env.AUDIT_UI_WIDTHS ? process.env.AUDIT_UI_WIDTHS.split(',').map(Number) : [1920, 1440, 768, 430, 390, 375, 320]
   for (const width of widths) {
     await browser.setViewport(width, 960)
-    for (const path of ['/', '/studio', '/studio?mode=inpaint', '/studio?mode=outpaint', '/tools', '/tools?tool=ecommerce', '/tools?tool=product-suite', '/tools?tool=live', '/tools?tool=try-on', '/gallery', '/me?tab=works', '/me?tab=settings', '/me?tab=ledger', '/recharge']) {
+    for (const path of ['/', '/studio', '/studio?mode=inpaint', '/studio?mode=outpaint', '/tools', '/tools?tool=ecommerce', '/tools?tool=product-suite', '/tools?tool=live', '/tools?tool=live&liveMode=ai', '/tools?tool=try-on', '/gallery', '/me?tab=works', '/me?tab=settings', '/me?tab=ledger', '/recharge']) {
       await browser.open(path)
       report(`${width}px ${path} 落点`, (await browser.url()) === path)
       report(`${width}px ${path} 无横向溢出`, await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1'))
@@ -218,7 +218,7 @@ try {
     report(`Live 部分失败 ${count} 帧可查看保留内容`, await browser.url() === path && await waitUntil(count === 1
       ? 'document.querySelector("main").innerText.includes("已保留") && Array.from(document.querySelectorAll("main img")).some((image) => image.complete && image.naturalWidth > 0)'
       : 'document.querySelector("main").innerText.includes("已保留") && document.querySelector("main canvas")?.width > 0'))
-    report(`Live 部分失败 ${count} 帧提供正确且可用下载入口`, await waitUntil(`Array.from(document.querySelectorAll('main button')).some((button) => button.innerText.trim() === ${JSON.stringify(count === 1 ? '下载' : '下载 Live')} && !button.disabled)`))
+    report(`Live 部分失败 ${count} 帧提供正确且可用下载入口`, await waitUntil(`Array.from(document.querySelectorAll('main button')).some((button) => button.innerText.trim() === ${JSON.stringify(count === 1 ? '下载' : '下载视频')} && !button.disabled)`))
     report(`Live 部分失败 ${count} 帧手机结果无横向溢出`, await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1'))
     writeFileSync(resolve(output, `works-failed-live-${count}-320.png`), Buffer.from(await browser.screenshot(), 'base64'))
   }

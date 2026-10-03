@@ -111,7 +111,7 @@ try {
   const toolLinks = await evaluate('Array.from(document.querySelectorAll("main a[href^=\\"/tools?tool=\\"]")).map((el) => el.getAttribute("href"))')
   report('专业工具 · 四个真实功能入口', JSON.stringify(toolLinks) === JSON.stringify(['/tools?tool=ecommerce', '/tools?tool=product-suite', '/tools?tool=live', '/tools?tool=try-on']), JSON.stringify(toolLinks))
   const ecommerceTool = await click('main a[href="/tools?tool=ecommerce"]')
-  const ecommerceReady = await evaluate('document.querySelector("input[type=file][accept=\\"image/*\\"]") !== null && document.body.innerText.includes("选择方案")')
+  const ecommerceReady = await evaluate('document.querySelector("input[type=file][accept=\\"image/*\\"]") !== null && document.body.innerText.includes("选择设计方案") && document.querySelector("nav[aria-label=\\"专业工具切换\\"] a[aria-current=page]")?.getAttribute("href") === "/tools?tool=ecommerce"')
   report('专业工具 · 电商设计工作台可用', ecommerceTool === 'clicked' && (await currentUrl()) === '/tools?tool=ecommerce' && ecommerceReady, await currentUrl())
   await open('/tools?tool=live', 1600)
   const quickReady = await evaluate('document.querySelector("#quick-motion-upload") !== null && document.body.innerText.includes("本地制作 · 0 积分")')

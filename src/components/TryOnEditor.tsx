@@ -8,6 +8,7 @@ import { IMAGE_RATIO_PRESETS } from '../lib/size'
 import { normalizeTryOnOptions, validateTryOnImageData } from '../lib/tryOn'
 import { createInputImageFromFile, submitTryOnTask, useStore } from '../store'
 import { IconArrowRight, IconCheck, IconMinus, IconPlus, IconSparkle, IconTrash, IconUpload } from '../pages/icons'
+import ProfessionalStep from './ProfessionalStep'
 
 const MODES = [
   { key: 'wear', label: '上身穿搭', note: '穿衣 · 穿鞋 · 搭配包饰' },
@@ -159,23 +160,23 @@ export default function TryOnEditor() {
   }
 
   return (
-    <section className="overflow-hidden rounded-[28px] border border-[#e7e3f7] bg-gradient-to-br from-white via-[#fbfaff] to-[#efedff] p-4 shadow-sm sm:p-7">
+    <section className="professional-editor">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div><h2 className="text-2xl font-bold tracking-tight text-[#292650]">AI 换装与种草</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-[#817b9f]">用你的人物创作真实感穿搭。单品上身、自然手持，或参考喜欢的照片，换一种穿搭与拍摄方式。</p></div>
         <span className="rounded-full border border-[#e4ddf8] bg-white px-3 py-1.5 text-xs font-semibold text-[#746e91]">双图参考 · {credits ? `预计 ${cost} 积分` : '使用当前绘图服务'}</span>
       </div>
-      <fieldset disabled={busy} className="mt-6">
+      <fieldset disabled={busy} className="professional-panel mt-6 p-4 sm:p-5">
         <legend className="text-sm font-bold text-[#35315d]">生成方式</legend>
         <div className="mt-3 grid grid-cols-3 gap-2">
           {MODES.map((item) => <button key={item.key} type="button" aria-pressed={options.mode === item.key} onClick={() => setOptions((current) => normalizeTryOnOptions({ ...current, mode: item.key, pose: item.key === 'reference' && current.mode !== 'reference' ? 'reference' : current.pose }))} className={`flex min-h-16 items-center justify-between gap-1 rounded-2xl border-2 px-2 py-3 text-left transition sm:gap-3 sm:px-4 ${options.mode === item.key ? 'border-[#8c7cf7] bg-[#f3f1ff] shadow-sm' : 'border-[#e0daef] bg-white hover:border-[#b5a7f0] hover:bg-[#faf8ff]'}`}><span><span className="block text-xs font-bold text-[#423d63] sm:text-sm">{item.label}</span><span className="mt-1 hidden text-[11px] text-[#918cae] sm:block">{item.note}</span></span><span aria-hidden="true" className={`hidden h-5 w-5 shrink-0 items-center justify-center rounded-full border sm:flex ${options.mode === item.key ? 'border-[#806cf2] bg-[#806cf2] text-white' : 'border-[#d2c8e7] bg-[#faf8ff]'}`}>{options.mode === item.key && <IconCheck className="h-3 w-3" />}</span></button>)}
         </div>
       </fieldset>
       <div className="mt-6 grid items-start gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-        <div className="min-w-0">
+        <div className="professional-panel min-w-0 p-4 sm:p-6">
           <div className="grid grid-cols-2 gap-3 sm:gap-4">
             {([{ role: 'person', label: '人物图', hint: '保留这个人：面部清晰，半身或全身照更好', ref: personRef }, { role: 'product', label: secondLabel, hint: referenceMode ? '参考这张图：可以是穿搭照，不会借用对方的脸' : '使用这件商品：单品或上身照，细节清晰', ref: productRef }] as const).map((item) => (
               <div key={item.role} className="min-w-0">
-                <div className="mb-2.5 flex items-center gap-2"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#ebe6ff] text-xs font-bold text-[#6b5ce7]">{item.role === 'person' ? '1' : '2'}</span><h3 className="text-sm font-bold text-[#35315d]">{item.label}</h3></div>
+                <div className="mb-3"><ProfessionalStep step={item.role === 'person' ? 1 : 2}>{item.label}</ProfessionalStep></div>
                 <button type="button" aria-label={`选择${item.label}`} disabled={busy || uploading[item.role]} onClick={() => item.ref.current?.click()} className="group relative flex aspect-[3/4] w-full flex-col items-center justify-center gap-3 overflow-hidden rounded-2xl border-2 border-dashed border-[#d6cff0] bg-white transition hover:border-[#8c7cf7] hover:bg-[#faf8ff] disabled:opacity-60">
                   {images[item.role]
                     ? <><img src={images[item.role]!.dataUrl} alt={item.role === 'person' ? '人物参考图' : referenceMode ? '爆款参考图' : '商品参考图'} className="h-full w-full object-contain p-2" /><span className="absolute bottom-2 rounded-full bg-[#292650]/70 px-2.5 py-1.5 text-[11px] text-white backdrop-blur">{uploading[item.role] ? '正在读取…' : '点击更换'}</span></>
@@ -196,7 +197,8 @@ export default function TryOnEditor() {
           </details>
           {taskId && !saved?.tryOn && <p role="status" className="mt-3 text-xs leading-5 text-[#918cae]">未找到可编辑的换装记录，请重新上传参考图。</p>}
         </div>
-        <fieldset disabled={busy} className="min-w-0 space-y-5 rounded-3xl border border-[#e5def2] bg-white/90 p-4 sm:p-6">
+        <fieldset disabled={busy} className="professional-panel min-w-0 space-y-5 p-4 sm:p-6">
+          <ProfessionalStep step={3}>设置种草效果</ProfessionalStep>
           {referenceMode ? <div>
             <h3 className="text-sm font-bold text-[#35315d]">想参考哪些元素？</h3>
             <p className="mt-1.5 text-xs leading-5 text-[#918cae]">默认全面参考，也可以只保留穿搭。至少选择一项；姿势在下面单独设置。</p>
