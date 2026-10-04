@@ -16,7 +16,7 @@ import {
   voidCards,
 } from './cards.mjs'
 import { auditChannel } from './channelAudit.mjs'
-import { creditsOverview, creditsSummary, listLedger, removeAccount, resetCreditStats, setBalance } from './credits.mjs'
+import { creditsOverview, creditsSummary, grantAllCredits, listLedger, removeAccount, resetCreditStats, setBalance } from './credits.mjs'
 import { EMAIL_CODE_COOLDOWN_MS, EMAIL_CODE_TTL_MS } from './emailCodes.mjs'
 import { HttpError, readJsonBody, sendJson, sendText } from './http.mjs'
 import { listCommentsForAdmin, removeComment, setCommentHidden } from './galleryComments.mjs'
@@ -656,6 +656,21 @@ export async function handleAdminRoute(req, res, ctx) {
       overview: creditsOverview(),
       settings: config.site.credits,
     })
+  }
+
+  if (path === '/api/admin/credits/grant-all' && method === 'POST') {
+    const body = await readJsonBody(req)
+    const ids = getConfig().users.map((user) => user.id).sort()
+    // 先检查历史收据，已提交活动不因后来注册了新用户而再次入账。
+    try {
+      const requested = Array.isArray(body.userIds) ? [...body.userIds].sort() : []
+      const result = grantAllCredits(requested, body.amount, { requestId: body.requestId, note: body.note, actorId: ctx.user?.id ?? 'admin', validateRoster: ids })
+      return sendJson(res, 200, result)
+    } catch (err) {
+      if (err.code === 'ROSTER_CHANGED') throw new HttpError(409, err.message)
+      if (err.message.includes('积分') || err.message.includes('发放') || err.message.includes('活动') || err.message.includes('用户列表')) throw new HttpError(400, err.message)
+      throw err
+    }
   }
 
   const balanceMatch = path.match(/^\/api\/admin\/credits\/users\/([^/]+)$/)

@@ -5,7 +5,7 @@
 //   node scripts/audit-server.mjs
 // 需要本机装有 Chrome（可用 CHROME_PATH 覆盖）。退出码非 0 表示有失败项。
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { launchChrome } from './lib/cdp.mjs'
@@ -246,6 +246,67 @@ try {
       report(`/admin?tab=${tab} 有内容`, text.includes(keyword), text.includes(keyword) ? `已含「${keyword}」` : text.slice(0, 60).replace(/\n/g, ' '))
     }
 
+    // 批量活动必须真实入账，搜索结果不能变成发放范围。
+    const campaignUsers = await browser.evaluate(`(async () => {
+      const post = async (username, enabled) => {
+        const response = await fetch('/api/admin/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password: 'audit-user-pass', enabled }) })
+        return response.json()
+      }
+      await post('campaign-active', true)
+      await post('campaign-disabled', false)
+      return (await (await fetch('/api/admin/state')).json()).users
+    })()`)
+    const active = campaignUsers.find((user) => user.username === 'campaign-active')
+    await browser.evaluate(`fetch('/api/admin/credits/users/${active.id}', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ balance: 30 }) })`)
+    await browser.open('/admin?tab=users', 2000)
+    report('用户管理真实落点', await browser.url() === '/admin?tab=users')
+    await browser.evaluate(`(() => {
+      const el = document.querySelector('input[aria-label="搜索用户"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'campaign-active')
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })()`)
+    await sleep(300)
+    report('搜索只显示匹配用户', await browser.evaluate(`document.querySelectorAll('tbody tr').length === 1 && document.querySelector('tbody').innerText.includes('campaign-active')`))
+    await browser.clickByText('批量赠送积分')
+    await browser.evaluate(`(() => {
+      const el = document.querySelector('input[aria-label="活动说明"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, '活动审计赠送')
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })()`)
+    await browser.clickByText('预览发放范围')
+    report('预览包含全站而非搜索结果', await browser.evaluate(`document.querySelector('section[aria-label="批量赠送积分"]').innerText.includes('${campaignUsers.length} 个账号')`))
+    const beforeGrant = JSON.parse(readFileSync(join(DATA_DIR, 'credits.json'), 'utf8'))
+    report('预览未改变余额', beforeGrant.users[active.id].balance === 30 && Object.keys(beforeGrant.grants ?? {}).length === 0)
+    await browser.evaluate(`(() => { const button = Array.from(document.querySelectorAll('button')).find((el) => el.innerText === '确认发放'); button.click(); button.click() })()`)
+    await sleep(1200)
+    const granted = JSON.parse(readFileSync(join(DATA_DIR, 'credits.json'), 'utf8'))
+    const grantId = Object.keys(granted.grants)[0]
+    report('双击整批只发放一次，原余额直接增加', Object.keys(granted.grants).length === 1 && granted.users[active.id].balance === 130 && campaignUsers.every((user) => granted.users[user.id]?.balance >= 100))
+    report('管理员和停用账号均有活动流水', campaignUsers.every((user) => granted.ledger.some((row) => row.userId === user.id && row.ref === grantId && row.amount === 100 && row.note === '活动赠送：活动审计赠送')))
+    const body = { requestId: grantId, userIds: campaignUsers.map((user) => user.id), amount: 100, note: '活动审计赠送' }
+    const replay = await browser.evaluate(`(async () => { const response = await fetch('/api/admin/credits/grant-all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(${JSON.stringify(body)}) }); return { status: response.status, body: await response.json() } })()`)
+    report('同笔网络重试返回收据且不再加分', replay.status === 200 && replay.body.duplicated === true && JSON.parse(readFileSync(join(DATA_DIR, 'credits.json'), 'utf8')).users[active.id].balance === 130)
+    const invalid = await browser.evaluate(`(async () => {
+      const post = async (body) => (await fetch('/api/admin/credits/grant-all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).status
+      return [await post(${JSON.stringify({ ...body, requestId: 'campaign-invalid-0001', amount: -100 })}), await post(${JSON.stringify({ ...body, requestId: 'campaign-invalid-0002', userIds: [active.id] })})]
+    })()`)
+    report('非法金额与过期名单被拒绝且无部分入账', invalid[0] === 400 && invalid[1] === 409 && JSON.parse(readFileSync(join(DATA_DIR, 'credits.json'), 'utf8')).users[active.id].balance === 130)
+    for (const width of [1440, 390, 320]) {
+      await browser.setViewport(width, 960)
+      await browser.open('/admin?tab=users', 1300)
+      report(`${width}px 用户管理保持路由且无页面横向溢出`, await browser.url() === '/admin?tab=users' && await browser.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1'))
+      if (width < 768) report(`${width}px 后台移动导航当前用户项可见`, await browser.evaluate(`(() => { const nav = document.querySelector('nav[aria-label="后台移动导航"]'); const active = nav.querySelector('[aria-current="page"]').getBoundingClientRect(); return active.left >= 0 && active.right <= innerWidth })()`))
+      const output = resolve('.tmp-check/admin-users')
+      mkdirSync(output, { recursive: true })
+      writeFileSync(join(output, `users-${width}.png`), Buffer.from(await browser.screenshot(), 'base64'))
+    }
+    await browser.setViewport(1440, 960)
+    await stopServer()
+    await startServer()
+    await browser.evaluate(`fetch('/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'audit-admin-pass' }) })`)
+    const restarted = await browser.evaluate(`(async () => { const response = await fetch('/api/admin/credits/grant-all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(${JSON.stringify(body)}) }); return { status: response.status, body: await response.json() } })()`)
+    report('服务重启后同笔活动仍不可重复发放', restarted.status === 200 && restarted.body.duplicated === true && JSON.parse(readFileSync(join(DATA_DIR, 'credits.json'), 'utf8')).users[active.id].balance === 130)
+
     // 微信登录这一版只放占位入口，必须明确写着开发中
     await browser.open('/admin?tab=wechat', 2400)
     const wechat = await browser.text()
@@ -273,6 +334,7 @@ try {
       return { created: created.status, login: login.status, body: await login.json() }
     })()`)
     report('普通用户账号可创建并可登录', normalUser.created === 200 && normalUser.login === 200 && normalUser.body?.user?.role === 'user', JSON.stringify(normalUser).slice(0, 120))
+    report('普通用户不能批量赠送积分', await browser.evaluate(`(async () => (await fetch('/api/admin/credits/grant-all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status === 401)()`))
 
     await browser.open('/admin', 2600)
     const asUser = await browser.url()

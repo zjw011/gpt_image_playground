@@ -5,6 +5,7 @@
 // 让它可以塞进任意子路径部署。两层以上路径（/admin/channels）在浏览器里会把
 // ./assets/xxx.js 解析成 /admin/assets/xxx.js，直接白屏——只有一层才安全。
 // 前台个人中心的分区页签本来就是 /me?tab=xxx，这里保持一致。
+import { useEffect, useRef } from 'react'
 import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import { getBackendUser, submitFrontLogout } from '../../lib/backend'
@@ -36,7 +37,13 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
   const name = user?.displayName || user?.username || '管理员'
 
   const activeTab = searchParams.get('tab') ?? 'dashboard'
+  const mobileNav = useRef<HTMLElement>(null)
   const title = ADMIN_TABS.find((item) => item.key === activeTab)?.label ?? '后台管理'
+  useEffect(() => {
+    const nav = mobileNav.current
+    const active = nav?.querySelector<HTMLElement>('[aria-current="page"]')
+    if (nav && active && nav.clientWidth) nav.scrollLeft = active.offsetLeft - nav.clientWidth / 2 + active.clientWidth / 2
+  }, [activeTab])
 
   const logout = async () => {
     try { await submitFrontLogout() } catch {}
@@ -46,7 +53,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
   return (
     <div className="flex min-h-screen bg-[radial-gradient(circle_at_85%_0%,rgba(219,234,254,0.65),transparent_28%),#f6f8fb] text-[#334155]">
       {/* 侧栏 */}
-      <aside className="sticky top-0 flex h-screen w-[236px] shrink-0 flex-col overflow-y-auto border-r border-[#e6ebf2] bg-white/95 px-4 py-5 shadow-[8px_0_32px_rgba(148,163,184,0.06)] backdrop-blur">
+      <aside className="sticky top-0 hidden h-screen w-[236px] shrink-0 flex-col overflow-y-auto border-r border-[#e6ebf2] bg-white/95 px-4 py-5 shadow-[8px_0_32px_rgba(148,163,184,0.06)] backdrop-blur md:flex">
         <div className="px-2.5">
           <span className="flex items-center gap-3">
             <BrandMark className="h-11 w-11" />
@@ -104,12 +111,12 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
 
       {/* 主区 */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex h-[72px] items-center justify-between border-b border-[#e6ebf2] bg-white/85 px-7 backdrop-blur-xl">
+        <header className="sticky top-0 z-30 flex h-[72px] items-center justify-between gap-3 border-b border-[#e6ebf2] bg-white/85 px-4 backdrop-blur-xl sm:px-7">
           <div>
             <p className="text-[11px] font-medium text-[#94a3b8]">绘想控制台&nbsp; / &nbsp;{title}</p>
             <h1 className="mt-1 text-[17px] font-bold text-[#1e293b]">{title}</h1>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex shrink-0 items-center gap-2 sm:gap-4">
             <span className="hidden items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50/80 px-3 py-1.5 text-xs font-medium text-emerald-600 sm:flex">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.1)]" />
               系统运行中
@@ -126,7 +133,12 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
             </div>
           </div>
         </header>
-        <main className="mx-auto w-full max-w-[1440px] flex-1 px-5 py-6 lg:px-7 lg:py-7">{children}</main>
+        <nav ref={mobileNav} aria-label="后台移动导航" className="flex min-w-0 gap-2 overflow-x-auto border-b border-slate-200 bg-white px-4 py-2 md:hidden">
+          {ADMIN_TABS.map((item) => <Link key={item.key} to={`/admin?tab=${item.key}`} aria-current={activeTab === item.key ? 'page' : undefined} className={`flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold ${activeTab === item.key ? 'bg-blue-50 text-blue-600' : 'text-slate-500'}`}><item.icon className="h-4 w-4" />{item.label}</Link>)}
+          <Link to="/studio" className="flex min-h-11 shrink-0 items-center rounded-xl px-3 text-xs text-slate-500">返回前台</Link>
+          <button type="button" onClick={() => void logout()} className="min-h-11 shrink-0 rounded-xl px-3 text-xs text-red-500">退出登录</button>
+        </nav>
+        <main className="mx-auto w-full min-w-0 max-w-[1440px] flex-1 px-4 py-6 sm:px-5 lg:px-7 lg:py-7">{children}</main>
         {/* 后台所有确认弹窗共用全站样式（store 驱动），替代原生 confirm */}
         <ConfirmDialog />
       </div>

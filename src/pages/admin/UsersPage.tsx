@@ -1,9 +1,9 @@
 // 用户管理：列表 + 新建（可设站长角色）+ 编辑 + 删除 + 调整积分。
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import AdminShell from './AdminShell'
 import { useStore } from '../../store'
-import { getAdminState, createUser, updateUser, deleteUser, setUserBalance, type AdminUser } from '../../lib/adminApi'
-import { IconPlus, IconTrash, IconEdit, IconCoin } from '../icons'
+import { getAdminState, createUser, updateUser, deleteUser, setUserBalance, grantAllUserCredits, type AdminUser } from '../../lib/adminApi'
+import { IconPlus, IconTrash, IconEdit, IconCoin, IconSearch } from '../icons'
 
 export default function UsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([])
@@ -16,13 +16,22 @@ export default function UsersPage() {
   const [createdPw, setCreatedPw] = useState<string | null>(null)
   // 余额调整弹层（替代原生 prompt，风格与全站一致）
   const [balanceEdit, setBalanceEdit] = useState<{ user: AdminUser, value: string } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [keyword, setKeyword] = useState('')
+  const [role, setRole] = useState('all')
+  const [status, setStatus] = useState('all')
+  const [sort, setSort] = useState('newest')
+  const [page, setPage] = useState(1)
+  const [grant, setGrant] = useState<{ amount: string, note: string, requestId: string, userIds: string[] | null } | null>(null)
+  const submitting = useRef(false)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
 
   const load = useCallback(async (fresh = false) => {
     try {
       const state = await getAdminState(fresh ? 0 : 8000)
       setUsers(state.users)
-    } catch (err) { setError(err instanceof Error ? err.message : String(err)) }
+      setError(null)
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setLoading(false) }
   }, [])
   useEffect(() => { void load() }, [load])
 
@@ -36,6 +45,8 @@ export default function UsersPage() {
   const closeForm = () => { setEditing(null); setCreating(false); setCreatedPw(null) }
 
   const submit = async () => {
+    if (submitting.current) return
+    submitting.current = true
     setBusy(true); setError(null); setCreatedPw(null)
     try {
       if (editing) {
@@ -43,12 +54,13 @@ export default function UsersPage() {
         toast('用户已更新')
       } else {
         const result = await createUser({ ...form, password: form.password || undefined })
+        closeForm()
         if (result.generated) setCreatedPw(result.password)
         toast('用户已创建')
       }
-      closeForm()
+      if (editing) closeForm()
       await load(true)
-    } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false); submitting.current = false }
   }
 
   const remove = (u: AdminUser) => {
@@ -69,29 +81,70 @@ export default function UsersPage() {
   const openBalanceEdit = (u: AdminUser) => setBalanceEdit({ user: u, value: String(u.balance) })
 
   const saveBalance = async () => {
-    if (!balanceEdit) return
+    if (!balanceEdit || submitting.current) return
     const amount = Number(balanceEdit.value)
-    if (!Number.isFinite(amount) || amount < 0) { setError('积分必须是不小于 0 的数字'); return }
+    if (!balanceEdit.value.trim() || !Number.isSafeInteger(amount) || amount < 0 || amount > 100000000) { setError('积分必须为 0–100000000 的整数'); return }
+    submitting.current = true
     setBusy(true)
     try {
       await setUserBalance(balanceEdit.user.id, Math.trunc(amount))
       toast('积分已调整')
       setBalanceEdit(null)
       await load(true)
-    } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false) }
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false); submitting.current = false }
   }
+
+  const sendGrant = async () => {
+    if (!grant || submitting.current) return
+    const amount = Number(grant.amount)
+    if (!Number.isSafeInteger(amount) || amount < 1 || amount > 100000000) { setError('每人积分必须为 1–100000000 的整数'); return }
+    if (!grant.note.trim() || grant.note.trim().length > 100) { setError('请填写 1–100 字的活动说明'); return }
+    submitting.current = true
+    setBusy(true); setError(null)
+    try {
+      if (!grant.userIds) {
+        const state = await getAdminState(0)
+        setUsers(state.users)
+        if (!state.users.length) throw new Error('暂无可发放用户')
+        setGrant({ ...grant, note: grant.note.trim(), userIds: state.users.map((user) => user.id) })
+        return
+      }
+      const result = await grantAllUserCredits({ requestId: grant.requestId, userIds: grant.userIds, amount, note: grant.note })
+      toast(`活动积分已发放：${result.count} 个账号，每人 ${amount.toLocaleString()} 积分，共 ${result.total.toLocaleString()} 积分${result.duplicated ? '（已核对原发放，无重复入账）' : ''}`)
+      setGrant(null)
+      await load(true)
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)) } finally { setBusy(false); submitting.current = false }
+  }
+
+  useEffect(() => { setPage(1) }, [keyword, role, status, sort])
+  const query = keyword.trim().toLowerCase()
+  const filtered = users.filter((user) => (!query || [user.username, user.displayName, user.email, user.note, user.registerIp].some((value) => value?.toLowerCase().includes(query))) && (role === 'all' || (user.role === 'admin' ? 'admin' : 'user') === role) && (status === 'all' || user.enabled === (status === 'enabled'))).sort((a, b) => sort === 'balance' ? b.balance - a.balance : sort === 'spent' ? b.totalOut - a.totalOut : b.createdAt - a.createdAt)
+  const pages = Math.max(1, Math.ceil(filtered.length / 20))
+  const currentPage = Math.min(page, pages)
+  const visible = filtered.slice((currentPage - 1) * 20, currentPage * 20)
 
   return (
     <AdminShell>
-      <div className="mb-5 flex items-center justify-between">
-        <button type="button" onClick={openCreate} className="flex items-center gap-1.5 rounded-lg bg-[#2563eb] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#1d4ed8]">
+      <div className="mb-5 grid gap-3 sm:grid-cols-3">
+        {[['注册账号', users.length], ['正常账号', users.filter((user) => user.enabled).length], ['账号积分总额', users.reduce((sum, user) => sum + user.balance, 0)]].map(([label, value]) => <div key={label} className="rounded-2xl border border-[#e6ebf2] bg-white p-5 shadow-sm"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 text-2xl font-bold tabular-nums text-slate-800">{loading ? '—' : value.toLocaleString()}</p></div>)}
+      </div>
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-2"><button type="button" disabled={busy} onClick={openCreate} className="flex min-h-11 items-center gap-1.5 rounded-xl bg-[#2563eb] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#1d4ed8] disabled:opacity-50">
           <IconPlus className="h-4 w-4" />新建用户
-        </button>
-        <span className="text-xs text-[#94a3b8]">站长角色登录后进入管理后台，普通用户进入前台</span>
+        </button><button type="button" disabled={busy || loading || users.length === 0} onClick={() => { setError(null); setGrant({ amount: '100', note: '', requestId: Array.from(crypto.getRandomValues(new Uint8Array(16)), (value) => value.toString(16).padStart(2, '0')).join(''), userIds: null }) }} className="flex min-h-11 items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 disabled:opacity-50"><IconCoin className="h-4 w-4" />批量赠送积分</button></div>
+        <button type="button" disabled={busy || loading} onClick={() => { setLoading(true); void load(true) }} className="min-h-11 rounded-xl border border-slate-200 bg-white px-4 text-xs text-slate-600 disabled:opacity-50">刷新列表</button>
       </div>
 
-      {notice && <div className="mb-4 rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{notice}</div>}
-      {error && <div className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">{error}</div>}
+      {notice && <div role="status" className="mb-4 rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{notice}</div>}
+      {error && <div role="alert" className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">{error}</div>}
+      {createdPw && <div role="status" className="mb-4 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-700">已自动生成登录口令：<span className="font-mono font-bold">{createdPw}</span>（仅显示这一次，请立即记录）<button type="button" className="ml-3 min-h-11 underline" onClick={() => setCreatedPw(null)}>已记录</button></div>}
+      {grant && <section aria-label="批量赠送积分" className="mb-6 rounded-2xl border border-blue-200 bg-white p-5 shadow-sm">
+        <h3 className="text-base font-bold text-slate-800">活动积分赠送</h3>
+        <p className="mt-2 text-xs leading-6 text-slate-500">发给所有已注册账号，包含站长和停用账号，不受搜索、筛选或分页影响。在原余额上增加，不覆盖余额；每个账号都会留下活动流水。</p>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2"><label className="text-sm text-slate-600">每人增加积分<input aria-label="每人增加积分" type="number" min="1" max="100000000" step="1" disabled={busy || Boolean(grant.userIds)} value={grant.amount} onChange={(event) => setGrant({ ...grant, amount: event.target.value })} className="mt-2 min-h-11 w-full rounded-xl border border-slate-200 p-3 disabled:bg-slate-50" /></label><label className="text-sm text-slate-600">活动说明<input aria-label="活动说明" maxLength={100} disabled={busy || Boolean(grant.userIds)} value={grant.note} placeholder="例如：国庆活动赠送" onChange={(event) => setGrant({ ...grant, note: event.target.value })} className="mt-2 min-h-11 w-full rounded-xl border border-slate-200 p-3 disabled:bg-slate-50" /></label></div>
+        {grant.userIds && <div role="status" className="mt-4 rounded-xl bg-blue-50 p-4 text-sm leading-7 text-blue-800">将为 <strong>{grant.userIds.length}</strong> 个账号，每人增加 <strong>{Number(grant.amount).toLocaleString()}</strong> 积分，总计 <strong>{(grant.userIds.length * Number(grant.amount)).toLocaleString()}</strong> 积分。说明：{grant.note}<p className="text-xs">确认后直接入账。网络异常时可再次确认，同一笔活动不会重复发放。</p></div>}
+        <div className="mt-4 flex flex-wrap gap-2"><button type="button" disabled={busy} onClick={() => void sendGrant()} className="min-h-11 rounded-xl bg-blue-600 px-5 text-sm font-semibold text-white disabled:opacity-50">{busy ? '处理中…' : grant.userIds ? '确认发放' : '预览发放范围'}</button><button type="button" disabled={busy} onClick={() => setGrant(null)} className="min-h-11 rounded-xl border border-slate-200 px-4 text-sm text-slate-600 disabled:opacity-50">取消</button>{grant.userIds && <button type="button" disabled={busy} onClick={() => setGrant({ ...grant, userIds: null })} className="min-h-11 px-3 text-xs text-blue-600 disabled:opacity-50">重新确认名单</button>}</div>
+      </section>}
 
       {(creating || editing) && (
         <div className="mb-6 rounded-2xl border border-[#e6ebf2] bg-white p-5 shadow-sm">
@@ -138,10 +191,16 @@ export default function UsersPage() {
       )}
 
       <div className="overflow-hidden rounded-2xl border border-[#e6ebf2] bg-white shadow-sm">
-        {users.length === 0 ? (
-          <p className="px-5 py-16 text-center text-sm text-[#94a3b8]">还没有用户</p>
+        <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 p-4">
+          <label className="relative min-w-0 flex-1 basis-60"><IconSearch className="absolute left-3 top-3.5 h-4 w-4 text-slate-400" /><input aria-label="搜索用户" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索昵称、账号、邮箱、备注或 IP" className="min-h-11 w-full rounded-xl border border-slate-200 py-2 pl-9 pr-3 text-sm outline-none focus:border-blue-400" /></label>
+          <select aria-label="筛选角色" value={role} onChange={(event) => setRole(event.target.value)} className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-xs"><option value="all">全部角色</option><option value="user">普通用户</option><option value="admin">站长</option></select>
+          <select aria-label="筛选状态" value={status} onChange={(event) => setStatus(event.target.value)} className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-xs"><option value="all">全部状态</option><option value="enabled">正常账号</option><option value="disabled">停用账号</option></select>
+          <select aria-label="用户排序" value={sort} onChange={(event) => setSort(event.target.value)} className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-xs"><option value="newest">最新注册</option><option value="balance">积分从高到低</option><option value="spent">消耗从高到低</option></select>
+        </div>
+        {loading || filtered.length === 0 ? (
+          <p className="px-5 py-16 text-center text-sm text-[#94a3b8]">{loading ? '正在加载用户…' : users.length ? '没有符合条件的用户，请调整搜索或筛选' : '还没有用户'}</p>
         ) : (
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto"><table className="w-full min-w-[850px] text-sm">
             <thead>
               <tr className="border-b border-[#f1f5f9] text-left text-xs text-[#94a3b8]">
                 <th className="px-5 py-3.5 font-medium">用户</th>
@@ -154,11 +213,13 @@ export default function UsersPage() {
               </tr>
             </thead>
             <tbody>
-              {users.map((u) => (
-                <tr key={u.id} className="border-b border-[#f8fafc] last:border-0">
+              {visible.map((u) => (
+                <tr key={u.id} className="border-b border-[#f1f5f9] transition hover:bg-blue-50/40 last:border-0">
                   <td className="px-5 py-3">
                     <p className="font-medium">{u.displayName || u.username}</p>
                     <p className="text-xs text-[#94a3b8]">@{u.username}</p>
+                    {u.email && <p className="mt-1 max-w-52 truncate text-xs text-slate-400" title={u.email}>{u.email}</p>}
+                    {u.note && <p className="mt-1 max-w-52 truncate text-xs text-slate-400" title={u.note}>备注：{u.note}</p>}
                   </td>
                   <td className="px-5 py-3">
                     <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${u.role === 'admin' ? 'bg-[#f5f3ff] text-[#7c3aed]' : 'bg-slate-100 text-slate-500'}`}>
@@ -166,7 +227,7 @@ export default function UsersPage() {
                     </span>
                   </td>
                   <td className="px-5 py-3 font-semibold text-[#2563eb]">{u.balance.toLocaleString()}</td>
-                  <td className="px-5 py-3 text-[#64748b]">{u.createdVia}</td>
+                  <td className="px-5 py-3 text-[#64748b]">{{ admin: '后台创建', email: '邮箱注册', wechat: '微信登录' }[u.createdVia] || u.createdVia || '—'}<p className="mt-1 whitespace-nowrap text-[11px] text-slate-400">{u.createdAt ? new Date(u.createdAt).toLocaleDateString('zh-CN') : '—'}</p></td>
                   <td className="px-5 py-3">
                     {u.registerIp ? (
                       <span className="flex items-center gap-1.5 font-mono text-xs text-[#64748b]">
@@ -186,16 +247,17 @@ export default function UsersPage() {
                   </td>
                   <td className="px-5 py-3">
                     <div className="flex items-center justify-end gap-1">
-                      <button type="button" onClick={() => openBalanceEdit(u)} className="rounded px-2 py-1 text-xs text-[#2563eb] transition hover:bg-[#eff6ff]">调积分</button>
-                      <button type="button" onClick={() => openEdit(u)} className="rounded p-1.5 text-[#64748b] transition hover:bg-[#f1f5f9] hover:text-[#2563eb]" title="编辑"><IconEdit className="h-4 w-4" /></button>
-                      <button type="button" onClick={() => remove(u)} className="rounded p-1.5 text-[#64748b] transition hover:bg-red-50 hover:text-red-500" title="删除"><IconTrash className="h-4 w-4" /></button>
+                      <button type="button" disabled={busy} onClick={() => openBalanceEdit(u)} className="min-h-11 whitespace-nowrap rounded-xl px-2 text-xs text-[#2563eb] transition hover:bg-[#eff6ff] disabled:opacity-50">调积分</button>
+                      <button type="button" disabled={busy} aria-label={`编辑用户 ${u.username}`} onClick={() => openEdit(u)} className="flex h-11 w-11 items-center justify-center rounded-xl text-[#64748b] transition hover:bg-[#f1f5f9] hover:text-[#2563eb] disabled:opacity-50" title="编辑"><IconEdit className="h-4 w-4" /></button>
+                      <button type="button" disabled={busy || u.role === 'admin'} aria-label={`删除用户 ${u.username}`} onClick={() => remove(u)} className="flex h-11 w-11 items-center justify-center rounded-xl text-[#64748b] transition hover:bg-red-50 hover:text-red-500 disabled:opacity-30" title={u.role === 'admin' ? '不能直接删除站长账号' : '删除'}><IconTrash className="h-4 w-4" /></button>
                     </div>
                   </td>
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 text-xs text-slate-500"><span>符合条件 {filtered.length} 个 · 全部 {users.length} 个</span><div className="flex items-center gap-3"><button type="button" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)} className="min-h-11 rounded-xl border border-slate-200 px-3 disabled:opacity-40">上一页</button><span>{currentPage} / {pages}</span><button type="button" disabled={currentPage === pages} onClick={() => setPage(currentPage + 1)} className="min-h-11 rounded-xl border border-slate-200 px-3 disabled:opacity-40">下一页</button></div></div>
       </div>
       {/* 余额调整弹层：替代原生 prompt，风格与全站一致 */}
       {balanceEdit && (

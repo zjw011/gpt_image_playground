@@ -2,7 +2,8 @@
 // 这是整个服务端唯一一处"用户资产"，写盘、扣费、退还任何一处出错都是真实的钱账问题，
 // 所以这里重点盯三件事：余额算得对、余额不足时绝不扣、以及重启后数据不丢。
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import * as durable from './durableJson.mjs'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -15,6 +16,7 @@ import {
   getAccount,
   getBalance,
   grantSignupBonus,
+  grantAllCredits,
   initCredits,
   listLedger,
   recordLuckyFree,
@@ -29,6 +31,113 @@ import {
 function freshDir() {
   return mkdtempSync(join(tmpdir(), 'gip-credits-'))
 }
+
+describe('grantAllCredits', () => {
+  const options = { requestId: 'campaign-test-000001', actorId: 'admin', note: '国庆活动赠送' }
+
+  it('主文件提交失败时内存余额和收据均不改变，可安全重试', () => {
+    initCredits(freshDir())
+    addCredits('u1', 20)
+    const spy = vi.spyOn(durable, 'writeDurableJson').mockImplementationOnce(() => { throw new Error('模拟磁盘写入失败') })
+    try {
+      expect(() => grantAllCredits(['u1', 'u2'], 100, options)).toThrow('模拟磁盘')
+      expect(getBalance('u1')).toBe(20)
+      expect(getBalance('u2')).toBe(0)
+    } finally { spy.mockRestore() }
+    expect(grantAllCredits(['u1', 'u2'], 100, options).duplicated).toBe(false)
+    expect(getBalance('u1')).toBe(120)
+  })
+
+  it('主文件已提交但备份失败时仍同步内存，不重复发放', () => {
+    initCredits(freshDir())
+    const write = durable.writeDurableJson
+    const spy = vi.spyOn(durable, 'writeDurableJson').mockImplementationOnce((...args) => { write(...args); throw new Error('模拟备份失败') })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(grantAllCredits(['u1'], 100, options).ok).toBe(true)
+      expect(getBalance('u1')).toBe(100)
+      expect(grantAllCredits(['u1'], 100, options).duplicated).toBe(true)
+    } finally { spy.mockRestore(); warn.mockRestore() }
+  })
+
+  it('增加而非覆盖所有账号余额，写入说明、收入和流水', () => {
+    const dir = freshDir()
+    initCredits(dir)
+    addCredits('old', 20)
+    const result = grantAllCredits(['old', 'new'], 100, options)
+    expect(result).toMatchObject({ ok: true, count: 2, total: 200, duplicated: false })
+    expect(getBalance('old')).toBe(120)
+    expect(getBalance('new')).toBe(100)
+    expect(getAccount('old').totalIn).toBe(120)
+    expect(listLedger('old')[0]).toMatchObject({ type: 'admin', amount: 100, note: '活动赠送：国庆活动赠送', ref: options.requestId })
+    expect(JSON.parse(readFileSync(join(dir, 'credits.json'), 'utf-8')).users.old.balance).toBe(120)
+  })
+
+  it('并发顺序调用、重启及清空统计后同一收据仍防重复', () => {
+    const dir = freshDir()
+    initCredits(dir)
+    grantAllCredits(['u1', 'u2'], 100, options)
+    expect(grantAllCredits(['u2', 'u1'], 100, options).duplicated).toBe(true)
+    resetCreditStats()
+    initCredits(dir)
+    expect(grantAllCredits(['u1', 'u2'], 100, { ...options, validateRoster: ['u1', 'u2', 'later'] }).duplicated).toBe(true)
+    expect(getBalance('u1')).toBe(100)
+  })
+
+  it.each([0, -1, 1.5, '100', Infinity, 100000001])('拒绝非法金额 %s 且不写账', (amount) => {
+    initCredits(freshDir())
+    expect(() => grantAllCredits(['u1'], amount, options)).toThrow()
+    expect(getBalance('u1')).toBe(0)
+    expect(listLedger('u1')).toEqual([])
+  })
+
+  it('余额超限整批拒绝，没有先给前面的账号加分', () => {
+    initCredits(freshDir())
+    setBalance('z', 100000000)
+    expect(() => grantAllCredits(['a', 'z'], 100, options)).toThrow('上限')
+    expect(getBalance('a')).toBe(0)
+    expect(getBalance('z')).toBe(100000000)
+  })
+
+  it('收据不能更改金额、说明或领取人', () => {
+    initCredits(freshDir())
+    grantAllCredits(['u1'], 100, options)
+    expect(() => grantAllCredits(['u1'], 200, options)).toThrow('编号')
+    expect(() => grantAllCredits(['u2'], 100, options)).toThrow('编号')
+    expect(() => grantAllCredits(['u1'], 100, { ...options, note: '其他活动' })).toThrow('编号')
+    expect(getBalance('u1')).toBe(100)
+    expect(getBalance('u2')).toBe(0)
+  })
+
+  it('名单变化、重复账号、空列表、无说明均不发放', () => {
+    initCredits(freshDir())
+    expect(() => grantAllCredits(['u1'], 100, { ...options, validateRoster: ['u1', 'u2'] })).toThrow('名单已变化')
+    expect(() => grantAllCredits(['u1', 'u1'], 100, options)).toThrow('列表')
+    expect(() => grantAllCredits([], 100, options)).toThrow('列表')
+    expect(() => grantAllCredits(['u1'], 100, { ...options, note: '' })).toThrow('说明')
+    expect(getBalance('u1')).toBe(0)
+  })
+
+  it('超过 800 人的活动每人仍有记录，重启后也保留', () => {
+    const dir = freshDir()
+    initCredits(dir)
+    const ids = Array.from({ length: 810 }, (_, idx) => `u${idx}`)
+    grantAllCredits(ids, 100, options)
+    initCredits(dir)
+    expect(ids.every((id) => getBalance(id) === 100 && listLedger(id)[0]?.amount === 100)).toBe(true)
+  })
+
+  it('损坏的活动收据不能静默清空后再次发放', () => {
+    const dir = freshDir()
+    initCredits(dir)
+    grantAllCredits(['u1'], 100, options)
+    const file = join(dir, 'credits.json')
+    const saved = JSON.parse(readFileSync(file, 'utf-8'))
+    saved.grants[options.requestId] = {}
+    writeFileSync(file, JSON.stringify(saved))
+    expect(() => initCredits(dir)).toThrow('发放记录损坏')
+  })
+})
 
 describe('spendCredits', () => {
   it('正常扣费并同步写盘，不需要 flush', () => {

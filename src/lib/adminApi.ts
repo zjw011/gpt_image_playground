@@ -223,6 +223,10 @@ export function setUserBalance(userId: string, balance: number, note = '管理�
   return request<{ ok: boolean, balance: number, changed: boolean }>(`/api/admin/credits/users/${encodeURIComponent(userId)}`, { method: 'PUT', body: JSON.stringify({ balance, note }) })
 }
 
+export function grantAllUserCredits(body: { requestId: string, userIds: string[], amount: number, note: string }) {
+  return request<{ ok: boolean, count: number, total: number, duplicated: boolean }>('/api/admin/credits/grant-all', { method: 'POST', body: JSON.stringify(body) })
+}
+
 // ===== 卡密 =====
 export type CardStatus = 'unused' | 'used' | 'void'
 

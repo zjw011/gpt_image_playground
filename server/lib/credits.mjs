@@ -7,12 +7,13 @@
 // 另一个约束是**零运行时依赖**：不引入任何三方库，金额一律用整数积分，
 // 不做浮点运算，避免 0.1+0.2 那种经典问题。
 
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 
 import { readDurableJson, writeDurableJson } from './durableJson.mjs'
 
-/** 流水只留最近这些条。够后台翻"最近发生了什么"，又不会让文件无限膨胀。 */
+/** 全站近期流水保留数量；另外保留每个用户最近 50 条，避免大活动挤掉个人记录。 */
 const MAX_LEDGER = 800
 
 /** 按天聚合保留这么多天。积分台账比用量统计值得留久一点。 */
@@ -42,7 +43,17 @@ let cache = null
 let ledgerSeq = 0
 
 function emptyCredits() {
-  return { version: 1, users: {}, ledger: [], days: {}, updatedAt: 0 }
+  return { version: 1, users: {}, ledger: [], days: {}, grants: {}, updatedAt: 0 }
+}
+
+// 保留全站近期流水及每个用户最近 50 条，批量活动不能把前面用户的记录挤掉。
+function retainLedger(entries) {
+  const counts = new Map()
+  return [...entries].reverse().filter((entry, idx) => {
+    const count = (counts.get(entry.userId) ?? 0) + 1
+    counts.set(entry.userId, count)
+    return idx < MAX_LEDGER || count <= 50
+  }).reverse()
 }
 
 function isRecord(value) {
@@ -115,7 +126,6 @@ function normalizeCredits(input) {
   if (Array.isArray(record.ledger)) {
     next.ledger = record.ledger
       .filter(isRecord)
-      .slice(-MAX_LEDGER)
       .map((raw) => ({
         at: toInt(raw.at),
         userId: typeof raw.userId === 'string' ? raw.userId : '',
@@ -125,6 +135,15 @@ function normalizeCredits(input) {
         ref: typeof raw.ref === 'string' ? raw.ref.slice(0, 80) : '',
         note: typeof raw.note === 'string' ? raw.note.slice(0, 120) : '',
       }))
+    next.ledger = retainLedger(next.ledger)
+  }
+
+  if (record.grants !== undefined) {
+    if (!isRecord(record.grants)) throw new Error('活动积分发放记录损坏，请恢复账本后再启动')
+    for (const [id, grant] of Object.entries(record.grants)) {
+      if (!/^[a-zA-Z0-9-]{16,80}$/.test(id) || !isRecord(grant) || !/^[a-f0-9]{64}$/.test(grant.fingerprint) || !Number.isSafeInteger(grant.count) || grant.count < 1 || !Number.isSafeInteger(grant.total) || grant.total < 1 || !Number.isSafeInteger(grant.at)) throw new Error('活动积分发放记录损坏，请恢复账本后再启动')
+      next.grants[id] = { fingerprint: grant.fingerprint, count: grant.count, total: grant.total, at: grant.at }
+    }
   }
 
   if (isRecord(record.days)) {
@@ -170,7 +189,57 @@ function touchDay(at) {
 
 function pushLedger(entry) {
   cache.ledger.push(entry)
-  if (cache.ledger.length > MAX_LEDGER) cache.ledger.splice(0, cache.ledger.length - MAX_LEDGER)
+  if (cache.ledger.length > MAX_LEDGER) cache.ledger = retainLedger(cache.ledger)
+}
+
+/** 整笔活动只提交一次账本，收据与余额一同落盘，重启/网络重试不会重复赠送。 */
+export function grantAllCredits(userIds, amount, options) {
+  if (!Number.isSafeInteger(amount) || amount <= 0 || amount > MAX_AMOUNT) throw new Error('每人积分必须为 1–100000000 的整数')
+  if (!/^[a-zA-Z0-9-]{16,80}$/.test(options.requestId ?? '')) throw new Error('无效的发放编号')
+  if (typeof options.note !== 'string' || !options.note.trim() || options.note.trim().length > 100) throw new Error('请填写 1–100 字的活动说明')
+  if (!Array.isArray(userIds) || !userIds.length || userIds.some((id) => typeof id !== 'string' || !id) || new Set(userIds).size !== userIds.length) throw new Error('发放用户列表无效')
+  const ids = [...userIds].sort()
+  const total = amount * ids.length
+  if (!Number.isSafeInteger(total)) throw new Error('总积分超出安全范围')
+  const note = options.note.trim()
+  const fingerprint = createHash('sha256').update(JSON.stringify([options.actorId, ids, amount, note])).digest('hex')
+  const existing = cache.grants[options.requestId]
+  if (existing) {
+    if (existing.fingerprint !== fingerprint) throw new Error('该发放编号已用于其他活动，请重新确认')
+    return { ok: true, count: existing.count, total: existing.total, at: existing.at, duplicated: true }
+  }
+  if (options.validateRoster && JSON.stringify(ids) !== JSON.stringify([...options.validateRoster].sort())) {
+    const err = new Error('用户名单已变化，本次未发放，请刷新名单后重新确认')
+    err.code = 'ROSTER_CHANGED'
+    throw err
+  }
+  for (const id of ids) {
+    const account = getAccount(id)
+    if (account.balance + amount > MAX_AMOUNT || account.totalIn + amount > MAX_AMOUNT) throw new Error('有用户的余额或累计收入将超过积分上限，本次未发放')
+  }
+  const at = Date.now()
+  const next = structuredClone(cache)
+  for (const id of ids) {
+    const account = getAccount(id)
+    next.users[id] = { ...account, balance: account.balance + amount, totalIn: account.totalIn + amount, updatedAt: at }
+    next.ledger.push({ at, userId: id, type: 'admin', amount, balanceAfter: next.users[id].balance, ref: options.requestId, note: `活动赠送：${note}` })
+  }
+  next.ledger = retainLedger(next.ledger)
+  const key = dayKey(at)
+  next.days[key] = { ...(next.days[key] ?? emptyDay()), recharge: (next.days[key]?.recharge ?? 0) + total }
+  for (const stale of Object.keys(next.days).sort().slice(0, -MAX_DAYS)) delete next.days[stale]
+  next.grants[options.requestId] = { fingerprint, count: ids.length, total, at }
+  next.updatedAt = at
+  try {
+    writeDurableJson(creditsFile, next, true)
+  } catch (err) {
+    // 主文件已替换但备份失败时仍视为已提交；不能回滚内存后让同一请求再次加分。
+    const saved = JSON.parse(readFileSync(creditsFile, 'utf-8'))
+    if (saved.grants?.[options.requestId]?.fingerprint !== fingerprint) throw err
+    console.warn('活动积分已提交，但账本备份写入失败', err)
+  }
+  cache = next
+  return { ok: true, count: ids.length, total, at, duplicated: false }
 }
 
 // ===== 账户 =====
