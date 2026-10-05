@@ -32,18 +32,26 @@ from urllib.parse import quote, unquote, urlparse
 __all__ = [
     "DEFAULT_SCHEME", "SCHEMES", "CHECK_URLS",
     "normalize_line", "normalize_many", "mask", "hostport", "proxies_map",
-    "is_socks", "check", "is_proxy_error", "Provider", "provider_from_rows",
-    "socks_ready", "describe_pool",
+    "is_socks", "check", "is_proxy_error", "explain", "Provider",
+    "provider_from_rows", "socks_ready", "describe_pool",
 ]
 
 DEFAULT_SCHEME = "socks5h"
 SCHEMES = ("socks5h", "socks5", "socks4", "http", "https")
 
 # 出口 IP 探测地址（按顺序试，第一个通的就用）
+#
+# ★ 国内优先，而且**必须有国内站**。
+#   踩过的坑：原先三个全是国外站（api.ipify.org / ip-api.com / ifconfig.me），
+#   用户买的是**国内 IP**。国内代理的出口对国外站不保证通 —— 于是好代理也被
+#   测成「没测通」。国内站还能顺带确认「代理是不是只能出国内」。
+#   另外 api.ipify.org 在本机直连就返回 502（上游连接被拒），本来就不该排第一。
 CHECK_URLS = (
-    "http://api.ipify.org",
-    "http://ip-api.com/json",
-    "http://ifconfig.me/ip",
+    "http://ip.3322.net/",                    # 国内，纯文本回显 IP，最快最稳
+    "http://myip.ipip.net/",                  # 国内，回显 IP + 归属地
+    "http://members.3322.org/dyndns/getip",   # 国内，纯文本回显
+    "http://ifconfig.me/ip",                  # 国外，纯文本
+    "http://ip-api.com/json",                 # 国外，JSON
 )
 _IP_RE = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
 _IP_HEADERS = ("x-forwarded-for", "x-real-ip", "x-client-ip")
@@ -210,43 +218,134 @@ def check(url, timeout=8, check_urls=None):
     """探一次代理。返回 ``(ok, exit_ip, latency_ms, err)``。
 
     出口 IP 拿不到但请求本身成功，也算通（有些代理会吞掉回显）。
-    代理本身连不上（SOCKS 握手就超时）时**不再换下一个探测地址**，
-    直接返回 —— 否则一个死代理要把三个地址各等一遍，批量检测会慢到没法用。
+
+    ``err`` 是**给人看的一句话**（见 :func:`explain`），不是 requests 那串
+    ``SOCKSHTTPConnectionPool(...)`` —— 那玩意儿对用户毫无意义。
+
+    只有「代理地址本身连不上」或「代理拒绝我们」时才会在第一个地址就放弃；
+    如果只是**某个探测站**过不去，会继续试下一个（见 :func:`_proxy_dead`）。
     """
     import requests
     prox = proxies_map(url)
+    urls = tuple(check_urls or CHECK_URLS)
     last_err = "没试成功"
     t0 = time.time()
-    for cu in (check_urls or CHECK_URLS):
+    for cu in urls:
         try:
             r = requests.get(cu, proxies=prox, timeout=timeout,
                              headers={"User-Agent": "Mozilla/5.0"})
             ms = int((time.time() - t0) * 1000)
             if r.status_code >= 400:
-                last_err = "HTTP %s" % r.status_code
+                last_err = "探测站返回 HTTP %s" % r.status_code
                 t0 = time.time()
                 continue
             ip = _extract_ip(r.text[:400], r.headers)
             return True, ip or "", ms, None
         except Exception as e:
-            last_err = _short(e)
+            last_err = explain(e)
             if _proxy_dead(e):
                 return False, "", int((time.time() - t0) * 1000), last_err
             t0 = time.time()
+    if len(urls) > 1:
+        # 代理连得上，但每个探测地址都被挡 —— 说清楚，别让用户以为代理坏了
+        last_err = "%d 个探测地址都不通：%s" % (len(urls), last_err)
     return False, "", int((time.time() - t0) * 1000), last_err
 
 
-def _proxy_dead(e):
-    """异常说明「代理地址本身连不上」（而不是探测站点的问题）。
+def _chain_text(e):
+    """把异常链（``__cause__``/``__context__``）里所有类名和消息拼成一串。
 
-    走 SOCKS 时代理不可达，requests 报的是 ``SOCKSConnectionPool(...)``
-    或 ``ConnectTimeoutError(<SOCKSConnection ...>)``。
+    ★ 必须走整条链。以「连不上代理」为例，最外层是::
+
+        SOCKSHTTPConnectionPool(...): Max retries exceeded with url: /
+        (Caused by NewConnectionError("SOCKSConnection(...): Failed to establish
+         a new connection: [WinError 10061] 由于目标计算机积极拒绝，无法连接。"))
+
+    这句话里**既没有** "connecting to SOCKS5 proxy"，**也没有**任何能区分
+    「代理挂了」和「目标挂了」的信息 —— 真正有用的那句在链尾的
+    ``ProxyConnectionError: Error connecting to SOCKS5 proxy 127.0.0.1:1: ...``。
+    只看最外层就什么也判断不出来。
     """
-    s = "%s %s" % (type(e).__name__, e)
-    return any(k in s for k in (
-        "SOCKSConnection", "ProxyConnectionError", "ProxyError",
-        "Cannot connect to proxy", "Invalid SOCKS",
-    ))
+    parts, seen = [], 0
+    cur = e
+    while cur is not None and seen < 8:
+        parts.append(type(cur).__name__)
+        parts.append(str(cur).replace("\n", " "))
+        nxt = cur.__cause__ or getattr(cur, "__context__", None)
+        if nxt is cur:
+            break
+        cur, seen = nxt, seen + 1
+    return " | ".join(parts)
+
+
+def _proxy_dead(e):
+    """异常是否说明「代理本身用不了」—— 换探测地址也没用，可以立刻放弃。
+
+    ★ 这里踩过一个很贵的坑。
+    走 socks 时 requests 的连接池类名就叫 ``SOCKSConnectionPool``，
+    于是**隧道里目标连不上**的异常字符串里必然含 "SOCKSConnection"。
+    早先的实现是 ``any(k in s for k in ("SOCKSConnection", ...))`` ——
+    等于把「代理能用、只是这个目标站被挡了」也判成「代理死了」，
+    check() 立刻 return，**根本不去试后面的探测地址**，
+    一个好代理就这么被判了死刑（真实案例：国内 s5 拒了 api.ipify.org，
+    三个探测地址里第一个就不通 → 用户看到「没测通」）。
+
+    正确做法：只认那几种**与目标无关**的失败 ——
+      ① 连不上代理服务器本身（ProxyConnectionError / 连 SOCKS 代理失败）
+      ② 代理不接受我们（0xFF：白名单没绑，或要账号密码）
+    """
+    s = _chain_text(e).lower()
+    for k in (
+        "connecting to socks",              # PySocks: Error connecting to SOCKS5 proxy
+        "can't connect to proxy",
+        "cannot connect to proxy",
+        "unable to connect to proxy",       # requests: 走 http(s) 代理时
+        "proxyconnectionerror",
+        "invalid socks",
+        "authentication methods were rejected",   # 0xFF
+        "socks5autherror",
+        "socks5 authentication failed",
+    ):
+        if k in s:
+            return True
+    return False
+
+
+def explain(err):
+    """把底层异常翻译成**一句人话**，给界面显示用。
+
+    用户看到 ``SOCKSHTTPConnectionPool(host='api.ipify.org', port=80):
+    Max retries exceeded with url: / (Caused by NewConnectionError(...))``
+    是没法行动的；看到「代理拒绝连接：没通过它的认证，免密 s5 靠来源 IP
+    白名单认人」才知道该去服务商后台干什么。
+    """
+    s = _chain_text(err).lower()
+    for k, msg in _HINTS:
+        if k in s:
+            return msg
+    # 认不出来就给压短的原文，别编
+    return _short(err)
+
+
+# 顺序有讲究：先匹配最具体的，再匹配笼统的
+_HINTS = (
+    ("authentication methods were rejected",
+     "代理拒绝连接：没通过它的认证。免密的 s5 靠「来源 IP 白名单」认人 —— "
+     "去服务商后台把这台机器的公网 IP 加进白名单（或换成账号密码模式）"),
+    ("socks5 authentication failed", "代理拒绝连接：用户名/密码不对"),
+    ("connecting to socks", "连不上代理服务器本身：地址或端口不对，也可能这个 IP 已过期"),
+    ("can't connect to proxy", "连不上代理服务器本身：地址或端口不对，也可能这个 IP 已过期"),
+    ("cannot connect to proxy", "连不上代理服务器本身：地址或端口不对，也可能这个 IP 已过期"),
+    ("unable to connect to proxy", "连不上代理服务器本身：地址或端口不对，也可能这个 IP 已过期"),
+    ("invalid socks", "这个地址不是合法的 SOCKS 代理（协议或端口不对）"),
+    ("general socks server failure", "代理内部故障：它自己也连不上目标站"),
+    ("connection closed unexpectedly", "代理中途把连接断了：常见于并发数或频率超限"),
+    ("host unreachable", "目标站不可达"),
+    ("network unreachable", "网络不可达"),
+    ("connection refused", "目标站拒绝了连接"),
+    ("timed out", "超时：代理无响应"),
+    ("timeout", "超时：代理无响应"),
+)
 
 
 def _short(e):

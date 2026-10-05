@@ -288,7 +288,7 @@ def main():
     ck("没有把全角引号当语法引号用", not bad_quote, bad_quote)
 
     # ============================================================== 代理 IP
-    sec("⑭ 代理 IP：解析 / 打码 / 选择策略")
+    sec("⑬ 代理 IP：解析 / 打码 / 选择策略")
     from webapp import proxies as PX
 
     ck("裸 host:port 默认补 socks5h",
@@ -374,8 +374,63 @@ def main():
        PX.is_proxy_error("SOCKSConnectionPool: Max retries exceeded")
        and not PX.is_proxy_error("json decode error"))
 
+    # ============================================================== 探测 / 故障分类
+    sec("⑭ 代理探测与故障分类（这两条都是真机踩出来的）")
+
+    # 坑三：探测地址必须国内优先。原先三个全是国外站（api.ipify.org /
+    # ip-api.com / ifconfig.me），而用户买的是**国内 IP** —— 国内代理的出口对
+    # 国外站不保证通，于是好代理也被测成「没测通」。而且 api.ipify.org 在本机
+    # 直连就返回 502，本来就不该排第一。
+    ck("CHECK_URLS 里有国内探测地址",
+       any(("3322" in u or "ipip" in u) for u in PX.CHECK_URLS), PX.CHECK_URLS)
+    ck("CHECK_URLS 不再把 api.ipify.org 排第一",
+       "api.ipify.org" not in PX.CHECK_URLS[0], PX.CHECK_URLS)
+
+    # 坑四：_proxy_dead 不能把「隧道里目标连不上」当成「代理死了」。
+    # 走 socks 时 requests 的连接池类名就叫 SOCKSConnectionPool，按子串匹配
+    # SOCKSConnection 会把**任何**隧道内失败都判死 → check() 在第一个探测地址就
+    # return，后面的地址一个都不试 → 一个好代理被判死刑。
+    def _mk(pairs):
+        prev = None
+        for cname, msg in reversed(pairs):
+            e = type(cname, (Exception,), {})(msg)
+            if prev is not None:
+                e.__cause__ = prev
+            prev = e
+        return prev
+
+    _dead = _mk([("ConnectionError",
+                  "SOCKSHTTPConnectionPool(host='a', port=80): Max retries exceeded"),
+                 ("NewConnectionError", "Failed to establish a new connection"),
+                 ("ProxyConnectionError",
+                  "Error connecting to SOCKS5 proxy 1.2.3.4:1080: refused")])
+    _tgt = _mk([("ConnectionError",
+                 "SOCKSHTTPConnectionPool(host='a', port=80): Max retries exceeded "
+                 "(Caused by NewConnectionError(\"SOCKSConnection(host='a', port=80)\"))"),
+                ("NewConnectionError", "Failed to establish a new connection"),
+                ("SOCKS5Error", "0x05: Connection refused")])
+    _blk = _mk([("GeneralProxyError",
+                 "Socket error: All offered SOCKS5 authentication methods were rejected"),
+                ("SOCKS5AuthError",
+                 "All offered SOCKS5 authentication methods were rejected")])
+
+    ck("_proxy_dead：连不上代理本身 → 判死（可以立刻放弃）",
+       PX._proxy_dead(_dead) is True)
+    ck("★ _proxy_dead：隧道内目标被拒 → 不判死（必须接着试下一个探测地址）",
+       PX._proxy_dead(_tgt) is False, PX._proxy_dead(_tgt))
+    ck("_proxy_dead：代理拒绝我们（0xFF 白名单）→ 判死（换地址也没用）",
+       PX._proxy_dead(_blk) is True)
+
+    # 坑五：错误信息必须是人话。用户看到 SOCKSHTTPConnectionPool(...) 没法行动。
+    ck("explain() 把 0xFF 说成「白名单/认证」而不是甩 requests 原文",
+       "白名单" in PX.explain(_blk), PX.explain(_blk))
+    ck("explain() 认得出「连不上代理服务器本身」",
+       "连不上代理服务器本身" in PX.explain(_dead), PX.explain(_dead))
+    ck("explain() 认不出的异常回退成压短原文（不瞎编）",
+       "json decode error" in PX.explain(ValueError("json decode error")))
+
     # ============================================================== 前端源码守卫
-    sec("⑭ 前端源码守卫（这几条都是踩过的坑）")
+    sec("⑮ 前端源码守卫（这几条都是踩过的坑）")
     appjs = open(os.path.join(ROOT, "webapp", "static", "app.js"),
                  encoding="utf-8").read()
 
@@ -400,7 +455,7 @@ def main():
            "session.close()" in src or "sess.close()" in src)
 
     # ============================================================== 路由
-    sec("⑮ 路由清单")
+    sec("⑯ 路由清单")
     # FastAPI 0.14x 起 app.routes 里子路由是 _IncludedRouter（不展开），
     # 所以用 openapi() 拿真实的路径清单，这才是「服务端真的认的」那套。
     paths = set(webapp.main.app.openapi().get("paths", {}).keys())
