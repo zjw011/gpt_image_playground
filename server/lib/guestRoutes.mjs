@@ -11,6 +11,7 @@ import { getConfig, getEnabledChannels, inviteStatus, isSmtpConfigured, toPublic
 import { handleWechatCallback, pollWechatLogin, serveFixedQrcode, serveSceneQrcode, startWechatLogin } from './wechatRoutes.mjs'
 import { handleGalleryRoute } from './galleryRoutes.mjs'
 import { inviteStats } from './referral.mjs'
+import { handleImageCleanup } from './imageCleanup.mjs'
 
 /** 共享工作区标识：open / passcode 模式下所有人同一个本地仓库。 */
 const SHARED_WORKSPACE_ID = 'shared'
@@ -228,6 +229,8 @@ export async function handleGuestRoute(req, res, ctx) {
       ...userCreditsView(ctx.user.id, 60),
     })
   }
+
+  if (ctx.path === '/api/image-cleanup') return handleImageCleanup(req, res, ctx)
 
   if (ctx.path.startsWith('/api/relay/')) {
     if (!gateOpen) throw new HttpError(401, accessMode === 'accounts' || accessMode === 'wechat' ? '需要登录' : '需要访问口令')

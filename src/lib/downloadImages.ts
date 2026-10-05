@@ -2,6 +2,7 @@ import { zipSync } from 'fflate'
 import type { TaskRecord } from '../types'
 import { getNumberedFileNameBase, sanitizeFileNamePart } from './exportFileName'
 import { ensureImageCached } from './imageCache'
+import { cleanVisibleWatermark, type ImageCleanupStatus } from './imageCleanup'
 
 const MIME_EXTENSIONS: Record<string, string> = {
   'image/png': 'png',
@@ -20,11 +21,16 @@ export interface DownloadImageZipEntry {
   fileNameBase?: string
 }
 
+export interface DownloadImageOptions {
+  removeWatermark?: boolean
+  onCleanup?: (status: ImageCleanupStatus | 'failed') => void
+}
+
 type TaskOutputZipTask = Pick<TaskRecord, 'id' | 'createdAt' | 'outputImages'>
 
 export { formatExportFileTime } from './exportFileName'
 
-export async function downloadImageIds(imageIds: string[], fileNameBase = 'images'): Promise<DownloadImagesResult> {
+export async function downloadImageIds(imageIds: string[], fileNameBase = 'images', options: DownloadImageOptions = {}): Promise<DownloadImagesResult> {
   if (imageIds.length === 0) return { successCount: 0, failCount: 0 }
 
   let successCount = 0
@@ -33,7 +39,7 @@ export async function downloadImageIds(imageIds: string[], fileNameBase = 'image
 
   for (let index = 0; index < imageIds.length; index++) {
     try {
-      const blob = await getImageBlob(imageIds[index])
+      const blob = await getImageBlob(imageIds[index], options)
       const order = String(index + 1).padStart(2, '0')
       const fileName = multiple
         ? `${fileNameBase}-${order}.${getBlobExtension(blob)}`
@@ -50,7 +56,7 @@ export async function downloadImageIds(imageIds: string[], fileNameBase = 'image
   return { successCount, failCount }
 }
 
-export async function downloadImageEntriesAsZip(entries: DownloadImageZipEntry[], zipFileNameBase = 'images'): Promise<DownloadImagesResult> {
+export async function downloadImageEntriesAsZip(entries: DownloadImageZipEntry[], zipFileNameBase = 'images', options: DownloadImageOptions = {}): Promise<DownloadImagesResult> {
   if (entries.length === 0) return { successCount: 0, failCount: 0 }
 
   let successCount = 0
@@ -61,7 +67,7 @@ export async function downloadImageEntriesAsZip(entries: DownloadImageZipEntry[]
   for (let index = 0; index < entries.length; index++) {
     const entry = entries[index]
     try {
-      const blob = await getImageBlob(entry.imageId)
+      const blob = await getImageBlob(entry.imageId, options)
       const order = String(index + 1).padStart(2, '0')
       const base = sanitizeFileNamePart(entry.fileNameBase || `image-${order}`) || `image-${order}`
       const ext = getBlobExtension(blob)
@@ -102,7 +108,7 @@ export function getImageZipEntries(imageIds: string[], fileNameBase = 'image'): 
   }))
 }
 
-async function getImageBlob(imageIdOrUrl: string): Promise<Blob> {
+async function getImageBlob(imageIdOrUrl: string, options: DownloadImageOptions): Promise<Blob> {
   let src = imageIdOrUrl
   if (!imageIdOrUrl.startsWith('data:') && !imageIdOrUrl.startsWith('http://') && !imageIdOrUrl.startsWith('https://')) {
     src = await ensureImageCached(imageIdOrUrl) ?? imageIdOrUrl
@@ -110,7 +116,17 @@ async function getImageBlob(imageIdOrUrl: string): Promise<Blob> {
 
   const res = await fetch(src)
   if (!res.ok && !src.startsWith('data:')) throw new Error(`读取图片失败：${imageIdOrUrl}`)
-  return await res.blob()
+  const blob = await res.blob()
+  if (!options.removeWatermark) return blob
+  try {
+    const result = await cleanVisibleWatermark(blob)
+    options.onCleanup?.(result.status)
+    return result.blob
+  } catch (err) {
+    console.warn('水印处理失败，保留原图下载', err)
+    options.onCleanup?.('failed')
+    return blob
+  }
 }
 
 function triggerDownload(blob: Blob, fileName: string) {

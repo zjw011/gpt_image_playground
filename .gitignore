@@ -8,4 +8,6 @@ dev-proxy.config.json
 server-data/
 .tmp-server-data/
 .tmp-check/
+__pycache__/
+*.pyc
 .workbuddy/

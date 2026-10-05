@@ -10,6 +10,8 @@ import { getImage } from '../../lib/db'
 import { exportLiveFrames } from '../../lib/livePhoto'
 import LivePhotoPlayer from '../../components/LivePhotoPlayer'
 import QuickMotionPlayer from '../../components/QuickMotionPlayer'
+import WatermarkDownloadOption from '../../components/WatermarkDownloadOption'
+import { cleanVisibleWatermark, imageCleanupMessage } from '../../lib/imageCleanup'
 import { exportQuickMotion, normalizeQuickMotionOptions } from '../../lib/quickMotion'
 import { isQuickMotionTask } from '../../lib/quickMotionTask'
 import { isLiveProfessionalPreset } from '../../lib/professionalTools'
@@ -65,6 +67,9 @@ export default function ResultPage() {
   const [publishCaption, setPublishCaption] = useState('')
   const [liveFrames, setLiveFrames] = useState<string[]>([])
   const [exportingLive, setExportingLive] = useState(false)
+  const [removeWatermark, setRemoveWatermark] = useState(false)
+  const [cleaning, setCleaning] = useState(false)
+  const cleanupController = useRef<AbortController | null>(null)
   const exportController = useRef<AbortController | null>(null)
   const lastLuckyAt = useCreditsStore((s) => s.lastLuckyAt)
   const imageId = activeImageId && task?.outputImages.includes(activeImageId)
@@ -77,7 +82,15 @@ export default function ResultPage() {
   useCloseOnEscape(publishOpen, () => { if (!publishing) setPublishOpen(false) })
   usePreventBackgroundScroll(publishOpen, publishRef)
 
-  useEffect(() => { setActiveImageId(null) }, [task?.id])
+  useEffect(() => {
+    setActiveImageId(null)
+    setRemoveWatermark(false)
+    setCleaning(false)
+    return () => {
+      cleanupController.current?.abort()
+      cleanupController.current = null
+    }
+  }, [task?.id])
   useEffect(() => {
     setExportingLive(false)
     return () => {
@@ -124,7 +137,7 @@ export default function ResultPage() {
       : '系统已尝试可用渠道但仍未生成图片，本次失败不会扣除积分。'
 
   const download = async () => {
-    if (exportingLive) return
+    if (exportingLive || cleanupController.current) return
     if (quickMotion && fullSrc) {
       const controller = new AbortController()
       exportController.current = controller
@@ -175,6 +188,36 @@ export default function ResultPage() {
       return
     }
     if (!fullSrc) return
+    if (removeWatermark) {
+      const controller = new AbortController()
+      cleanupController.current = controller
+      setCleaning(true)
+      try {
+        const response = await fetch(fullSrc, { signal: controller.signal })
+        if (!response.ok) throw new Error('原图读取失败')
+        const result = await cleanVisibleWatermark(await response.blob(), controller.signal)
+        if (controller.signal.aborted) return
+        const url = URL.createObjectURL(result.blob)
+        const link = document.createElement('a')
+        link.href = url
+        const ext = result.blob.type === 'image/jpeg' ? 'jpg' : result.blob.type === 'image/webp' ? 'webp' : 'png'
+        link.download = `绘想-${task.id}${result.status === 'cleaned' ? '-去水印' : ''}.${ext}`
+        link.click()
+        window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
+        showToast(imageCleanupMessage(result.status), result.status === 'cleaned' ? 'success' : 'info')
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          console.warn('下载副本水印处理失败', err)
+          showToast(`${err instanceof Error ? err.message : '水印处理失败'}；取消勾选即可下载原图`, 'error')
+        }
+      } finally {
+        if (cleanupController.current === controller) {
+          cleanupController.current = null
+          setCleaning(false)
+        }
+      }
+      return
+    }
     const link = document.createElement('a')
     link.href = fullSrc
     link.download = `绘想-${task.id}.png`
@@ -259,7 +302,7 @@ export default function ResultPage() {
   }
 
   const ACTIONS: Array<{ icon: (props: { className?: string }) => React.ReactElement, label: string, onClick: () => void, disabled?: boolean, danger?: boolean }> = [
-    { icon: IconDownload, label: exportingLive ? '导出中' : quickMotion || exportAsLive ? '下载视频' : '下载', onClick: () => void download(), disabled: exportingLive || (exportAsLive ? liveFrames.length < 2 : !fullSrc) },
+    { icon: IconDownload, label: cleaning ? '处理中' : exportingLive ? '导出中' : quickMotion || exportAsLive ? '下载视频' : '下载', onClick: () => void download(), disabled: cleaning || exportingLive || (exportAsLive ? liveFrames.length < 2 : !fullSrc) },
     { icon: IconHeart, label: '收藏', onClick: () => openFavoritePicker([task.id]) },
     ...(canPublish
       ? [{
@@ -368,7 +411,7 @@ export default function ResultPage() {
               ) : exportAsLive && liveFrames.length > 1 && !activeImageId ? (
                 <LivePhotoPlayer frames={liveFrames} />
               ) : fullSrc ? (
-                <img src={fullSrc} alt={task.prompt} className="max-h-[62vh] max-w-full rounded-2xl object-contain shadow-lg" />
+                <img src={fullSrc} alt={task.prompt} data-image-id={imageId ?? undefined} data-output-image-ids={task.outputImages.join(',')} className="max-h-[62vh] max-w-full rounded-2xl object-contain shadow-lg" />
               ) : (
                 <span className="text-[#d8d4ec]"><IconImage className="h-12 w-12" /></span>
               )}
@@ -406,6 +449,8 @@ export default function ResultPage() {
           ))}
         </div>
       </div>
+
+      {!quickMotion && !exportAsLive && fullSrc && <div className="mt-4"><WatermarkDownloadOption checked={removeWatermark} onChange={setRemoveWatermark} disabled={cleaning} /></div>}
 
       {publishOpen && (
         <div className="animate-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-[#33285f]/45 p-4 backdrop-blur-sm" onClick={() => !publishing && setPublishOpen(false)}>

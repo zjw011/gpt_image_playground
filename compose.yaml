@@ -21,6 +21,7 @@ services:
     environment:
       PORT: '8080'
       GIP_DATA_DIR: /data
+      GIP_WATERMARK_URL: http://watermark:8090
       # 只有服务位于可信反代之后时才设为 1；直连公网时必须保持 0，防止伪造 IP 绕过限流。
       GIP_TRUST_PROXY: '${GIP_TRUST_PROXY:-0}'
       GIP_GENERATION_GLOBAL_CONCURRENCY: '${GIP_GENERATION_GLOBAL_CONCURRENCY:-30}'
@@ -38,6 +39,33 @@ services:
       GIP_GUEST_PASSWORD: '${GIP_GUEST_PASSWORD:-}'
     volumes:
       - gip-server-data:/data
+    networks:
+      - default
+      - watermark-internal
+
+  watermark:
+    build:
+      context: .
+      dockerfile: deploy/watermark/Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    mem_limit: 768m
+    cpus: 2
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    networks:
+      - watermark-internal
+
+networks:
+  default: {}
+  watermark-internal:
+    internal: true
 
 volumes:
   gip-server-data:

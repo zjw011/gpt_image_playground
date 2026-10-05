@@ -5,6 +5,7 @@ import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getI
 import { suppressGlobalClicks } from '../lib/clickSuppression'
 import { ensureImageCached } from '../lib/imageCache'
 import { CopyIcon, DownloadIcon, EditIcon } from './icons'
+import WatermarkDownloadOption from './WatermarkDownloadOption'
 
 export default function ImageContextMenu() {
   const [menuInfo, setMenuInfo] = useState<{ src: string; imageId?: string; outputImageIds: string[]; canCopyImage: boolean; x: number; y: number } | null>(null)
@@ -14,6 +15,7 @@ export default function ImageContextMenu() {
   const setLightboxImageId = useStore((s) => s.setLightboxImageId)
   const setMaskEditorImageId = useStore((s) => s.setMaskEditorImageId)
   const menuRef = useRef<HTMLDivElement>(null)
+  const [removeWatermark, setRemoveWatermark] = useState(false)
 
   useEffect(() => {
     if (isEmbeddedPage()) return
@@ -35,6 +37,7 @@ export default function ImageContextMenu() {
         if (!canCopyImage && imgTarget.classList.contains('object-contain')) return
 
         e.preventDefault()
+        setRemoveWatermark(false)
         setMenuInfo({
           src: imgTarget.src,
           imageId: imgTarget.dataset.imageId,
@@ -104,6 +107,7 @@ export default function ImageContextMenu() {
     const imageId = menuInfo.imageId
     const src = menuInfo.src
     setMenuInfo(null)
+    if (removeWatermark) showToast('正在处理下载副本的可见水印…', 'info')
 
     try {
       let fileNameBase = ''
@@ -120,11 +124,12 @@ export default function ImageContextMenu() {
         fileNameBase = `image-${timeStr}`
       }
 
-      const result = await downloadImageIds([imageId || src], fileNameBase)
+      let cleanupWarning = ''
+      const result = await downloadImageIds([imageId || src], fileNameBase, { removeWatermark, onCleanup: (status) => { if (status !== 'cleaned') cleanupWarning = status === 'no_watermark' ? '未识别到支持的水印，已下载原图' : '水印未能移除，已下载原图' } })
       if (result.successCount === 0) {
         showToast('下载失败', 'error')
       } else {
-        showToast('下载成功', 'success')
+        showToast(cleanupWarning || '下载成功', cleanupWarning ? 'info' : 'success')
       }
     } catch (err) {
       console.error(err)
@@ -137,6 +142,7 @@ export default function ImageContextMenu() {
     const outputImageIds = menuInfo.outputImageIds
     setMenuInfo(null)
     if (outputImageIds.length <= 1) return
+    if (removeWatermark) showToast('正在逐张处理下载副本的可见水印…', 'info')
 
     try {
       let fileNameBase = ''
@@ -153,15 +159,17 @@ export default function ImageContextMenu() {
       }
 
       const settings = useStore.getState().settings
+      let originals = 0
+      const options = { removeWatermark, onCleanup: (status: string) => { if (status !== 'cleaned') originals++ } }
       const result = settings.zipDownloadRoutes.includes('image-context-menu-all')
-        ? await downloadImageEntriesAsZip(getImageZipEntries(outputImageIds, fileNameBase), fileNameBase)
-        : await downloadImageIds(outputImageIds, fileNameBase)
+        ? await downloadImageEntriesAsZip(getImageZipEntries(outputImageIds, fileNameBase), fileNameBase, options)
+        : await downloadImageIds(outputImageIds, fileNameBase, options)
       if (result.successCount === 0) {
         showToast('下载失败', 'error')
       } else if (result.failCount > 0) {
         showToast(`部分下载失败：成功 ${result.successCount}，失败 ${result.failCount}`, 'error')
       } else {
-        showToast(result.successCount > 1 ? `下载成功：${result.successCount} 张图片` : '下载成功', 'success')
+        showToast(`下载成功：${result.successCount} 张图片${originals ? `；${originals} 张未确认移除水印，保留原图` : ''}`, originals ? 'info' : 'success')
       }
     } catch (err) {
       console.error(err)
@@ -193,10 +201,11 @@ export default function ImageContextMenu() {
   // 保证菜单在视口内
   let left = menuInfo.x
   let top = menuInfo.y
-  const MENU_WIDTH = 120
+  const generated = Boolean(menuInfo.imageId && useStore.getState().tasks.some((task) => task.outputImages.includes(menuInfo.imageId!)))
+  const MENU_WIDTH = generated ? 220 : 120
   const showDownloadAll = menuInfo.outputImageIds.length > 1
   const menuItemCount = (menuInfo.canCopyImage ? 1 : 0) + 1 + (showDownloadAll ? 1 : 0) + 1
-  const MENU_HEIGHT = menuItemCount * 32 + 32
+  const MENU_HEIGHT = menuItemCount * 32 + 32 + (generated ? 96 : 0)
 
   if (left + MENU_WIDTH > window.innerWidth) {
     left -= MENU_WIDTH
@@ -209,9 +218,10 @@ export default function ImageContextMenu() {
     <div
       ref={menuRef}
       className="fixed z-[9999] bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-100 dark:border-gray-700 py-1 w-[120px] overflow-hidden animate-fade-in"
-      style={{ left, top }}
+      style={{ left: Math.max(8, left), top: Math.max(8, top), width: MENU_WIDTH }}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {generated && <WatermarkDownloadOption checked={removeWatermark} onChange={setRemoveWatermark} compact />}
       {menuInfo.canCopyImage && (
         <button
           onClick={handleCopy}

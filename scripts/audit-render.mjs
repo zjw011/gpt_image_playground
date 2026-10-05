@@ -62,7 +62,7 @@ try {
 
   // 预热：vite 首次访问要现场编译整个应用。
   await open('/', 500)
-  await waitFor('body')
+  if (!(await waitFor('main', 15000))) throw new Error('Vite 冷启动后首页正文未就绪')
 
   for (const { path, expect } of PAGES) {
     await open(path, 2000)
