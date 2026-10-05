@@ -26,4 +26,5 @@ if __name__ == "__main__":
     print("  数据目录：       %s" % settings.data_dir)
     print("=" * 62)
     uvicorn.run("webapp.main:app", host=host, port=settings.port,
-                workers=1, reload=reload)
+                workers=1, reload=reload,
+                forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"))

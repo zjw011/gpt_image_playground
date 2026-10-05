@@ -145,6 +145,31 @@ def set_user_status(uid: int, payload: dict, request: Request):
     return {"ok": True}
 
 
+@router.post("/users/{uid}/credentials")
+def reset_credentials(uid: int, payload: dict, request: Request):
+    current_admin(request)
+    from .secret_store import encrypt
+    password = str(payload.get("password") or "")
+    if not password:
+        return {"ok": False, "msg": "请输入用户的新得物密码"}
+    rt = runtime_for(uid)
+    if rt.snapshot()["running_tasks"]:
+        return {"ok": False, "msg": "请先停止此用户的运行任务再重置"}
+    with db_session() as s:
+        u = s.get(User, uid)
+        if u is None:
+            return {"ok": False, "msg": "用户不存在"}
+        u.pw_enc = encrypt(password)
+        u.token = ""
+        u.login_ip = ""
+        u.login_where = ""
+        u.login_at = None
+        for sess in s.scalars(select(DbSession).where(DbSession.user_id == uid)):
+            s.delete(sess)
+    rt.login_lease = None
+    return {"ok": True, "msg": "凭据已重置，用户可用新密码进入；未调用得物登录"}
+
+
 @router.post("/users/{uid}/kick")
 def kick_user(uid: int, request: Request):
     current_admin(request)

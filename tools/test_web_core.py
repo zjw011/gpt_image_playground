@@ -242,11 +242,13 @@ def _test_lazy_login_logic():
                     "where": "辽宁鞍山 · 电信", "expire_at": 0, "left": 170}
 
     TQ.save_cfg(secret="s-1", sign="g-1", key="k-1", enabled=True)
-    with mock.patch("tianqiip.TianqiIP.extract_lease", return_value=(FakeLease(), "")):
+    with mock.patch("tianqiip.TianqiIP.ensure_white", return_value=(True, "已添加")), \
+         mock.patch("tianqiip.TianqiIP.extract_lease", return_value=(FakeLease(), "")):
         d, err = TQ.one_proxy()
     ck("one_proxy 返回能直接用的代理", bool(d) and d["url"].startswith("socks5h://") and not err, err)
     ck("★ 提取成功记下归属地（界面要显示）", TQ.cfg()["last_where"] == "辽宁鞍山 · 电信")
-    with mock.patch("tianqiip.TianqiIP.extract_lease",
+    with mock.patch("tianqiip.TianqiIP.ensure_white", return_value=(True, "已添加")), \
+         mock.patch("tianqiip.TianqiIP.extract_lease",
                     return_value=(None, "套餐已过期")):
         d, err = TQ.one_proxy()
     ck("提取失败返回原因", d is None and "过期" in err, err)
@@ -322,12 +324,13 @@ def _test_lazy_login_logic():
 
     # 提不到 IP → 降级直连，别让 IP 商挂了任务就跑不了
     called.clear()
+    rt.login_lease = None
     with mock.patch.object(DW, "login", side_effect=fake_login), \
          mock.patch.object(TQ, "ready", return_value=True), \
          mock.patch.object(TQ, "one_proxy", return_value=(None, "暂无可用 IP")):
         ok, msg, info = rt.do_login(use_ip=True)
-    ck("★ 提不到 IP 时降级直连登录（不抛错）",
-       ok is True and info.get("via_ip") is False and called.get("proxies") is None, msg)
+    ck("★ 提不到 IP 时停止，绝不直连登录",
+       ok is False and not called and "IP" in msg, msg)
 
     # 没存密码 → 明确报错，别瞎登
     _set_user(pw_enc="", token="")
@@ -396,7 +399,7 @@ def _test_lazy_login_logic():
 
     seen = {}
 
-    def _fake_session(self, proxy_url=None):
+    def _fake_session(self, proxy_url=None, token=None):
         seen["px"] = proxy_url
         return mock.MagicMock(run_task=lambda *a, **k: _fake_run_task(None, *a, **k))
 

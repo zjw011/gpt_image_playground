@@ -825,3 +825,24 @@ td .pname .t span { font-size: 11px; color: var(--ink3); }
   * { animation-duration: .001ms !important; animation-iteration-count: 1 !important;
       transition-duration: .001ms !important; }
 }
+
+/* 键盘操作与小屏阅读 */
+:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+.modal { max-height: 90dvh; overflow-y: auto; overscroll-behavior: contain; }
+.task .t-name, td { overflow-wrap: anywhere; }
+@media (max-width: 780px) {
+  input, select, textarea { font-size: 16px; }
+  .btn, .tabbar button { min-height: 44px; }
+  .row > * { min-width: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+[hidden] { display: none !important; }
+.workflow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 0 0 18px; }
+.workflow > div { padding: 16px; background: #fff; border: 1px solid var(--line2); border-radius: 14px; }
+.workflow span { display: inline-flex; color: var(--blue); background: var(--blue-s); padding: 2px 8px; border-radius: 6px; font-weight: 650; margin-bottom: 10px; }
+.workflow b, .workflow small { display: block; }
+.workflow small { color: var(--ink2); font-size: 12px; margin-top: 4px; }
+@media (max-width: 780px) { .workflow { grid-template-columns: repeat(2, 1fr); gap: 9px; } .workflow > div { padding: 12px; } }

@@ -33,7 +33,7 @@ DEFAULT_SETTINGS = {
     "fallback": {"enabled": True, "on_gone": True, "on_soldout": True,
                  "on_poor": False, "min_ratio": 0.0},
     "answer": {"biz_activity": 2, "sign": "", "skip_answered": True},
-    "task_defaults": {"time": "10:00:00", "lead_ms": 300,
+    "task_defaults": {"time": "10:00:00", "lead_ms": 0,
                       "interval_ms": 200, "max_attempts": 600},
     # 代理 IP：只作用于「兑换/抢购」请求，拉列表和登录默认还是直连
     "proxy": {"enabled": False, "mode": "sticky", "rotate_n": 20,

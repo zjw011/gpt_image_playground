@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """用户端 API：登录、商品、任务、库存监听、推送、答题、设置。"""
 import datetime
+import hmac
+import hashlib
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from . import dewu_client as DW
 from . import global_list as GL
 from .auth import (clear_cookie, create_session, current_user, drop_session,
-                   set_cookie)
+                   set_cookie, lookup)
 from .db import db_session, global_cfg
 from .models import Log, RedeemCode, Task, User, merge_defaults
 from .runtime import ST_DELETED, ST_WAIT, LEAD_LOGIN_SEC, runtime_for
@@ -56,7 +58,7 @@ def login(payload: dict, request: Request, response: Response):
                                         "请复制得物「金币兑换」列表接口那一条（含 Cookie 的那条）"}
         activity = DW.activity_from_curl(curl)
         if not phone:
-            phone = "curl-" + str(abs(hash(token)) % 10 ** 10)
+            phone = "curl-" + hashlib.sha256(token.encode()).hexdigest()[:15]
     else:
         if not phone.isdigit() or len(phone) != 11:
             return {"ok": False, "msg": "请输入 11 位手机号"}
@@ -81,15 +83,26 @@ def login(payload: dict, request: Request, response: Response):
             u.settings = merge_defaults({})
             s.add(u)
             s.flush()
+        if lazy and u.token and not u.pw_enc:
+            _, owner = lookup(
+                "user", request.cookies.get(COOKIE_USER))
+            if owner is None or owner.id != u.id:
+                return {"ok": False, "msg": "此账号使用抓包登录，请先使用原登录方式进入"}
+        if u.pw_enc and (not lazy or not hmac.compare_digest(
+                password.encode(), SE.decrypt(u.pw_enc).encode())):
+            return {"ok": False, "msg": "账号或密码不正确；修改得物密码后请联系管理员重置本站凭据"}
+        if not lazy and u.token and not hmac.compare_digest(token, u.token):
+            return {"ok": False, "msg": "登录凭据不正确"}
         if u.status != "active":
             return {"ok": False, "msg": "该账号已被管理员禁用"}
         if lazy:
-            # 密码存密文；清掉旧 token，免得拿一个「不是这套凭据换来的」登录态去兑换
+            # 已校验的同一凭据再次进入不清除本轮 token，避免影响已准备任务。
+            if not u.pw_enc:
+                u.token = ""
+                u.login_ip = ""
+                u.login_where = ""
+                u.login_at = None
             u.pw_enc = SE.encrypt(password)
-            u.token = ""
-            u.login_ip = ""
-            u.login_where = ""
-            u.login_at = None
         else:
             u.token = token
             u.pw_enc = ""                # 改用 curl 模式 → 不再自动登录
@@ -105,13 +118,13 @@ def login(payload: dict, request: Request, response: Response):
     set_cookie(response, "user", tok)
     rt = runtime_for(uid)
     if lazy:
-        rt.log("已保存账号密码（%s）—— 按设计**不登录**，开抢前 %d 秒才自动登录"
+        rt.log("已保存账号密码（%s）—— 暂不登录，开抢前 %d 秒才自动登录"
                % (_mask(phone_show), LEAD_LOGIN_SEC))
     else:
         rt.log("登录成功（%s · 抓包 token 模式）" % _mask(phone_show))
     if GL.configured():
         GL.ensure_fresh()            # 商品列表由公共账号提供，顺手刷一下
-    else:
+    elif not lazy:
         rt.refresh()
     return {"ok": True, "lazy": lazy,
             "user": {"id": uid, "phone": _mask(phone_show)},
@@ -217,7 +230,7 @@ def _consume_code(s, code_text, user_id, task_id):
     code_text = str(code_text or "").strip().upper()
     if not code_text:
         return False, "请输入兑换码"
-    c = s.scalars(select(RedeemCode).where(RedeemCode.code == code_text)).first()
+    c = s.scalars(select(RedeemCode).where(RedeemCode.code == code_text).with_for_update()).first()
     if c is None:
         return False, "兑换码不存在"
     if c.status == "disabled":
@@ -226,12 +239,17 @@ def _consume_code(s, code_text, user_id, task_id):
         return False, "这个兑换码已经用过了（一个兑换码只能创建 %d 个任务）" % (c.quota or 1)
     if c.bound_user_id and c.bound_user_id != user_id:
         return False, "这个兑换码已经被其他用户使用了"
-    c.used = int(c.used or 0) + 1
-    c.bound_user_id = user_id
-    c.bound_task_id = task_id
-    c.used_at = datetime.datetime.now()
-    if c.used >= int(c.quota or 1):
-        c.status = "used"
+    used = int(c.used or 0)
+    quota = int(c.quota or 1)
+    result = s.execute(update(RedeemCode).where(
+        RedeemCode.id == c.id, RedeemCode.used == used,
+        RedeemCode.status != "disabled"
+    ).values(used=used + 1, bound_user_id=user_id, bound_task_id=task_id,
+             used_at=datetime.datetime.now(),
+             status="used" if used + 1 >= quota else c.status),
+             execution_options={"synchronize_session": False})
+    if result.rowcount != 1:
+        return False, "兑换码正在被使用，请刷新后重试"
     return True, "ok"
 
 
@@ -242,6 +260,9 @@ def create_task(payload: dict, request: Request):
     rt = runtime_for(u.id)
     g = global_cfg()
 
+    from . import tianqi as TQ
+    if u.pw_enc and not TQ.ready():
+        return {"ok": False, "msg": "管理员尚未启用并配置天启代理，请联系管理员后创建任务"}
     cid = payload.get("cId")
     code_text = payload.get("code") or ""
     if g.get("require_code_for_task") and not code_text:
@@ -258,9 +279,9 @@ def create_task(payload: dict, request: Request):
         tstr = str(payload.get("time") or td.get("time") or "10:00:00").strip()
         hh, mm, ss = [int(x) for x in tstr.split(":")]
         assert 0 <= hh < 24 and 0 <= mm < 60 and 0 <= ss < 60
-        lead = max(0, int(payload.get("lead_ms") or td.get("lead_ms") or 300))
-        interval = max(30, int(payload.get("interval_ms") or td.get("interval_ms") or 200))
-        max_attempts = max(1, int(payload.get("max_attempts") or td.get("max_attempts") or 600))
+        lead = min(5000, max(0, int(payload.get("lead_ms", td.get("lead_ms", 0)))))
+        interval = min(10000, max(200, int(payload.get("interval_ms", td.get("interval_ms", 200)))))
+        max_attempts = min(600, max(1, int(payload.get("max_attempts", td.get("max_attempts", 200)))))
         repeat = bool(payload.get("repeat_daily"))
         fb_on = bool(payload.get("fallback", (st.get("fallback") or {}).get("enabled", True)))
     except Exception:
@@ -279,7 +300,8 @@ def create_task(payload: dict, request: Request):
             if not ok:
                 s.rollback()
                 return {"ok": False, "msg": msg}
-            task.code_id = None
+            task.code_id = s.scalars(select(RedeemCode.id).where(
+                RedeemCode.code == str(code_text).strip().upper())).first()
         s.add(Log(user_id=u.id, msg="创建任务#%d：「%s」金币%s @ %s 每天%s"
                   % (tid, prize.get("cName"), prize.get("cost"), tstr, tstr)))
 
@@ -433,7 +455,8 @@ def probe(request: Request):
     """不花金币地验证链路（挑买不起的商品去兑换，服务端会回余额不足）。"""
     u = current_user(request)
     rt = runtime_for(u.id)
-    # 懒登录模式下用户可能还没登录 → 这里按需登一次（直连，快）
+    if rt.creds()[1]:
+        return {"ok": False, "msg": "密码模式只在任务开始前登录，不提供即时链路诊断"}
     ok0, msg0 = rt.ensure_login()
     if not ok0:
         return {"ok": False, "msg": msg0}

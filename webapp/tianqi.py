@@ -12,13 +12,20 @@
 import datetime
 import os
 import sys
+import threading
+import time
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 import tianqiip                                        # noqa: E402
+from .security import redact_message
 
+_WHITE_LOCK = threading.Lock()
+_WHITE_CACHE = {}
+_LEASE_LOCK = threading.Lock()
+_ACTIVE_IPS = {}
 KEY = "tianqi"
 # 抢兑前多久开始提 IP 并登录（秒）。用户要的「提前 2 分钟」。
 LEAD_LOGIN_SEC = 120
@@ -138,7 +145,7 @@ def client(need_white=True):
         auth_user=c["auth_user"], auth_pass=c["auth_pass"],
         protocol=c["protocol"], life=c["life"],
         region=c["region"], yys=c["yys"])
-    miss = ip.missing_white() if need_white else ip.missing()
+    miss = ip.missing_white() if need_white and not (ip.auth_user and ip.auth_pass) else ip.missing()
     if miss:
         return None, "天启IP 还没配好，缺：%s" % "、".join(miss)
     return ip, ""
@@ -155,11 +162,33 @@ def one_proxy(need_white=True, life=None):
         return None, err
     if life and int(life) in tianqiip.LIVES:
         ip.life = int(life)
+    if need_white and not (ip.auth_user and ip.auth_pass):
+        fingerprint = (ip.key, ip.sign)
+        with _WHITE_LOCK:
+            if time.monotonic() >= _WHITE_CACHE.get(fingerprint, 0):
+                ok, msg = ip.ensure_white()
+                if not ok:
+                    save_cfg(last_err="白名单失败")
+                    return None, "白名单失败：%s" % redact_message(msg, (ip.secret, ip.sign, ip.key, ip.auth_pass))
+                _WHITE_CACHE.clear()
+                _WHITE_CACHE[fingerprint] = time.monotonic() + 300
     item, err = ip.extract_lease()
     if err:
+        err = redact_message(err, (ip.secret, ip.sign, ip.key, ip.auth_pass))
         save_cfg(last_err=str(err)[:200])
         return None, err
     d = item.as_proxy()
+    # 按出口 IP 去重（同 IP 不同端口也不能分给两个账号）。
+    with _LEASE_LOCK:
+        now = time.time()
+        for address in list(_ACTIVE_IPS):
+            if _ACTIVE_IPS[address] <= now:
+                del _ACTIVE_IPS[address]
+        address = d.get("ip")
+        if address in _ACTIVE_IPS:
+            save_cfg(last_err="平台返回了已占用的 IP，本轮停止")
+            return None, "平台返回了已占用的 IP，本轮停止；不会再次付费提取"
+        _ACTIVE_IPS[address] = d.get("expire_at") or now + ip.life * 60
     where = d.get("where") or ""
     save_cfg(last_ok_at=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
              last_err="", last_where=where)

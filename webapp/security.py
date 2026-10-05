@@ -3,6 +3,8 @@
 import hashlib
 import hmac
 import secrets
+import re
+from urllib.parse import quote
 
 ITER = 200_000
 ALGO = "pbkdf2_sha256"
@@ -32,3 +34,13 @@ def verify_pw(password, stored):
 
 def new_token(nbytes=32):
     return secrets.token_urlsafe(nbytes)
+
+
+def redact_message(message, confidential=()):
+    text = str(message or "")
+    text = re.sub(r"((?:https?|socks5h?)://)[^/\s@]+@", r"\1***@", text)
+    text = re.sub(r"([?&](?:secret|sign|key|token)=)[^&\s'\")]+", r"\1***", text, flags=re.I)
+    for value in confidential:
+        if value:
+            text = text.replace(str(value), "***").replace(quote(str(value), safe=""), "***")
+    return text

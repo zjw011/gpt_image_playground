@@ -5,6 +5,9 @@
 """
 import logging
 import os
+import time
+from collections import defaultdict, deque
+from urllib.parse import urlsplit
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -38,6 +41,40 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="得物整点抢兑助手 · Web 版", docs_url=None, redoc_url=None,
               lifespan=lifespan)
+
+# 限制登录猜测，并拒绝浏览器跨站写请求（反向代理需保留 Host）。
+_login_attempts = defaultdict(deque)
+
+
+@app.middleware("http")
+async def request_guard(request: Request, call_next):
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        origin = request.headers.get("origin")
+        if origin and urlsplit(origin).netloc != request.headers.get("host"):
+            return JSONResponse(status_code=403, content={"ok": False, "msg": "不允许跨站提交"})
+        if request.url.path in ("/api/login", "/api/admin/login"):
+            now = time.monotonic()
+            ip = request.client.host if request.client else "unknown"
+            # 清理过期地址，避免公开服务的记录无限增长。
+            for key in list(_login_attempts):
+                q = _login_attempts[key]
+                while q and now - q[0] >= 60:
+                    q.popleft()
+                if not q:
+                    del _login_attempts[key]
+            q = _login_attempts[ip]
+            if len(q) >= 20:
+                return JSONResponse(status_code=429, headers={"Retry-After": "60"},
+                                    content={"ok": False, "msg": "登录过于频繁，请一分钟后重试"})
+            q.append(now)
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["X-Frame-Options"] = "DENY"
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 app.include_router(api_user.router)
 app.include_router(api_admin.router)

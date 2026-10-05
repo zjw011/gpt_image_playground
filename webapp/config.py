@@ -51,6 +51,7 @@ class Settings:
 
         # ---- 会话有效期 ----
         self.session_days = _int("SESSION_DAYS", 14)
+        self.cookie_secure = _flag("COOKIE_SECURE")
 
         # ---- 管理员（首次启动时按这两个值建号） ----
         self.admin_user = os.environ.get("ADMIN_USER", "admin").strip() or "admin"

@@ -13,6 +13,7 @@ webdata/
 *.exe
 *.spec
 *.png
+!webapp/static/qr_group.png
 *.jpg
 *.ico
 *.log

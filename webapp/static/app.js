@@ -336,6 +336,13 @@ const APP = (() => {
       <button class="btn btn-p" onclick="APP.refreshList(this)">${ic('refresh')}刷新商品列表</button>
     </div>
 
+    <div class="workflow" aria-label="任务执行流程">
+      <div><span>01</span><b>保存账号</b><small>仅加密保存，不立即登录</small></div>
+      <div><span>02</span><b>选商品 · 填授权码</b><small>创建任务后可关闭网页</small></div>
+      <div><span>03</span><b>提前两分钟准备</b><small>提取 3 分钟代理并登录</small></div>
+      <div><span>04</span><b>整点兑换 · 成功推送</b><small>同一代理，本轮最多 50 秒</small></div>
+    </div>
+    <div class="msg warn show" id="setupHint" hidden></div>
     <div class="stats" id="ovStats"></div>
 
     <div class="card">
@@ -366,6 +373,12 @@ const APP = (() => {
     // ★ 用户设置只有 S.cfg 一份（/api/me 的顶层 settings），不是 S.me.settings
     const push = (S.cfg || {}).push || {};
     const bal = st.balance;
+    const hint = $('#setupHint');
+    const missing = [];
+    if (S.login?.lazy && !S.global?.public_list) missing.push('公共商品账号尚未配置，请联系管理员');
+    if (S.login?.lazy && !S.global?.auto_ip) missing.push('自动代理尚未配置，暂时不能创建密码模式任务');
+    hint.hidden = !missing.length;
+    hint.textContent = missing.join('；');
 
     $('#ovBal').innerHTML = (bal == null ? '—' : esc(bal)) + '<em>金币</em>';
     const at = st.list_at || st.refreshed_at;
@@ -440,7 +453,7 @@ const APP = (() => {
       { i: 'bell', n: '加群 · 库存提醒', s: '扫码加入组织', fn: "APP.sec('notice')" },
       { i: 'pulse', n: '链路诊断', s: '不扣金币', fn: 'APP.probe(this)' },
       { i: 'sliders', n: '全部设置', s: '兜底/默认值', fn: "APP.go('settings')" },
-    ].map((t) => `<div class="tile ${t.on ? 'on' : ''}" onclick="${t.fn}">
+    ].filter((t) => !(lg0.lazy && t.i === 'pulse')).map((t) => `<div class="tile ${t.on ? 'on' : ''}" onclick="${t.fn}">
       <div class="ti">${ic(t.i)}</div><div class="tn">${t.n}</div><div class="ts">${t.s}</div></div>`).join('');
 
     // 最近事件
@@ -932,7 +945,7 @@ const APP = (() => {
     const fbDefault = SEC('fallback').enabled !== false;
     modal(`
       <h3>${ic('plus')}创建定时兑换任务</h3>
-      <div class="desc">到点自动抢兑。建议提前 300ms 起抢，每次间隔 200ms。</div>
+      <div class="desc">到点自动抢兑。默认整点开始；提前两分钟登录，同一代理最多兑换 50 秒。</div>
       <div class="preview">
         <img src="${esc(p.picture || IMG_PH)}" onerror="this.src='${IMG_PH}'" alt="">
         <div class="info">
@@ -952,7 +965,7 @@ const APP = (() => {
         <label class="fld"><span>目标时间</span>
           <input id="tTime" value="${esc(fd.time || '10:00:00')}" placeholder="10:00:00"></label>
         <label class="fld"><span>提前起抢 (ms)</span>
-          <input id="tLead" type="number" value="${esc(fd.lead_ms || 300)}"></label>
+          <input id="tLead" type="number" value="${esc(fd.lead_ms ?? 0)}"></label>
       </div>
       <div class="grid2">
         <label class="fld"><span>每次间隔 (ms)</span>
@@ -960,10 +973,10 @@ const APP = (() => {
         <label class="fld"><span>最多尝试次数</span>
           <input id="tMax" type="number" value="${esc(fd.max_attempts || 600)}"></label>
       </div>
-      <label class="chk"><input type="checkbox" id="tRep"> 每天重复（抢到后第二天继续）</label>
+      <label class="chk"><input type="checkbox" id="tRep"> 每天重复（本轮结束后第二天继续）</label>
       <label class="chk"><input type="checkbox" id="tFb" ${fbDefault ? 'checked' : ''}>
         自动降级兜底（原商品下架 / 抢不到时，自动换一个买得起的有货商品）</label>
-      <label class="chk"><input type="checkbox" id="tNow"> 创建后立即执行一次（测试用）</label>
+      <label class="chk"><input type="checkbox" id="tNow"> 创建后立即执行（会真实登录、兑换并消耗代理额度）</label>
       <div class="msg err" id="tMsg"></div>
       <div class="foot">
         <span class="muted">金币余额 ${S.state && S.state.balance != null ? esc(S.state.balance) : '—'}</span>
@@ -1036,7 +1049,7 @@ const APP = (() => {
       const j = await api('/api/settings', {
         task_defaults: {
           time: $('#dTime').value.trim() || '10:00:00',
-          lead_ms: +$('#dLead').value || 300,
+          lead_ms: +$('#dLead').value || 0,
           interval_ms: +$('#dInt').value || 200,
           max_attempts: +$('#dMax').value || 600,
         },
@@ -1358,12 +1371,27 @@ const APP = (() => {
           <button class="btn btn-s btn-sm" onclick="APP.userStatus(${u.id},'${u.status === 'active' ? 'banned' : 'active'}')">
             ${u.status === 'active' ? '禁用' : '解禁'}</button>
           <button class="btn btn-s btn-sm" onclick="APP.userKick(${u.id})">踢下线</button>
+          <button class="btn btn-s btn-sm" onclick="APP.userCredentials(${u.id})">重置凭据</button>
           <button class="btn btn-danger btn-sm" onclick="APP.userDel(${u.id})">删除</button>
         </div></td></tr>`).join('')}</tbody></table></div>`;
   }
   async function userStatus(id, st) {
     await api(`/api/admin/users/${id}/status`, { status: st });
     toast('已更新', 'ok'); loadUsers();
+  }
+  function userCredentials(id) {
+    modal(`<h3>重置用户 #${id} 凭据</h3>
+      <div class="desc">请先停止该用户的任务。保存后用户用新密码进入，不会触发得物登录。</div>
+      <label class="fld"><span>新得物密码</span><input id="resetPassword" type="password" autocomplete="new-password"></label>
+      <div class="foot"><button class="btn btn-s" onclick="APP.closeModal()">取消</button>
+      <button class="btn btn-p" onclick="APP.saveCredentials(${id})">保存</button></div>`);
+  }
+  async function saveCredentials(id) {
+    const password = $('#resetPassword').value;
+    if (!password) return toast('请输入密码', 'error');
+    const j = await api(`/api/admin/users/${id}/credentials`, { password });
+    toast(j.msg, j.ok ? 'ok' : 'error');
+    if (j.ok) { closeModal(); loadUsers(); }
   }
   async function userKick(id) {
     const j = await api(`/api/admin/users/${id}/kick`, {}); toast(j.msg, 'ok');
@@ -1932,7 +1960,7 @@ const APP = (() => {
     pushModal: () => sec('push'),
     noticeModal: () => sec('notice'),
     // 管理端
-    adminGo, adminLogout, loadUsers, userStatus, userKick, userDel,
+    adminGo, adminLogout, loadUsers, userStatus, userKick, userCredentials, saveCredentials, userDel,
     loadCodes, genCodes, exportCodes, codeStatus, codeDel,
     saveGlobal, savePw, adminRefresh,
     // 公共账号（拉商品用）

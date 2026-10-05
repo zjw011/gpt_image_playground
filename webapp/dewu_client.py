@@ -391,8 +391,9 @@ class DewuSession:
                 on_event(level, msg)
 
         interval = max(30, int(cfg.get("interval_ms", 200)))
-        max_attempts = max(1, int(cfg.get("max_attempts", 600)))
-        deadline = time.time() + int(cfg.get("max_duration_sec", 180))
+        max_attempts = max(0, int(cfg.get("max_attempts", 600)) - attempt_offset)
+        deadline = min(time.time() + int(cfg.get("max_duration_sec", 180)),
+                       cfg.get("deadline", float("inf")))
         attempts = 0
         fatal_n = 0
         c700 = 0
@@ -442,7 +443,7 @@ class DewuSession:
 
             try:
                 r = sess.post(EXCHANGE_URL, data=data, headers=headers,
-                              timeout=6, proxies=pmap)
+                              timeout=min(6, max(0.1, deadline - time.time())), proxies=pmap)
                 j = r.json()
             except Exception as e:
                 j = {"_err": repr(e)}
@@ -537,7 +538,7 @@ class DewuSession:
                "proxy_used": None, "proxy_switched": [], "proxy_errors": 0}
 
         # 开抢前校正：列表里商品可能换了 cId（活动换批次）
-        ok, data = self.fetch_list()
+        ok, data = cfg.get("prepared_list") or self.fetch_list()
         if ok:
             fresh, gone = resolve_prize(data["prizes"], cur, None)
             if fresh:
@@ -579,6 +580,9 @@ class DewuSession:
             if why == "soldout" and not fb.get("on_soldout"):
                 break
 
+            if time.time() >= cfg.get("deadline", float("inf")):
+                out["detail"] = "本轮有效时间已结束"
+                break
             ok2, data2 = self.fetch_list()
             if not ok2:
                 log("本想自动降级，但列表刷新失败（%s）→ 按失败处理"

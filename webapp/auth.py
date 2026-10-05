@@ -43,7 +43,7 @@ def set_cookie(resp: Response, kind, tok):
     resp.set_cookie(
         _cookie_name(kind), tok,
         max_age=settings.session_days * 86400,
-        httponly=True, samesite="lax", path="/",
+        httponly=True, secure=settings.cookie_secure, samesite="lax", path="/",
     )
 
 

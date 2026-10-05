@@ -21,6 +21,7 @@ from collections import deque
 import dewu_push as PUSH
 from sqlalchemy import func, or_, select
 
+from .security import redact_message
 from .db import db_session
 from .dewu_client import DewuSession, diff_stock
 from . import proxies as PX
@@ -59,6 +60,8 @@ class UserRuntime:
     def __init__(self, user_id):
         self.user_id = user_id
         self.lock = threading.RLock()
+        self.login_lock = threading.Lock()
+        self.login_lease = None
 
         self.products = []
         self.balance = None
@@ -73,6 +76,7 @@ class UserRuntime:
 
     # ------------------------------------------------------------------ 日志
     def log(self, msg, level="info"):
+        msg = redact_message(msg)
         line = "%s  %s" % (datetime.datetime.now().strftime("%H:%M:%S"), msg)
         with self.lock:
             self.logs.append({"ts": _now_str(), "level": level, "msg": msg, "line": line})
@@ -92,14 +96,14 @@ class UserRuntime:
         u = self._fresh_user()
         return u.st() if u else {}
 
-    def session(self, proxy_url=None):
+    def session(self, proxy_url=None, token=None):
         """按用户当前 token 造一个 DewuSession（带上这个用户的代理）。
 
         ``proxy_url`` 给了就**只用这一个出口**（不给就按原来的代理池逻辑选）——
         抢兑前的懒登录要「同一个 IP 登录 + 兑换」，走的正是这条。
         """
         u = self._fresh_user()
-        if not u or not u.token:
+        if not u or not (token or u.token):
             return None
         s = self.settings()
         from .db import global_cfg
@@ -112,7 +116,7 @@ class UserRuntime:
         else:
             px = self.proxy_provider()
             also = bool(pc.get("also_list"))
-        return DewuSession(u.token, activity=act, device=u.device or {},
+        return DewuSession(token or u.token, activity=act, device=u.device or {},
                            sign=global_cfg().get("dewu_sign"),
                            proxy=px, also_list=also)
 
@@ -140,6 +144,17 @@ class UserRuntime:
         }
 
     def do_login(self, use_ip=False, life=None, why=""):
+        # 同账号的同期任务共享一次提取与登录，避免重复购买并覆盖 token。
+        with self.login_lock:
+            lease = self.login_lease
+            if use_ip and lease and lease.get("expire_at", 0) - time.time() > 130 and self.creds()[2] == lease.get("token"):
+                return True, "复用本轮登录和代理", dict(lease)
+            result = self._do_login(use_ip=use_ip, life=life, why=why)
+            if result[0] and result[2].get("via_ip"):
+                self.login_lease = dict(result[2], token=self.creds()[2])
+            return result
+
+    def _do_login(self, use_ip=False, life=None, why=""):
         """登录一次并把结果落库。返回 ``(ok, msg, info)``。
 
         ``use_ip=True``  → 先提一个短效 IP，用**同一个出口**登录（开抢前 2 分钟走这条）
@@ -157,20 +172,23 @@ class UserRuntime:
         info = {"ip": "", "where": "", "via_ip": False, "proxy_url": ""}
         proxies = None
         if use_ip:
+            if not TQ.ready():
+                return False, "管理员尚未启用并配置天启代理，本轮停止", info
             d, err = TQ.one_proxy(life=life or TQ.DEFAULT_LIFE)
             if d:
                 proxies = TQ.proxies_map(d["url"])
                 info.update({"ip": d.get("ip") or "", "where": d.get("where") or "",
-                             "via_ip": True, "proxy_url": d.get("url") or ""})
+                             "via_ip": True, "proxy_url": d.get("url") or "",
+                             "expire_at": d.get("expire_at") or (time.time() + 180)})
                 self.log("%s 已提短效 IP %s（%s），用它登录"
                          % (tag, d.get("ip"), info["where"] or "未知"))
             else:
-                # 提不到就直连登录，别让整个任务因为 IP 商挂了而跑不了
-                self.log("%s 提 IP 失败，改直连登录：%s" % (tag, err), "warn")
+                self.log("%s 提 IP 失败，停止本轮：%s" % (tag, err), "error")
+                return False, "提 IP 失败：%s" % err, info
 
         r = DW.login(phone, pw, proxies=proxies)
         if not r.get("ok"):
-            msg = r.get("msg") or "登录失败"
+            msg = redact_message(r.get("msg") or "登录失败")
             self.log("%s 登录失败：%s" % (tag, msg), "error")
             return False, msg, info
 
@@ -181,6 +199,7 @@ class UserRuntime:
                 u.login_ip = info["ip"]
                 u.login_where = info["where"]
                 u.login_at = datetime.datetime.now()
+        info["token"] = r.get("token") or ""
         self.log("%s 登录成功%s" % (tag, "（出口 %s）" % info["where"]
                                    if info["via_ip"] else "（直连）"), "ok")
         return True, "登录成功", info
@@ -369,8 +388,10 @@ class UserRuntime:
     def refresh(self):
         """刷新商品列表。返回 (ok, msg)。"""
         sess = self.session()
+        if self.creds()[1]:
+            return False, "请让管理员配置公共商品账号；浏览商品不会登录你的得物账号"
         if sess is None:
-            # 懒登录模式：还没登录过。这里按需登一次（直连，快）把列表刷出来。
+            # 抓包 token 模式使用自己的登录态。
             ok, msg = self.ensure_login()
             if not ok:
                 return False, msg
@@ -526,10 +547,11 @@ class UserRuntime:
 
     # ================================================================== 推送
     def _send_async(self, title, html, topic=None, tag=""):
+        token = (self.settings().get("push") or {}).get("token")
         """自己起线程发，不走 dewu_push.send_async（那个会 import dewu_sniper 触发单例）。"""
         def _run():
             try:
-                ok, msg = PUSH.send(title, html, topic=topic)
+                ok, msg = PUSH.send(title, html, token=token, topic=topic)
                 self.log("[推送] %s%s · %s · %s"
                          % ("✓ " if ok else "✗ ", msg, tag or "-", title),
                          "ok" if ok else "error")
@@ -616,7 +638,7 @@ class UserRuntime:
                     if task.status not in (ST_WAIT, ST_RUN, ST_OK, ST_FAIL):
                         return
                     tstr = task.target_time
-                    lead = int(task.lead_ms or 300)
+                    lead = int(task.lead_ms or 0)
                     repeat = bool(task.repeat_daily)
                     tname = (task.prize or {}).get("cName")
                     task.status = ST_WAIT
@@ -638,7 +660,7 @@ class UserRuntime:
                 # 懒登录模式（用户存了密码、后台还没登录）才需要在开抢前先登一次。
                 # curl 登录那种已经有现成 token，直接略过这一段。
                 need_lazy = bool(self.creds()[1])
-                login_at = (fire_at - datetime.timedelta(seconds=LEAD_LOGIN_SEC)
+                login_at = (target - datetime.timedelta(seconds=LEAD_LOGIN_SEC)
                             if need_lazy else fire_at)
                 if need_lazy and login_at > datetime.datetime.now():
                     self.log("[任务#%d] %s 自动登录（提前 %d 秒提一个短效 IP）"
@@ -655,13 +677,26 @@ class UserRuntime:
 
                 # ---- ② 懒登录：提 IP + 登录（一个号一个 IP）----
                 proxy_url = None
+                info = {}
                 if need_lazy:
                     from . import tianqi as TQ
-                    ok, _msg, info = self.do_login(use_ip=TQ.ready(), why="#%d" % task_id)
+                    ok, _msg, info = self.do_login(use_ip=True, life=3, why="#%d" % task_id)
                     proxy_url = info.get("proxy_url") or None
                     if not ok:
-                        self.log("[任务#%d] 自动登录没成功，仍尝试用现有登录态开抢"
-                                 % task_id, "warn")
+                        self._finish(task_id, ST_FAIL, _msg)
+                        self.push_task("fail", tname, None, None, task_id, 0, _msg)
+                        if self._next_round(task_id, repeat, target, stop_ev):
+                            continue
+                        return
+
+                # 列表校正在等待阶段完成，不占整点窗口。
+                prepared_session = self.session(proxy_url=proxy_url, token=info.get("token"))
+                if prepared_session is None:
+                    self._finish(task_id, ST_FAIL, "没有有效登录态")
+                    if self._next_round(task_id, repeat, target, stop_ev):
+                        continue
+                    return
+                prepared_list = prepared_session.fetch_list()
 
                 # ---- ③ 再等到开抢点 ----
                 while True:
@@ -675,7 +710,14 @@ class UserRuntime:
                     stop_ev.wait(min(left, 1.0))
 
                 # ---- 开抢 ----
-                sess = self.session(proxy_url=proxy_url)
+                deadline = info.get("expire_at")
+                if deadline and deadline - time.time() <= 10:
+                    self._finish(task_id, ST_FAIL, "代理已过期或剩余不足 10 秒，本轮停止")
+                    self.push_task("fail", tname, None, None, task_id, 0, "代理有效期不足")
+                    if self._next_round(task_id, repeat, target, stop_ev):
+                        continue
+                    return
+                sess = prepared_session
                 if sess is None:
                     self._finish(task_id, ST_FAIL, "登录态丢失，请重新提交账号密码")
                     return
@@ -690,7 +732,9 @@ class UserRuntime:
                     prize = dict(task.prize or {})
                     fb_on = bool(task.fallback_enabled)
                     cfg = {"interval_ms": task.interval_ms, "max_attempts": task.max_attempts,
-                           "max_duration_sec": 180,
+                           "max_duration_sec": 50,
+                           "prepared_list": prepared_list,
+                           "deadline": min(time.time() + 50, deadline - 8) if deadline else time.time() + 50,
                            "fallback": dict((self.settings().get("fallback") or {}))}
                     cfg["fallback"]["enabled"] = fb_on
                     s.commit()
@@ -729,7 +773,10 @@ class UserRuntime:
                 self.push_task("success" if res["ok"] else "fail", new_name, cost,
                                res.get("balance"), task_id, res["attempts"], fb_note)
 
-                if not res["ok"] or not repeat:
+                if stop_ev.is_set():
+                    self._finish(task_id, ST_CANCEL, "已手动停止")
+                    return
+                if not self._next_round(task_id, repeat, target, stop_ev):
                     return
                 self.log("[任务#%d] 每日重复已开，等下一个 %s" % (task_id, tstr))
         except Exception:
@@ -739,6 +786,19 @@ class UserRuntime:
             with self.lock:
                 self.task_threads.pop(task_id, None)
                 self.task_stop.pop(task_id, None)
+
+    def _next_round(self, task_id, repeat, target, stop_ev):
+        if not repeat:
+            return False
+        # 越过本次整点后才允许进入下一轮，包括提前成功或准备失败。
+        while datetime.datetime.now() <= target:
+            if stop_ev.wait(min(1.0, max(0.01, (target - datetime.datetime.now()).total_seconds()))):
+                self._finish(task_id, ST_CANCEL, "已手动停止")
+                return False
+        if stop_ev.is_set():
+            self._finish(task_id, ST_CANCEL, "已手动停止")
+            return False
+        return True
 
     def _task_logger(self, task_id):
         def cb(level, msg):
@@ -803,7 +863,7 @@ def boot_all():
         users = list(s.scalars(select(User)))
         tasks = list(s.scalars(select(Task)))
     for t in tasks:
-        if t.status in (ST_WAIT, ST_RUN):
+        if t.status in (ST_WAIT, ST_RUN) or (t.repeat_daily and t.status in (ST_OK, ST_FAIL)):
             rt = runtime_for(t.user_id)
             rt.schedule(t.id)
     return {"users": len(users), "tasks": len(tasks)}

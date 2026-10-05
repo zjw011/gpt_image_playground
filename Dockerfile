@@ -24,7 +24,7 @@ RUN set -eux; \
 #   （dewu_push 里对它的引用包在 try/except 里，import 失败会静默跳过。）
 COPY webapp/ ./webapp/
 # dewu_proxies.py = 代理 IP 池的实现，桌面版和 Web 版共用一份（webapp/proxies.py 只是转发）
-COPY dewu_proxies.py dewu_login.py dewu_push.py ./
+COPY dewu_proxies.py dewu_login.py dewu_push.py tianqiip.py ./
 COPY run_web.py .
 
 RUN mkdir -p /app/webdata
