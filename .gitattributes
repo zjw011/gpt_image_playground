@@ -1,0 +1,26 @@
+# 统一换行符 —— 这些文件要在 Linux 服务器上跑，绝不能带 \r
+# （Windows 上 clone 出来带 CRLF 的话，bash deploy.sh 会直接报 "command not found" 之类的怪错）
+* text=auto eol=lf
+
+*.sh      text eol=lf
+Dockerfile text eol=lf
+*.py      text eol=lf
+*.js      text eol=lf
+*.css     text eol=lf
+*.html    text eol=lf
+*.md      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.json    text eol=lf
+*.txt     text eol=lf
+.env.example text eol=lf
+
+# Windows 批处理必须是 CRLF，否则 cmd 可能解析出错
+*.bat     text eol=crlf
+
+# 二进制，别动
+*.png     binary
+*.jpg     binary
+*.ico     binary
+*.exe     binary
+*.apk     binary

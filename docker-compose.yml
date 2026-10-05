@@ -1,0 +1,55 @@
+# 得物整点抢兑助手 · Web 版 —— Docker 一键起
+#
+#   cp .env.example .env      # 改一下 DB_PASSWORD / ADMIN_PASSWORD
+#   docker compose up -d --build
+#
+# 起来后：
+#   用户端   http://服务器IP:8000
+#   管理后台 http://服务器IP:8000/admin
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: dewu-db
+    environment:
+      POSTGRES_USER: ${DB_USER:-dewu}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-dewu_change_me}
+      POSTGRES_DB: ${DB_NAME:-dewu}
+      TZ: Asia/Shanghai
+    volumes:
+      - dewu_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-dewu} -d ${DB_NAME:-dewu}"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+    restart: unless-stopped
+
+  app:
+    build: .
+    image: dewu-web:latest
+    container_name: dewu-app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${DB_USER:-dewu}:${DB_PASSWORD:-dewu_change_me}@db:5432/${DB_NAME:-dewu}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      SECRET_KEY: ${SECRET_KEY:-}
+      DEWU_ACTIVITY: ${DEWU_ACTIVITY:-20260917}
+      ALLOW_NEW_USER: ${ALLOW_NEW_USER:-1}
+      MAX_USERS: ${MAX_USERS:-0}
+      REQUIRE_CODE_FOR_TASK: ${REQUIRE_CODE_FOR_TASK:-1}
+      HOST: 0.0.0.0
+      PORT: 8000
+      TZ: Asia/Shanghai
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      # 放 secret.key / ADMIN_PASSWORD.txt（首次启动自动生成的管理员密码就在这里）
+      - ./webdata:/app/webdata
+    restart: unless-stopped
+
+volumes:
+  dewu_pgdata:

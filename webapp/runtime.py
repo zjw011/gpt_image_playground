@@ -1,0 +1,488 @@
+# -*- coding: utf-8 -*-
+"""每用户运行时。
+
+隔离策略
+--------
+每个用户一个 ``UserRuntime`` 实例，注册表按 user_id 索引。
+实例内部持有：商品缓存、日志环形缓冲、定时任务线程、库存监听线程。
+所有跨用户的共享只有注册表本身（一把锁），用户之间**没有任何共享状态**。
+
+为什么是「一个进程内的线程」而不是「交给外部任务队列」：
+    定时抢兑需要在毫秒级准时发请求，而且要连续重试几百次（每秒 5~30 次）。
+    线程是最贴近桌面版、也最省事的做法，FIFO 队列的开销在这个场景下反而不可控。
+    代价：uvicorn 只能起 **单 worker**（多 worker 会各自跑一份任务，重复抢）。
+"""
+import datetime
+import threading
+import time
+import traceback
+from collections import deque
+
+import dewu_push as PUSH
+
+from .db import db_session
+from .dewu_client import DewuSession, diff_stock
+
+MAX_LOGS = 400
+
+# 任务状态
+ST_WAIT = "等待"
+ST_RUN = "兑换中"
+ST_OK = "成功"
+ST_FAIL = "失败"
+ST_CANCEL = "已取消"
+ST_DELETED = "已删除"
+
+
+def _now_str():
+    return datetime.datetime.now().strftime("%m-%d %H:%M:%S")
+
+
+def _next_target(tstr):
+    """目标时间 → 下一个还没到的 datetime（今天过了就明天）。"""
+    hh, mm, ss = [int(x) for x in str(tstr).split(":")]
+    now = datetime.datetime.now()
+    tgt = now.replace(hour=hh, minute=mm, second=ss, microsecond=0)
+    if tgt <= now:
+        tgt += datetime.timedelta(days=1)
+    return tgt
+
+
+class UserRuntime:
+    def __init__(self, user_id):
+        self.user_id = user_id
+        self.lock = threading.RLock()
+
+        self.products = []
+        self.balance = None
+        self.list_error = None
+        self.refreshed_at = None
+
+        self.logs = deque(maxlen=MAX_LOGS)
+        self.task_threads = {}          # task_id -> Thread
+        self.task_stop = {}             # task_id -> Event（手动停止）
+        self.watch_thread = None
+        self.watch_stop = threading.Event()
+
+    # ------------------------------------------------------------------ 日志
+    def log(self, msg, level="info"):
+        line = "%s  %s" % (datetime.datetime.now().strftime("%H:%M:%S"), msg)
+        with self.lock:
+            self.logs.append({"ts": _now_str(), "level": level, "msg": msg, "line": line})
+
+    def logs_snapshot(self, limit=200):
+        with self.lock:
+            return list(self.logs)[-limit:]
+
+    # ------------------------------------------------------------------ 用户
+    def _fresh_user(self):
+        """从数据库读一份最新的用户行（token/设置可能刚被改过）。"""
+        from .models import User
+        with db_session() as s:
+            return s.get(User, self.user_id)
+
+    def settings(self):
+        u = self._fresh_user()
+        return u.st() if u else {}
+
+    def session(self):
+        """按用户当前 token 造一个 DewuSession。"""
+        u = self._fresh_user()
+        if not u or not u.token:
+            return None
+        s = self.settings()
+        from .db import global_cfg
+        act = u.activity or global_cfg().get("dewu_activity")
+        return DewuSession(u.token, activity=act, device=u.device or {},
+                           sign=global_cfg().get("dewu_sign"))
+
+    # ------------------------------------------------------------------ 列表
+    def refresh(self):
+        """刷新商品列表。返回 (ok, msg)。"""
+        sess = self.session()
+        if sess is None:
+            return False, "还没有登录态，请先登录"
+        ok, data = sess.fetch_list()
+        if not ok:
+            err = data.get("_err") or ("code=%s %s" % (data.get("code"), data.get("msg")))
+            with self.lock:
+                self.list_error = err
+            self.log("拉取商品列表失败：%s" % err, "error")
+            self._persist_sync()
+            return False, err
+        with self.lock:
+            self.products = data["prizes"]
+            self.balance = data["balance"]
+            self.list_error = None
+            self.refreshed_at = _now_str()
+        self.log("列表刷新成功：%d 个商品，余额 %s" % (len(data["prizes"]), data["balance"]))
+        self._persist_sync()
+        return True, "已更新 %d 个商品" % len(data["prizes"])
+
+    def _persist_sync(self):
+        from .models import User
+        with db_session() as s:
+            u = s.get(User, self.user_id)
+            if u:
+                u.last_sync_at = datetime.datetime.now()
+
+    # ------------------------------------------------------------------ 快照
+    def snapshot(self):
+        with self.lock:
+            return {
+                "balance": self.balance,
+                "products": list(self.products),
+                "list_error": self.list_error,
+                "refreshed_at": self.refreshed_at,
+                "watch": dict(self.watch_info()),
+                "running_tasks": [tid for tid, t in self.task_threads.items()
+                                  if t and t.is_alive()],
+            }
+
+    # ================================================================== 库存监听
+    def watch_info(self):
+        u = self._fresh_user()
+        st = (u.st() if u else {}) or {}
+        w = dict(st.get("watch") or {})
+        ws = (u.watch_state or {}) if u else {}
+        w.update({
+            "running": bool(self.watch_thread and self.watch_thread.is_alive()),
+            "tracked": len((ws.get("seen") or {})),
+            "baseline": bool(ws.get("baseline")),
+            "checked_at": ws.get("checked_at"),
+            "notified": ws.get("notified", 0),
+            "errors": ws.get("errors", 0),
+            "last_error": ws.get("last_error"),
+        })
+        return w
+
+    def watch_start(self, interval_sec=None):
+        u = self._fresh_user()
+        if not u:
+            return False, "用户不存在"
+        st = u.st()
+        w = st["watch"]
+        if interval_sec:
+            w["interval_sec"] = max(5, min(3600, int(interval_sec)))
+        w["enabled"] = True
+        self._save_settings(st)
+        if self.watch_thread and self.watch_thread.is_alive():
+            return True, "监听已在运行"
+        self.watch_stop.clear()
+        self.watch_thread = threading.Thread(target=self._watch_loop, daemon=True,
+                                             name="watch-%d" % self.user_id)
+        self.watch_thread.start()
+        self.log("[库存监听] 已开启（间隔 %d 秒）" % w["interval_sec"])
+        return True, "已开启"
+
+    def watch_stop_now(self):
+        st = self.settings() or {}
+        if st.get("watch"):
+            st["watch"]["enabled"] = False
+            self._save_settings(st)
+        self.watch_stop.set()
+        self.log("[库存监听] 已关闭")
+        return True, "已关闭"
+
+    def _watch_loop(self):
+        self.log("[库存监听] 线程启动")
+        while not self.watch_stop.is_set():
+            try:
+                self._watch_tick()
+            except Exception as e:
+                self.log("[库存监听] 本轮异常：%r" % (e,), "error")
+            try:
+                iv = int((self.settings().get("watch") or {}).get("interval_sec") or 30)
+            except Exception:
+                iv = 30
+            self.watch_stop.wait(max(5, min(3600, iv)))
+        self.log("[库存监听] 线程已退出")
+
+    def _watch_tick(self):
+        sess = self.session()
+        if sess is None:
+            return
+        ok, data = sess.fetch_list()
+        u = self._fresh_user()
+        ws = dict((u.watch_state or {}) if u else {})
+        st = self.settings()
+        w = st.get("watch") or {}
+        if not ok:
+            ws["last_error"] = data.get("_err") or "code=%s" % data.get("code")
+            ws["errors"] = int(ws.get("errors") or 0) + 1
+            ws["checked_at"] = _now_str()
+            self._save_watch_state(ws)
+            self.log("[库存监听] 检查失败：%s" % ws["last_error"], "error")
+            return
+        with self.lock:
+            self.products = data["prizes"]
+            self.balance = data["balance"]
+            self.list_error = None
+            self.refreshed_at = _now_str()
+
+        changes, seen, baseline = diff_stock(
+            ws.get("seen") or {}, data["prizes"],
+            notify_new=bool(w.get("notify_new", True)),
+            notify_restock=bool(w.get("notify_restock", True)))
+        ws["seen"] = seen
+        ws["baseline"] = baseline
+        ws["checked_at"] = _now_str()
+        ws["last_error"] = None
+        if not baseline and changes:
+            ws["notified"] = int(ws.get("notified") or 0) + 1
+            names = "、".join((c.get("cName") or "")[:18] for c in changes[:3])
+            self.log("[库存监听] 发现 %d 个变化：%s%s"
+                     % (len(changes), names, "…" if len(changes) > 3 else ""), "ok")
+            self.push_stock(changes)
+        elif baseline:
+            self.log("[库存监听] 已建立基线快照（%d 个商品），之后的变化才会通知" % len(seen))
+        self._save_watch_state(ws)
+
+    def _save_watch_state(self, ws):
+        from .models import User
+        with db_session() as s:
+            u = s.get(User, self.user_id)
+            if u:
+                u.watch_state = ws
+
+    # ================================================================== 推送
+    def _send_async(self, title, html, topic=None, tag=""):
+        """自己起线程发，不走 dewu_push.send_async（那个会 import dewu_sniper 触发单例）。"""
+        def _run():
+            try:
+                ok, msg = PUSH.send(title, html, topic=topic)
+                self.log("[推送] %s%s · %s · %s"
+                         % ("✓ " if ok else "✗ ", msg, tag or "-", title),
+                         "ok" if ok else "error")
+            except Exception as e:
+                self.log("[推送] 异常：%r" % (e,), "error")
+        threading.Thread(target=_run, daemon=True, name="push-%d" % self.user_id).start()
+
+    def push_ready(self):
+        p = (self.settings().get("push") or {})
+        return bool(p.get("enabled") and p.get("token"))
+
+    def push_task(self, kind, prize, cost, balance, task_id, attempts=None, note=""):
+        """抢兑结果推送（kind: success / fail）。永不群发 —— 卡片里有账号信息。"""
+        p = (self.settings().get("push") or {})
+        if not p.get("enabled") or not p.get("token"):
+            return
+        if kind == "fail" and not p.get("on_fail"):
+            return
+        u = self._fresh_user()
+        card = PUSH.build_card(kind, u.remark or u.phone if u else "", prize, cost,
+                               balance, _now_str(), task_id=task_id,
+                               attempts=attempts, note=note)
+        head = "🎉 抢兑成功" if kind == "success" else "⚠️ 抢兑失败"
+        self._send_async("%s | %s" % (head, (prize or "")[:40]), card, tag="私发")
+
+    def push_stock(self, items):
+        """库存变化推送：群里「也」推一份（用户要的），抢兑结果不走这里。"""
+        p = (self.settings().get("push") or {})
+        if not p.get("enabled") or not p.get("token"):
+            return
+        items = [{"cName": i.get("cName"), "cost": i.get("cost"),
+                  "stock": i.get("stock"), "kind": i.get("kind")} for i in items]
+        kinds = set(i.get("kind") for i in items)
+        head = ("🔔 有货了" if kinds == {"restock"} else
+                "🆕 新品上架" if kinds == {"new"} else "🔔 库存变化")
+        names = [i.get("cName") or "商品" for i in items]
+        title = ("%s | %s" % (head, names[0][:40]) if len(names) == 1
+                 else "%s | %d 件（%s 等）" % (head, len(items), names[0][:24]))
+        u = self._fresh_user()
+        card = PUSH.build_stock_card(items, (u.remark or u.phone) if u else "",
+                                     _now_str(), interval_sec=(self.settings().get("watch") or {}).get("interval_sec"))
+
+        # 私发一份 + （配了群组且勾了）群发一份
+        topic = (PUSH.clean_topic(p.get("topic")) if p.get("topic") else "")
+        if topic and p.get("group_stock", True):
+            self._send_async(title, card, topic=topic, tag="群发「%s」" % topic)
+        if not topic or p.get("group_self_too", True):
+            self._send_async(title, card, tag="私发")
+
+    # ================================================================== 任务
+    def schedule(self, task_id, run_now=False):
+        """把任务挂到一个线程上跑（重复调用不会重复起线程）。"""
+        with self.lock:
+            t = self.task_threads.get(task_id)
+            if t and t.is_alive():
+                return False, "这个任务已经在跑了"
+            ev = threading.Event()
+            self.task_stop[task_id] = ev
+            th = threading.Thread(target=self._task_worker, args=(task_id, ev, run_now),
+                                  daemon=True, name="task-%d-%d" % (self.user_id, task_id))
+            self.task_threads[task_id] = th
+            th.start()
+        return True, "已开始"
+
+    def stop_task(self, task_id):
+        ev = self.task_stop.get(task_id)
+        if ev:
+            ev.set()
+            return True, "已请求停止"
+        return False, "这个任务没在跑"
+
+    def _task_worker(self, task_id, stop_ev, run_now):
+        from .models import Task
+        try:
+            while True:
+                with db_session() as s:
+                    task = s.get(Task, task_id)
+                    if task is None or task.status in (ST_DELETED, ST_CANCEL):
+                        return
+                    if task.status in (ST_OK, ST_FAIL) and not task.repeat_daily:
+                        return
+                    tstr = task.target_time
+                    lead = int(task.lead_ms or 300)
+                    repeat = bool(task.repeat_daily)
+                    tname = (task.prize or {}).get("cName")
+                    task.status = ST_WAIT
+                    task.updated_at = datetime.datetime.now()
+                    s.commit()
+
+                if run_now:
+                    target = datetime.datetime.now()
+                    run_now = False
+                    self.log("[任务#%d] 手动立即执行：%s" % (task_id, tname))
+                else:
+                    target = _next_target(tstr)
+                    fire_at = target - datetime.timedelta(milliseconds=lead)
+                    self.log("[任务#%d] 已排定：%s 开抢「%s」（提前 %d ms）"
+                             % (task_id, target.strftime("%m-%d %H:%M:%S"), tname, lead))
+                    while True:
+                        if stop_ev.is_set():
+                            self._finish(task_id, ST_CANCEL, "已手动停止")
+                            self.log("[任务#%d] 已手动停止" % task_id, "warn")
+                            return
+                        left = (fire_at - datetime.datetime.now()).total_seconds()
+                        if left <= 0:
+                            break
+                        stop_ev.wait(min(left, 1.0))
+                # ---- 开抢 ----
+                sess = self.session()
+                if sess is None:
+                    self._finish(task_id, ST_FAIL, "登录态丢失，请重新登录")
+                    return
+                with db_session() as s:
+                    task = s.get(Task, task_id)
+                    if task is None:
+                        return
+                    task.status = ST_RUN
+                    task.last_run_at = datetime.datetime.now()
+                    task.attempts = 0
+                    task.detail = "正在开抢…"
+                    prize = dict(task.prize or {})
+                    fb_on = bool(task.fallback_enabled)
+                    cfg = {"interval_ms": task.interval_ms, "max_attempts": task.max_attempts,
+                           "max_duration_sec": 180,
+                           "fallback": dict((self.settings().get("fallback") or {}))}
+                    cfg["fallback"]["enabled"] = fb_on
+                    s.commit()
+
+                t0 = time.time()
+                res = sess.run_task(prize, cfg, on_event=self._task_logger(task_id),
+                                    should_stop=stop_ev.is_set)
+                cost = (res["prize"] or {}).get("cost")
+                self.log("[任务#%d] %s（用时 %.1fs，%d 次）"
+                         % (task_id, res["detail"], time.time() - t0, res["attempts"]),
+                         "ok" if res["ok"] else "warn")
+
+                # 抢到的商品可能被降级换过 → 落库
+                with db_session() as s:
+                    task = s.get(Task, task_id)
+                    if task is None:
+                        return
+                    old_name = (task.prize or {}).get("cName")
+                    task.prize = res["prize"]
+                    task.status = ST_OK if res["ok"] else ST_FAIL
+                    task.attempts = res["attempts"]
+                    task.detail = res["detail"]
+                    task.finished_at = datetime.datetime.now()
+                    task.updated_at = datetime.datetime.now()
+                    fb_note = ""
+                    if res["fell_back"]:
+                        task.detail = "%s（原商品「%s」已失效/抢不到，自动降级抢到的）" % (
+                            res["detail"], (task.orig_prize or {}).get("cName") or old_name)
+                        fb_note = ("⚠ 原配置的「%s」已失效或抢不到，本单是【自动降级】后换商品抢到的。"
+                                   "不想要就去任务列表关掉「自动降级」。"
+                                   % ((task.orig_prize or {}).get("cName") or old_name))
+                    new_name = (task.prize or {}).get("cName")
+                    s.commit()
+
+                self.push_task("success" if res["ok"] else "fail", new_name, cost,
+                               res.get("balance"), task_id, res["attempts"], fb_note)
+
+                if not res["ok"] or not repeat:
+                    return
+                self.log("[任务#%d] 每日重复已开，等下一个 %s" % (task_id, tstr))
+        except Exception:
+            self.log("[任务#%d] 线程异常：\n%s" % (task_id, traceback.format_exc()), "error")
+            self._finish(task_id, ST_FAIL, "内部异常，详见日志")
+        finally:
+            with self.lock:
+                self.task_threads.pop(task_id, None)
+                self.task_stop.pop(task_id, None)
+
+    def _task_logger(self, task_id):
+        def cb(level, msg):
+            self.log("[任务#%d] %s" % (task_id, msg), level)
+        return cb
+
+    def _finish(self, task_id, status, detail):
+        from .models import Task
+        with db_session() as s:
+            t = s.get(Task, task_id)
+            if t:
+                t.status = status
+                t.detail = detail
+                t.finished_at = datetime.datetime.now()
+
+    # ------------------------------------------------------------------ 设置
+    def _save_settings(self, st):
+        from .models import User
+        with db_session() as s:
+            u = s.get(User, self.user_id)
+            if u:
+                u.settings = st
+
+
+# ====================================================================== 注册表
+_RUNTIMES = {}
+_RT_LOCK = threading.Lock()
+
+
+def runtime_for(user_id):
+    with _RT_LOCK:
+        rt = _RUNTIMES.get(user_id)
+        if rt is None:
+            rt = UserRuntime(user_id)
+            _RUNTIMES[user_id] = rt
+        return rt
+
+
+def all_runtimes():
+    with _RT_LOCK:
+        return dict(_RUNTIMES)
+
+
+def boot_all():
+    """进程启动时恢复：开着的库存监听 + 每日重复的未完成任务。"""
+    from sqlalchemy import select
+
+    from .models import Task, User
+    with db_session() as s:
+        users = list(s.scalars(select(User)))
+        tasks = list(s.scalars(select(Task)))
+    for u in users:
+        rt = runtime_for(u.id)
+        if (u.st().get("watch") or {}).get("enabled"):
+            try:
+                rt.watch_start()
+                rt.log("[启动] 已自动恢复库存监听")
+            except Exception as e:
+                rt.log("[启动] 恢复库存监听失败：%r" % (e,), "error")
+    for t in tasks:
+        if t.status in (ST_WAIT, ST_RUN):
+            rt = runtime_for(t.user_id)
+            rt.schedule(t.id)
+    return {"users": len(users), "tasks": len(tasks)}

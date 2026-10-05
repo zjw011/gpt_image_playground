@@ -1,0 +1,32 @@
+# 只把 web 版需要的东西送进构建上下文，别把 apk / exe / 截图传上去（几百 MB）
+_apk/
+build/
+build_new/
+dist/
+dist_new/
+_reverse_login/
+tools/
+icon_src/
+webdata/
+.git/
+*.apk
+*.exe
+*.spec
+*.png
+*.jpg
+*.ico
+*.log
+*.db
+*.sqlite3
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# 桌面版专用的文件（web 版用不到）
+dewu_gui.py
+dewu_sniper.py
+dewu_answer.py
+web_login.py
+使用说明.txt
