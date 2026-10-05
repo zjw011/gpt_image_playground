@@ -846,3 +846,9 @@ td .pname .t span { font-size: 11px; color: var(--ink3); }
 .workflow b, .workflow small { display: block; }
 .workflow small { color: var(--ink2); font-size: 12px; margin-top: 4px; }
 @media (max-width: 780px) { .workflow { grid-template-columns: repeat(2, 1fr); gap: 9px; } .workflow > div { padding: 12px; } }
+
+.purchase-notice { background: var(--blue-s); border: 1px solid #dce5ff; border-radius: 12px; padding: 16px; margin-bottom: 18px; }
+.purchase-notice p { color: var(--ink2); margin: 6px 0 12px; }
+.access-link-row { padding: 14px 0; border-bottom: 1px solid var(--line2); }
+.access-link-row:last-child { border-bottom: 0; }
+.access-link-row p { margin: 6px 0; }

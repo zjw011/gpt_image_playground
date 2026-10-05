@@ -109,6 +109,20 @@ class Admin(Base):
     last_login_at = Column(DateTime)
 
 
+class AccessLink(Base):
+    __tablename__ = "access_links"
+    id = Column(Integer, primary_key=True)
+    slug = Column(String(40), nullable=False)
+    note = Column(String(120), default="")
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    token_enc = Column(Text, nullable=False)
+    quota = Column(Integer, default=1)  # 免码链接固定只允许创建一个任务
+    used = Column(Integer, default=0)
+    enabled = Column(Boolean, default=True)
+    expires_at = Column(DateTime)
+    created_at = Column(DateTime, default=now)
+
+
 class RedeemCode(Base):
     __tablename__ = "redeem_codes"
     __table_args__ = (UniqueConstraint("code", name="uq_redeem_code"),)
@@ -132,6 +146,7 @@ class Task(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
     code_id = Column(Integer)
+    access_link_id = Column(Integer, ForeignKey("access_links.id"))
     prize = Column(JSON, default=dict)         # {cId,pId,skuId,cName,cost,stock,picture,price}
     orig_prize = Column(JSON, default=dict)
     target_time = Column(String(12), default="10:00:00")

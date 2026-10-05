@@ -5,6 +5,7 @@
 """
 import datetime
 import secrets
+import re
 
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import func, select
@@ -12,7 +13,7 @@ from sqlalchemy import func, select
 from .auth import (clear_cookie, create_session, current_admin, drop_session,
                    set_cookie)
 from .db import db_session, put_setting
-from .models import (Admin, Proxy, RedeemCode, Session as DbSession, Setting,
+from .models import (AccessLink, Admin, Proxy, RedeemCode, Session as DbSession, Setting,
                      Task, User)
 from .runtime import ST_DELETED, runtime_for
 from .security import COOKIE_ADMIN, hash_pw, verify_pw
@@ -166,7 +167,6 @@ def reset_credentials(uid: int, payload: dict, request: Request):
         u.login_at = None
         for sess in s.scalars(select(DbSession).where(DbSession.user_id == uid)):
             s.delete(sess)
-    rt.login_lease = None
     return {"ok": True, "msg": "凭据已重置，用户可用新密码进入；未调用得物登录"}
 
 
@@ -193,6 +193,59 @@ def delete_user(uid: int, request: Request):
         for t in s.scalars(select(Task).where(Task.user_id == uid)):
             s.delete(t)
         s.delete(u)
+    return {"ok": True}
+
+
+# ==================================================================== 免码链接
+@router.get("/access-links")
+def list_access_links(request: Request):
+    current_admin(request)
+    from .secret_store import decrypt
+    from .access_links import valid
+    with db_session() as s:
+        rows = list(s.scalars(select(AccessLink).order_by(AccessLink.id.desc()).limit(1000)))
+        return {"ok": True, "links": [{"id": row.id, "slug": row.slug, "note": row.note,
+            "quota": 1, "used": row.used, "enabled": row.enabled,
+            "valid": valid(row), "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+            "path": "/access/%s/%s" % (row.slug, decrypt(row.token_enc))} for row in rows]}
+
+
+@router.post("/access-links")
+def generate_access_link(payload: dict, request: Request):
+    current_admin(request)
+    from .secret_store import encrypt
+    from .access_links import digest
+    slug = str(payload.get("slug") or "vip").strip().lower()
+    if not re.fullmatch(r"[a-z0-9-]{1,40}", slug):
+        return {"ok": False, "msg": "地址名称限 1-40 个小写字母、数字或短横线"}
+    try:
+        quota = int(payload.get("quota", 1))
+        days = int(payload.get("days", 7))
+        if quota != 1 or not 1 <= days <= 365:
+            raise ValueError()
+    except (ValueError, TypeError):
+        return {"ok": False, "msg": "每条链接仅可创建一个任务，有效期为 1-365 天"}
+    token = secrets.token_urlsafe(32)
+    with db_session() as s:
+        row = AccessLink(slug=slug, note=str(payload.get("note") or "")[:120],
+                         token_hash=digest(token), token_enc=encrypt(token), quota=quota,
+                         expires_at=datetime.datetime.now() + datetime.timedelta(days=days))
+        s.add(row)
+        s.flush()
+        link_id = row.id
+    return {"ok": True, "id": link_id, "path": "/access/%s/%s" % (slug, token)}
+
+
+@router.post("/access-links/{link_id}/status")
+def access_link_status(link_id: int, payload: dict, request: Request):
+    current_admin(request)
+    if not isinstance(payload.get("enabled"), bool):
+        return {"ok": False, "msg": "请选择启用或停用"}
+    with db_session() as s:
+        row = s.get(AccessLink, link_id)
+        if row is None:
+            return {"ok": False, "msg": "链接不存在"}
+        row.enabled = payload["enabled"]
     return {"ok": True}
 
 
@@ -541,6 +594,12 @@ def save_tianqi(payload: dict, request: Request):
             kw[k] = v
         else:
             kw[k] = v
+    url = str(payload.get("api_url") or "").strip()
+    if url:
+        try:
+            kw.update(TQ.parse_api_url(url))
+        except ValueError as exc:
+            return {"ok": False, "msg": str(exc)}
     TQ.save_cfg(**kw)
     return {"ok": True, "msg": "已保存", "config": TQ.public_view(),
             "status": _tq_status()}

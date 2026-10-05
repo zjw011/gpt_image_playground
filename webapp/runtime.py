@@ -61,7 +61,6 @@ class UserRuntime:
         self.user_id = user_id
         self.lock = threading.RLock()
         self.login_lock = threading.Lock()
-        self.login_lease = None
 
         self.products = []
         self.balance = None
@@ -144,15 +143,9 @@ class UserRuntime:
         }
 
     def do_login(self, use_ip=False, life=None, why=""):
-        # 同账号的同期任务共享一次提取与登录，避免重复购买并覆盖 token。
+        # 每个任务独立提取与登录；同账号串行准备，任务持有各自 token。
         with self.login_lock:
-            lease = self.login_lease
-            if use_ip and lease and lease.get("expire_at", 0) - time.time() > 130 and self.creds()[2] == lease.get("token"):
-                return True, "复用本轮登录和代理", dict(lease)
-            result = self._do_login(use_ip=use_ip, life=life, why=why)
-            if result[0] and result[2].get("via_ip"):
-                self.login_lease = dict(result[2], token=self.creds()[2])
-            return result
+            return self._do_login(use_ip=use_ip, life=life, why=why)
 
     def _do_login(self, use_ip=False, life=None, why=""):
         """登录一次并把结果落库。返回 ``(ok, msg, info)``。

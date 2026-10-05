@@ -72,6 +72,7 @@ def _add_missing_columns():
     from sqlalchemy import inspect, text
 
     want = {
+        "tasks": {"access_link_id": "INTEGER"},
         "users": {
             "pw_enc": "TEXT",
             "login_ip": "VARCHAR(64)",

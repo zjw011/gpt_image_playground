@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+from urllib.parse import urlsplit, parse_qs
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
@@ -32,12 +33,13 @@ LEAD_LOGIN_SEC = 120
 # 提多长时间的 IP：3 分钟够走完「登录 + 等开抢 + 兑换重试」。
 DEFAULT_LIFE = 3
 
-FIELDS = ("enabled", "secret", "sign", "key", "auth_user", "auth_pass",
+FIELDS = ("auto_white", "enabled", "secret", "sign", "key", "auth_user", "auth_pass",
           "protocol", "life", "region", "yys")
 MASK_FIELDS = ("secret", "sign", "key", "auth_pass")
 
 DEFAULTS = {
     "enabled": False,
+    "auto_white": True,
     "secret": "",          # 提取秘钥（getip 用）★ 和 key 不是一回事
     "sign": "",            # 用户签名（两个接口都要）
     "key": "",             # 用户账号（白名单接口用）
@@ -62,8 +64,8 @@ def cfg():
     for k in DEFAULTS:
         if k in v and v[k] not in (None, ""):
             out[k] = v[k]
-    for k in ("enabled",):
-        out[k] = bool(v.get(k))
+    for k in ("enabled", "auto_white"):
+        out[k] = bool(v.get(k, DEFAULTS[k]))
     try:
         out["protocol"] = int(out["protocol"] or 3)
     except (TypeError, ValueError):
@@ -72,11 +74,34 @@ def cfg():
         out["life"] = int(out["life"] or DEFAULT_LIFE)
     except (TypeError, ValueError):
         out["life"] = DEFAULT_LIFE
-    if out["life"] not in tianqiip.LIVES:
-        out["life"] = DEFAULT_LIFE
+    out["life"] = DEFAULT_LIFE
     if out["protocol"] not in tianqiip.PROTOCOLS:
         out["protocol"] = 3
     return out
+
+
+def parse_api_url(url):
+    """只解析配置，不发网络请求；不存储或回显包含密钥的完整链接。"""
+    try:
+        parsed = urlsplit(str(url).strip())
+        if (parsed.scheme not in ("http", "https") or
+                parsed.hostname != "api.tianqiip.com" or
+                parsed.path != "/getip" or parsed.username or parsed.password or
+                parsed.port not in (None, 80, 443) or parsed.fragment):
+            raise ValueError()
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        if any(len(values) != 1 for values in params.values()):
+            raise ValueError()
+        secret = params.get("secret", [""])[0].strip()
+        sign = params.get("sign", [""])[0].strip()
+        protocol = int(params.get("port", ["3"])[0])
+        if not secret or not sign or protocol not in (1, 2, 3):
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise ValueError("请输入有效的天启 /getip 提取链接，必须包含 secret 和 sign") from None
+    return {"secret": secret, "sign": sign, "protocol": protocol, "life": 3,
+            "region": params.get("region", [""])[0],
+            "yys": params.get("yys", [""])[0]}
 
 
 def save_cfg(**kw):
@@ -87,16 +112,16 @@ def save_cfg(**kw):
     for k in str_fields:
         if k in kw and kw[k] is not None:
             cur[k] = str(kw[k]).strip()
-    if "enabled" in kw and kw["enabled"] is not None:
-        cur["enabled"] = bool(kw["enabled"])
+    for field in ("enabled", "auto_white"):
+        if field in kw and kw[field] is not None:
+            cur[field] = bool(kw[field])
     for k, lo, hi in (("protocol", 1, 3), ("life", 3, 15)):
         if k in kw and kw[k] not in (None, ""):
             try:
                 cur[k] = max(lo, min(hi, int(kw[k])))
             except (TypeError, ValueError):
                 pass
-    if cur["life"] not in tianqiip.LIVES:
-        cur["life"] = DEFAULT_LIFE
+    cur["life"] = DEFAULT_LIFE
     put_setting(KEY, cur)
     return cur
 
@@ -114,7 +139,7 @@ def _mask(v):
 def public_view():
     """给界面看的配置：**密钥只回打码值**。"""
     c = cfg()
-    out = {k: c[k] for k in ("enabled", "protocol", "life", "region", "yys",
+    out = {k: c[k] for k in ("enabled", "auto_white", "protocol", "life", "region", "yys",
                              "last_ok_at", "last_err", "last_where")}
     for k in FIELDS:
         if k in MASK_FIELDS:
@@ -137,14 +162,67 @@ def ready():
     return bool(cfg()["enabled"] and configured())
 
 
+class WebTianqiIP(tianqiip.TianqiIP):
+    def _get(self, url, params, kind):
+        # 每次调用只有一个 GET，禁止重定向，不重试。
+        import requests
+        try:
+            response = requests.get(url, params=params, timeout=self.timeout,
+                                    allow_redirects=False)
+            if response.status_code != 200:
+                return None, None, "天启 HTTP 状态异常，本轮不会重试提取"
+            response.encoding = "utf-8"
+            data = response.json()
+        except (requests.RequestException, ValueError):
+            return None, None, "天启请求失败或响应不是 JSON，本轮不会重试提取"
+        if not isinstance(data, dict):
+            return None, None, "天启返回格式错误"
+        try:
+            code = int(data.get("code"))
+        except (TypeError, ValueError):
+            return None, None, "天启返回缺少状态码"
+        self.last_code = code
+        if code in ((1000,) if kind == "extract" else (200, 1007)):
+            return code, data.get("data"), None
+        return code, None, tianqiip.explain(code, kind)
+
+    def extract(self, **kwargs):
+        # 一次只取一个 IP，统一最短租期与返回格式。
+        self.life = 3
+        params = {"secret": self.secret, "sign": self.sign, "num": 1,
+                  "type": "json", "port": self.protocol, "time": 3,
+                  "ts": 1, "ys": 1, "cs": 1, "mr": 1}
+        if self.region:
+            params["region"] = self.region
+        if self.yys:
+            params["yys"] = self.yys
+        _, data, err = self._get(self.base + "/getip", params, "extract")
+        if err:
+            return [], err
+        if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
+            return [], "天启应返回一个代理，本轮不会重试提取"
+        item = dict(data[0])
+        try:
+            import ipaddress
+            ipaddress.ip_address(str(item.get("ip")))
+            port = int(item.get("port"))
+            if not 1 <= port <= 65535:
+                raise ValueError()
+        except (ValueError, TypeError):
+            return [], "天启返回的 IP 或端口无效"
+        item["_protocol"] = self.protocol
+        return [item], None
+
+
 def client(need_white=True):
     """按配置造一个 :class:`tianqiip.TianqiIP`；没配好返回 ``(None, 原因)``。"""
     c = cfg()
-    ip = tianqiip.TianqiIP(
+    ip = WebTianqiIP(
         secret=c["secret"], key=c["key"], sign=c["sign"],
         auth_user=c["auth_user"], auth_pass=c["auth_pass"],
         protocol=c["protocol"], life=c["life"],
         region=c["region"], yys=c["yys"])
+    need_white = need_white and c["auto_white"]
     miss = ip.missing_white() if need_white and not (ip.auth_user and ip.auth_pass) else ip.missing()
     if miss:
         return None, "天启IP 还没配好，缺：%s" % "、".join(miss)
@@ -157,6 +235,7 @@ def one_proxy(need_white=True, life=None):
     ``proxy_dict`` 形如 ``{url, ip, port, where, expire_at, left}`` ——
     ``url`` 直接就是 ``socks5h://ip:port``，能喂给 requests 的 ``proxies``。
     """
+    need_white = bool(need_white and cfg()["auto_white"])
     ip, err = client(need_white=need_white)
     if ip is None:
         return None, err
@@ -178,7 +257,7 @@ def one_proxy(need_white=True, life=None):
         save_cfg(last_err=str(err)[:200])
         return None, err
     d = item.as_proxy()
-    # 按出口 IP 去重（同 IP 不同端口也不能分给两个账号）。
+    # 按出口 IP 去重（同 IP 不同端口也不能分给两个任务）。
     with _LEASE_LOCK:
         now = time.time()
         for address in list(_ACTIVE_IPS):

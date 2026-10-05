@@ -16,6 +16,8 @@ from .models import Log, RedeemCode, Task, User, merge_defaults
 from .runtime import ST_DELETED, ST_WAIT, LEAD_LOGIN_SEC, runtime_for
 from .security import COOKIE_USER
 
+from .access_links import COOKIE_ACCESS, request_grant, consume_grant
+
 import dewu_push as PUSH
 
 router = APIRouter(prefix="/api", tags=["user"])
@@ -136,6 +138,7 @@ def login(payload: dict, request: Request, response: Response):
 def logout(request: Request, response: Response):
     drop_session(request.cookies.get(COOKIE_USER))
     clear_cookie(response, "user")
+    response.delete_cookie(COOKIE_ACCESS, path="/")
     return {"ok": True}
 
 
@@ -147,19 +150,21 @@ def me(request: Request):
     pub = GL.public_view()
     rt = runtime_for(u.id)
     li = rt.login_info()
+    grant = request_grant(request)
     return {
         "ok": True,
         "user": {"id": u.id, "phone": _mask(u.phone), "remark": u.remark or "",
                  "activity": u.activity or g.get("dewu_activity"),
                  "dewu_user_id": u.dewu_user_id or "",
                  "created_at": u.created_at.strftime("%Y-%m-%d %H:%M") if u.created_at else ""},
+        "access_link": grant,
         "settings": u.st(),
         "proxy": rt.proxy_info(),
         # ★ 登录状态：懒登录模式下这里长期是「未登录」，开抢前 2 分钟才会变成已登录
         "login": dict(li, lazy=bool(li.get("has_password")),
                       lead_sec=LEAD_LOGIN_SEC),
         "global": {"activity": g.get("dewu_activity"),
-                   "require_code": g.get("require_code_for_task"),
+                   "require_code": bool(g.get("require_code_for_task") and not grant),
                    "proxy_enabled": g.get("proxy_enabled"),
                    "proxy_required": g.get("proxy_required"),
                    # 管理员配了公共账号 → 商品列表由它统一提供
@@ -187,6 +192,8 @@ def state(request: Request, logs: int = 120):
     snap["logs"] = rt.logs_snapshot(logs)
     snap["server_time"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     snap["push_ready"] = rt.push_ready()
+    snap["access_link"] = request_grant(request)
+    snap["require_code"] = bool(global_cfg().get("require_code_for_task") and not snap["access_link"])
     return snap
 
 
@@ -265,7 +272,8 @@ def create_task(payload: dict, request: Request):
         return {"ok": False, "msg": "管理员尚未启用并配置天启代理，请联系管理员后创建任务"}
     cid = payload.get("cId")
     code_text = payload.get("code") or ""
-    if g.get("require_code_for_task") and not code_text:
+    grant = request_grant(request)
+    if g.get("require_code_for_task") and not code_text and not grant:
         return {"ok": False, "msg": "请输入兑换码（一个兑换码只能创建一个任务）"}
 
     snap = _apply_public_list(rt.snapshot())
@@ -295,6 +303,12 @@ def create_task(payload: dict, request: Request):
         s.add(task)
         s.flush()
         tid = task.id
+        if grant and not code_text:
+            grant_id = consume_grant(s, request.cookies.get(COOKIE_ACCESS))
+            if not grant_id:
+                s.rollback()
+                return {"ok": False, "msg": "免码链接已失效或额度已用完，请使用兑换码"}
+            task.access_link_id = grant_id
         if code_text:
             ok, msg = _consume_code(s, code_text, u.id, tid)
             if not ok:

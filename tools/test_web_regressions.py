@@ -15,12 +15,12 @@ os.environ["ADMIN_PASSWORD"] = "offline-test-admin"
 from fastapi.testclient import TestClient
 from webapp import api_user, dewu_client, tianqi
 from webapp.db import init_db, db_session, put_setting, engine
-from webapp.models import User, RedeemCode, Task, merge_defaults
+from webapp.models import User, RedeemCode, Task, AccessLink, merge_defaults
 from webapp.main import app, _login_attempts
 from webapp.runtime import UserRuntime, runtime_for
 from webapp.secret_store import encrypt
 from webapp.auth import create_session
-from webapp.security import COOKIE_USER
+from webapp.security import COOKIE_USER, COOKIE_ADMIN
 
 
 class WebRegressionTests(unittest.TestCase):
@@ -47,7 +47,6 @@ class WebRegressionTests(unittest.TestCase):
             u.pw_enc = encrypt(password)
             u.token = ""
             uid = u.id
-        runtime_for(uid).login_lease = None
         return uid
 
     def test_password_login_and_refresh_never_call_platform(self):
@@ -68,7 +67,7 @@ class WebRegressionTests(unittest.TestCase):
         self.assertNotIn(COOKIE_USER, self.client.cookies)
         self.assertEqual(UserRuntime(uid).creds()[1], "secret")
 
-    def test_same_account_parallel_tasks_extract_and_login_once(self):
+    def test_same_account_parallel_tasks_extract_and_login_independently(self):
         uid = self.user()
         rt = UserRuntime(uid)
         proxy = {"url": "socks5h://1.2.3.4:1080", "ip": "1.2.3.4", "where": "测试", "expire_at": time.time() + 180}
@@ -78,8 +77,8 @@ class WebRegressionTests(unittest.TestCase):
             for th in threads: th.start()
             for th in threads: th.join()
             self.assertTrue(all(r[0] for r in results))
-            self.assertEqual(extract.call_count, 1)
-            self.assertEqual(login.call_count, 1)
+            self.assertEqual(extract.call_count, 6)
+            self.assertEqual(login.call_count, 6)
             self.assertEqual(login.call_args.kwargs["proxies"]["https"], proxy["url"])
 
     def test_prepared_session_keeps_matching_login_token(self):
@@ -97,6 +96,39 @@ class WebRegressionTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("IP", msg)
             login.assert_not_called()
+
+    def test_import_api_url_parses_only_and_fixes_shortest_life(self):
+        with patch("requests.get") as get:
+            result = tianqi.parse_api_url("http://api.tianqiip.com/getip?secret=fake-secret&sign=fake-sign&num=100&time=15&port=3&type=txt")
+        get.assert_not_called()
+        self.assertEqual(result["secret"], "fake-secret")
+        self.assertEqual(result["life"], 3)
+        for bad in ("http://evil.example/getip?secret=x&sign=y", "http://api.tianqiip.com/getip?secret=x&secret=y&sign=z"):
+            with self.assertRaises(ValueError):
+                tianqi.parse_api_url(bad)
+
+    def test_web_extraction_requests_once_and_parses_real_response_shape(self):
+        client = tianqi.WebTianqiIP(secret="fake", sign="fake", protocol=3, life=15)
+        response = Mock(status_code=200)
+        response.json.return_value = {"code": 1000, "data": [{"ip": "49.88.212.2", "port": 40035, "prov": "江苏", "city": "连云港", "isp": "电信", "expire": "2026-10-05 19:19:08"}]}
+        with patch("requests.get", return_value=response) as get:
+            lease, err = client.extract_lease()
+        self.assertFalse(err)
+        self.assertEqual(lease.port, 40035)
+        self.assertIn("连云港", lease.where())
+        self.assertEqual(get.call_count, 1)
+        self.assertFalse(get.call_args.kwargs["allow_redirects"])
+        params = get.call_args.kwargs["params"]
+        self.assertEqual((params["num"], params["time"], params["ys"], params["cs"]), (1, 3, 1, 1))
+
+    def test_web_extraction_timeout_never_retries(self):
+        import requests
+        client = tianqi.WebTianqiIP(secret="fake", sign="fake")
+        with patch("requests.get", side_effect=requests.Timeout()) as get:
+            lease, err = client.extract_lease()
+        self.assertIsNone(lease)
+        self.assertTrue(err)
+        self.assertEqual(get.call_count, 1)
 
     def test_white_failure_does_not_purchase_proxy(self):
         fake = Mock(auth_user="", auth_pass="", key="test-key", sign="test-sign")
@@ -206,6 +238,104 @@ class WebRegressionTests(unittest.TestCase):
         message = rt.logs_snapshot()[-1]["msg"]
         for value in ("private", "signature", "password"):
             self.assertNotIn(value, message)
+
+    def admin(self):
+        self.client.cookies.set(COOKIE_ADMIN, create_session("admin", admin_id=1))
+
+    def link(self, quota=1):
+        self.admin()
+        result = self.client.post("/api/admin/access-links", json={"slug": "test-vip", "quota": quota, "days": 7, "note": "测试入口"}).json()
+        self.assertTrue(result["ok"], result)
+        return result
+
+    def test_access_link_cannot_be_issued_with_multiple_task_quota(self):
+        self.admin()
+        result = self.client.post("/api/admin/access-links", json={"quota": 2, "slug": "invalid"}).json()
+        self.assertFalse(result["ok"])
+
+    def test_link_menu_requires_admin(self):
+        self.assertEqual(self.client.get("/api/admin/access-links").status_code, 401)
+        self.assertEqual(self.client.post("/api/admin/access-links", json={}).status_code, 401)
+
+    def test_link_bypasses_code_only_after_valid_entry_and_records_quota(self):
+        uid = self.user()
+        self.client.cookies.set(COOKIE_USER, create_session("user", user_id=uid))
+        rt = runtime_for(uid)
+        with patch.object(tianqi, "ready", return_value=True), patch.object(api_user, "_apply_public_list", return_value={"products": [{"cId": 77, "cName": "测试商品"}]}), patch.object(rt, "schedule"):
+            rejected = self.client.post("/api/tasks", json={"cId": 77, "access_link": True, "require_code": False}).json()
+            self.assertFalse(rejected["ok"])
+            link = self.link()
+            self.assertEqual(self.client.get(link["path"], follow_redirects=False).status_code, 303)
+            me = self.client.get("/api/me").json()
+            self.assertFalse(me["global"]["require_code"])
+            invalid = self.client.post("/api/tasks", json={"cId": 999}).json()
+            self.assertFalse(invalid["ok"])
+            with db_session() as db:
+                self.assertEqual(db.get(AccessLink, link["id"]).used, 0)
+            created = self.client.post("/api/tasks", json={"cId": 77}).json()
+            self.assertTrue(created["ok"], created)
+            again = self.client.post("/api/tasks", json={"cId": 77}).json()
+            self.assertFalse(again["ok"])
+            self.assertTrue(self.client.get("/api/me").json()["global"]["require_code"])
+            self.client.post(f"/api/tasks/{created['task_id']}/delete", json={})
+            self.assertTrue(self.client.get("/api/me").json()["global"]["require_code"])
+            with db_session() as db:
+                self.assertEqual(db.get(AccessLink, link["id"]).used, 1)
+                self.assertEqual(db.get(Task, created["task_id"]).access_link_id, link["id"])
+                db.add(RedeemCode(code="LINK-THEN-CODE", quota=1, used=0, status="active"))
+            paid = self.client.post("/api/tasks", json={"cId": 77, "code": "LINK-THEN-CODE"}).json()
+            self.assertTrue(paid["ok"], paid)
+            with db_session() as db:
+                self.assertIsNotNone(db.get(Task, paid["task_id"]).code_id)
+                self.assertIsNone(db.get(Task, paid["task_id"]).access_link_id)
+                self.assertEqual(db.get(AccessLink, link["id"]).used, 1)
+
+    def test_disabled_and_expired_link_grants_are_rejected(self):
+        import datetime
+        uid = self.user()
+        self.client.cookies.set(COOKIE_USER, create_session("user", user_id=uid))
+        link = self.link()
+        self.client.get(link["path"], follow_redirects=False)
+        self.assertFalse(self.client.get("/api/me").json()["global"]["require_code"])
+        self.client.post(f"/api/admin/access-links/{link['id']}/status", json={"enabled": False})
+        self.assertTrue(self.client.get("/api/me").json()["global"]["require_code"])
+        self.assertEqual(self.client.get(link["path"], follow_redirects=False).status_code, 403)
+        with db_session() as db:
+            row = db.get(AccessLink, link["id"])
+            row.enabled = True
+            row.expires_at = datetime.datetime.now() - datetime.timedelta(seconds=1)
+        self.assertEqual(self.client.get(link["path"], follow_redirects=False).status_code, 403)
+
+    def test_parallel_link_quota_is_consumed_once(self):
+        from webapp.access_links import consume_grant
+        link = self.link()
+        token = link["path"].rsplit("/", 1)[1]
+        barrier = threading.Barrier(6)
+        results, errors = [], []
+        def consume():
+            try:
+                barrier.wait(timeout=3)
+                with db_session() as db:
+                    results.append(consume_grant(db, token))
+            except Exception as exc:
+                errors.append(str(exc))
+        threads = [threading.Thread(target=consume) for _ in range(6)]
+        for th in threads: th.start()
+        for th in threads: th.join()
+        self.assertFalse(errors, errors)
+        self.assertEqual(sum(bool(r) for r in results), 1)
+
+    def test_api_url_save_does_not_extract_or_echo_credentials(self):
+        self.admin()
+        with patch("requests.get") as get:
+            result = self.client.post("/api/admin/tianqi", json={"api_url": "http://api.tianqiip.com/getip?secret=fake-private-secret&sign=fake-private-sign&port=3", "auto_white": False, "enabled": True}).json()
+        get.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertTrue(tianqi.ready())
+        self.assertNotIn("fake-private-secret", str(result))
+        self.assertNotIn("fake-private-sign", str(result))
+        client, err = tianqi.client()
+        self.assertIsNotNone(client, err)
 
     def test_cross_site_login_is_rejected(self):
         r = self.client.post("/api/login", json={}, headers={"Origin": "https://evil.example"})

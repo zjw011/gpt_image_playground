@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import api_admin, api_user, global_list
@@ -69,7 +69,7 @@ async def request_guard(request: Request, call_next):
             q.append(now)
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers["X-Frame-Options"] = "DENY"
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
@@ -85,6 +85,25 @@ async def http_exc(_req: Request, exc: HTTPException):
     """统一成 {ok:false,msg}，前端只看这两个字段。"""
     return JSONResponse(status_code=exc.status_code,
                         content={"ok": False, "msg": exc.detail, "code": exc.status_code})
+
+
+@app.get("/access/{slug}/{token}")
+def access_entry(slug: str, token: str):
+    from .access_links import COOKIE_ACCESS, lookup_link, valid
+    from .db import db_session
+    from .config import settings
+    with db_session() as s:
+        link = lookup_link(s, token)
+        if not valid(link) or link.slug != slug:
+            response = JSONResponse(status_code=403, content={"ok": False, "msg": "免码链接无效、已停用、已过期或额度已用完"})
+            response.delete_cookie(COOKIE_ACCESS, path="/")
+            return response
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(COOKIE_ACCESS, token, max_age=7 * 86400, httponly=True,
+                        secure=settings.cookie_secure, samesite="lax", path="/")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 
 @app.get("/admin")

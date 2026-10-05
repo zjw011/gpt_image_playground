@@ -16,7 +16,7 @@ const APP = (() => {
 
   const S = {
     view: 'overview',
-    me: null, cfg: null, global: null, state: null, login: null,
+    me: null, cfg: null, global: null, state: null, login: null, accessLink: null,
     admin: null, adminTab: 'overview', adminData: {},
     sel: null, timer: null, tickTimer: null, lastPSig: '', lastTSig: '',
     filter: { q: '', stock: 'all', sort: 'default' },
@@ -155,7 +155,7 @@ const APP = (() => {
         <input id="pwd" type="password" placeholder="得物账号密码" autocomplete="current-password">
         <div class="hint" style="line-height:1.7">
           <b>请确保账号密码正确。</b>创建任务后、<b>开抢的前 2 分钟</b>才会进行登录操作 ——
-          到那时才提一个短效 IP，用同一个 IP 完成「登录 + 兑换」，一个号只用一个出口。
+          到那时才提一个短效 IP，用同一个 IP 完成「登录 + 兑换」，每个任务独立使用一个出口。
         </div></label>
       <button class="btn btn-p btn-block" id="lgBtn">${ic('shield')}保存并进入</button>
 
@@ -338,7 +338,7 @@ const APP = (() => {
 
     <div class="workflow" aria-label="任务执行流程">
       <div><span>01</span><b>保存账号</b><small>仅加密保存，不立即登录</small></div>
-      <div><span>02</span><b>选商品 · 填授权码</b><small>创建任务后可关闭网页</small></div>
+      <div><span>02</span><b id="flowAuth">选商品 · 填授权码</b><small>创建任务后可关闭网页</small></div>
       <div><span>03</span><b>提前两分钟准备</b><small>提取 3 分钟代理并登录</small></div>
       <div><span>04</span><b>整点兑换 · 成功推送</b><small>同一代理，本轮最多 50 秒</small></div>
     </div>
@@ -373,6 +373,7 @@ const APP = (() => {
     // ★ 用户设置只有 S.cfg 一份（/api/me 的顶层 settings），不是 S.me.settings
     const push = (S.cfg || {}).push || {};
     const bal = st.balance;
+    if ($('#flowAuth')) $('#flowAuth').textContent = S.accessLink ? '选商品 · 免兑换码' : '选商品 · 填授权码';
     const hint = $('#setupHint');
     const missing = [];
     if (S.login?.lazy && !S.global?.public_list) missing.push('公共商品账号尚未配置，请联系管理员');
@@ -685,6 +686,11 @@ const APP = (() => {
             库存实时监听由<b>服务端统一监控</b>（走公共账号拉商品，<b>不占用你的账号</b>），
             有新上架 / 补货就会推给你。Web 端不再单独跑监听，你的账号只在抢兑前 2 分钟被用到。
             想第一时间收到提醒，<b>扫码加入组织群</b>。</div>
+          <div class="purchase-notice">
+            <b>定时兑换任务 · 卡密购买</b>
+            <p>普通入口创建任务需要兑换码，购买后填入任务表单。</p>
+            <a class="btn btn-p btn-sm" href="https://wzyp.cn/item/1gg953" target="_blank" rel="noopener noreferrer">购买任务卡密 ↗</a>
+          </div>
           <div style="text-align:center">
             <img src="/qr_group.png" alt="扫码加入组织群" loading="lazy"
               style="width:210px;height:210px;border-radius:12px;border:1px solid var(--line);background:#fff;padding:6px">
@@ -813,6 +819,8 @@ const APP = (() => {
     try {
       const st = await api('/api/state');
       S.state = st;
+      S.accessLink = st.access_link || null;
+      if (S.global && typeof st.require_code === "boolean") S.global.require_code = st.require_code;
       paint();
     } catch (e) {
       if (e.status === 401) { stopPoll(); renderLogin('登录已过期，请重新登录'); }
@@ -960,7 +968,7 @@ const APP = (() => {
       </div>
       ${g.require_code ? `<label class="fld"><span>兑换码（必填 · 一个码只能创建一个任务）</span>
         <input id="tCode" placeholder="例如 DW-XXXX-XXXX" style="text-transform:uppercase"
-          autocomplete="off"></label>` : ''}
+          autocomplete="off"><div class="hint"><a href="https://wzyp.cn/item/1gg953" target="_blank" rel="noopener noreferrer">没有兑换码？购买任务卡密 ↗</a></div></label>` : (S.accessLink ? '<div class="msg ok show">本链接仅可免码创建一个任务，用完后需兑换码</div>' : '')}
       <div class="grid2">
         <label class="fld"><span>目标时间</span>
           <input id="tTime" value="${esc(fd.time || '10:00:00')}" placeholder="10:00:00"></label>
@@ -999,7 +1007,7 @@ const APP = (() => {
         const j = await api('/api/tasks', body);
         if (!j.ok) { setMsg('#tMsg', j.msg, 'err'); busy($('#tOk'), false); return; }
         closeModal(); toast('任务 #' + j.task_id + ' 已创建', 'ok');
-        S.lastTSig = ''; refreshState();
+        S.lastTSig = ''; await refreshState();
       } catch (e) { setMsg('#tMsg', e.message, 'err'); busy($('#tOk'), false); }
     };
   }
@@ -1063,6 +1071,7 @@ const APP = (() => {
   const AV = {
     overview: { t: '概览', s: '整体数据与最近动态', n: 'grid' },
     codes:    { t: '兑换码', s: '批量生成、作废、导出', n: 'ticket' },
+    links:    { t: '免码链接', s: '每条链接仅一个任务、有效期和停用', n: 'key' },
     users:    { t: '用户', s: '禁用、踢下线、删除', n: 'users' },
     proxies:  { t: '代理 IP', s: '导入 IP 池、探测、按用户分配', n: 'pulse' },
     settings: { t: '全局设置', s: '活动 id / sign / 注册开关', n: 'sliders' },
@@ -1177,7 +1186,7 @@ const APP = (() => {
 
   ADMIN_BIND.overview = async () => {
     const st = await fetchOverview();
-    if (!st) return;
+    if (!st || S.adminTab !== "overview" || !$("#adStats")) return;
     const e = $('#adUsers'); if (e) e.textContent = st.users || 0;
     $('#adStats').innerHTML = [
       { i: 'users', c: 'blue', n: st.users, l: '用户数' },
@@ -1201,6 +1210,7 @@ const APP = (() => {
         : '<div class="empty" style="padding:24px">还没有用户登录过</div>';
     } catch (e2) { box.innerHTML = '<div class="empty" style="padding:24px">加载失败</div>'; }
 
+    if (S.adminTab !== 'overview') return;
     const cb = $('#adRecentCodes');
     try {
       const c = await api('/api/admin/codes?limit=200');
@@ -1211,6 +1221,57 @@ const APP = (() => {
         : '<div class="empty" style="padding:24px">还没有兑换码</div>';
     } catch (e2) { cb.innerHTML = '<div class="empty" style="padding:24px">加载失败</div>'; }
   };
+
+  ADMIN_HTML.links = () => `
+    <div class="card"><div class="card-h"><h3>${ic('key')}生成免兑换码链接</h3></div>
+    <div class="card-b"><p class="muted">用户从该链接进入后，仍需填写得物账号密码；每条链接总共只能创建一个任务，随后必须使用兑换码。删除任务不返还权限。停用只影响新建任务。</p>
+      <div class="grid2"><label class="fld"><span>自定义地址名称</span><input id="alSlug" value="vip" maxlength="40" placeholder="小写字母、数字、短横线"></label>
+      <label class="fld"><span>备注</span><input id="alNote" maxlength="120" placeholder="例如：内部客户"></label></div>
+      <div class="grid2"><label class="fld"><span>有效期（天，1-365）</span><input id="alDays" type="number" min="1" max="365" value="7"></label>
+      <label class="fld"><span>可创建任务数</span><input value="1 个任务（固定，用完需兑换码）" readonly></label></div>
+      <div class="msg" id="alMsg"></div><button class="btn btn-p" onclick="APP.generateLink(this)">生成链接</button>
+    </div></div>
+    <div class="card"><div class="card-h"><h3>已生成的链接</h3><div class="sp"></div><button class="btn btn-s btn-sm" onclick="APP.loadAccessLinks()">刷新</button></div>
+      <div class="card-b" id="accessLinks"></div></div>`;
+  ADMIN_BIND.links = () => loadAccessLinks();
+  async function loadAccessLinks() {
+    const box = $('#accessLinks');
+    if (!box) return;
+    try {
+      const j = await api('/api/admin/access-links');
+      box.innerHTML = j.links.length ? j.links.map((link) => `<div class="access-link-row">
+        <div class="row"><b>${esc(link.note || link.slug)}</b><span class="tag ${link.valid ? 'ok' : 'bad'}">${link.valid ? '可用' : '已失效'}</span></div>
+        <p class="muted">已创建 ${link.used} / 1 · 到期 ${esc((link.expires_at || '').replace('T', ' ').slice(0, 16))}</p>
+        <input id="alUrl${link.id}" value="${esc(location.origin + link.path)}" readonly aria-label="免码链接" onclick="this.select()">
+        <div class="row" style="margin-top:10px"><button class="btn btn-s btn-sm" onclick="APP.copyAccessLink(${link.id})">复制链接</button>
+        <button class="btn btn-s btn-sm" onclick="APP.toggleAccessLink(${link.id},${!link.enabled})">${link.enabled ? '停用' : '启用'}</button></div>
+      </div>`).join('') : '<div class="empty">还没有免码链接</div>';
+    } catch (e) { box.textContent = e.message; }
+  }
+  async function generateLink(btn) {
+    busy(btn, true);
+    try {
+      const j = await api('/api/admin/access-links', { slug: $('#alSlug').value.trim(), note: $('#alNote').value.trim(), days: +$('#alDays').value, quota: 1 });
+      setMsg('#alMsg', j.ok ? '已生成，可以复制下面的链接' : j.msg, j.ok ? 'ok' : 'err');
+      if (j.ok) await loadAccessLinks();
+    } catch (e) { setMsg('#alMsg', e.message, 'err'); }
+    busy(btn, false);
+  }
+  async function toggleAccessLink(id, enabled) {
+    try {
+      const j = await api(`/api/admin/access-links/${id}/status`, { enabled });
+      if (!j.ok) return toast(j.msg, 'err');
+      await loadAccessLinks();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  async function copyAccessLink(id) {
+    const input = $('#alUrl' + id);
+    try {
+      if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(input.value);
+      else { input.select(); if (!document.execCommand('copy')) throw new Error(); }
+      toast('链接已复制', 'ok');
+    } catch (e) { input.select(); toast('请长按或手动复制链接', 'err'); }
+  }
 
   ADMIN_HTML.codes = () => `
     <div class="card">
@@ -1438,8 +1499,12 @@ const APP = (() => {
         <div class="card-b">
           <div class="desc" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px;line-height:1.65">
             配好之后，用户的任务会在 <b>开抢前 2 分钟</b> 自动提一个短效 IP，
-            用<b>同一个 IP</b> 完成「登录 + 兑换」—— 一个号只用一个出口，最像真人。
-            <b>没配就直连登录</b>（功能不受影响，只是出口 IP 是服务器本机）。</div>
+            用<b>该任务的同一个 IP</b> 完成「登录 + 兑换」。每个兑换任务独立提取，不共享代理。
+            提取失败会停止本轮，不会自动补提或改直连。</div>
+          <label class="fld"><span>完整提取 API 链接</span>
+            <input id="tqUrl" type="password" autocomplete="new-password" placeholder="粘贴天启生成的 /getip 链接">
+            <div class="hint">保存只解析配置，不提取 IP；固定每任务 1 个、3 分钟。保存后隐藏链接，不写入源码。</div></label>
+          <label class="chk"><input type="checkbox" id="tqWhite"> 自动维护白名单（需要 key；已手动添加服务器公网 IP 时关闭）</label>
           <label class="chk"><input type="checkbox" id="tqEn"> 启用（开抢前自动提 IP 登录）</label>
           <div class="grid2">
             <label class="fld"><span>提取秘钥 secret</span>
@@ -1455,8 +1520,7 @@ const APP = (() => {
               <div class="hint" id="tqKeyHint"></div></label>
             <label class="fld"><span>IP 寿命（分钟）</span>
               <select id="tqLife">
-                <option value="3">3（默认，够用）</option><option value="5">5</option>
-                <option value="10">10</option><option value="15">15</option>
+                <option value="3">3（任务固定使用最短租期）</option>
               </select></label>
           </div>
           <div class="grid2">
@@ -1733,6 +1797,8 @@ const APP = (() => {
     const c = j.config || {};
     if ($('#tqEn')) $('#tqEn').checked = !!c.enabled;
     if ($('#tqLife')) $('#tqLife').value = String(c.life || 3);
+    if ($('#tqWhite')) $('#tqWhite').checked = c.auto_white !== false;
+    if ($('#tqUrl')) $('#tqUrl').value = '';
     if ($('#tqProto')) $('#tqProto').value = String(c.protocol || 3);
     if ($('#tqRegion')) $('#tqRegion').value = c.region || '';
     if ($('#tqUser')) $('#tqUser').value = c.auth_user || '';
@@ -1746,6 +1812,8 @@ const APP = (() => {
     try {
       const body = {
         enabled: $('#tqEn').checked,
+        auto_white: $('#tqWhite').checked,
+        api_url: $('#tqUrl').value.trim(),
         protocol: +$('#tqProto').value,
         life: +$('#tqLife').value,
         region: $('#tqRegion').value.trim(),
@@ -1759,7 +1827,7 @@ const APP = (() => {
       });
       const j = await api('/api/admin/tianqi', body);
       setMsg('#tqMsg', j.ok ? '已保存' : (j.msg || '保存失败'), j.ok ? 'ok' : 'err');
-      if (j.ok) ['#tqSecret', '#tqSign', '#tqKey', '#tqPass'].forEach((s) => { if ($(s)) $(s).value = ''; });
+      if (j.ok) ['#tqUrl', '#tqSecret', '#tqSign', '#tqKey', '#tqPass'].forEach((s) => { if ($(s)) $(s).value = ''; });
       _tqPaint(j);
     } catch (e) { setMsg('#tqMsg', e.message, 'err'); }
     busy(btn, false);
@@ -1925,6 +1993,7 @@ const APP = (() => {
     try {
       const m = await api('/api/me');
       S.me = m.user; S.cfg = m.settings; S.global = m.global;
+      S.accessLink = m.access_link || null;
       S.login = m.login || null;        // ★ 登录状态（懒登录模式下长期是「未登录」）
     } catch (e) {
       if (e.status === 401) {
@@ -1962,6 +2031,7 @@ const APP = (() => {
     // 管理端
     adminGo, adminLogout, loadUsers, userStatus, userKick, userCredentials, saveCredentials, userDel,
     loadCodes, genCodes, exportCodes, codeStatus, codeDel,
+    loadAccessLinks, generateLink, toggleAccessLink, copyAccessLink,
     saveGlobal, savePw, adminRefresh,
     // 公共账号（拉商品用）
     loadPublicAccount, savePublic, testPublic, refreshPublic,
