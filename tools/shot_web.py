@@ -209,16 +209,25 @@ def main():
 
     js("APP.go('settings')", 1.4)
     shot("web_6_设置.png", full=True)
+    # ★ 用户端做减法后的自检：公告卡在、二维码真的加载出来了（不是裂图）、
+    #   代理 IP / 每日答题 / 库存监听 三张卡确实没了。
     _chk = ws.call("Runtime.evaluate", {"returnByValue": True, "awaitPromise": True, "expression":
-        "(async()=>{const m=await (await fetch('/api/me')).json();"
-        "return JSON.stringify({pxEn:!!(document.getElementById('pxEn')||{}).checked,"
-        " pxMode:(document.getElementById('pxMode')||{}).value,"
-        " pxRn:(document.getElementById('pxRn')||{}).value,"
-        " meProxy:(m.settings||{}).proxy,"
-        " badge:(document.getElementById('stPxy')||{}).textContent,"
-        " pool:(document.getElementById('pxPool')||{}).textContent,"
-        " cur:(document.getElementById('pxCur')||{}).textContent})})()"})
-    print("  代理卡 DOM:", _chk["result"]["result"].get("value"))
+        """(() => {
+             const q = (s) => document.querySelector(s);
+             const img = q('#sec-notice img');
+             const link = q('#sec-push a[href*="pushplus"]');
+             return JSON.stringify({
+               notice: !!q('#sec-notice'),
+               qrLoaded: !!(img && img.complete && img.naturalWidth > 0),
+               qrW: img ? img.naturalWidth : 0,
+               pushLink: link ? link.href : '',
+               goneProxy: !q('#sec-proxy'),
+               goneAnswer: !q('#sec-answer'),
+               goneWatch: !q('#sec-watch'),
+               headWatchPill: !!q('#pillWatch'),
+             });
+           })()"""})
+    print("  设置页自检:", _chk["result"]["result"].get("value"))
 
     js("APP.go('logs')", 1.2)
     shot("web_7_日志.png")

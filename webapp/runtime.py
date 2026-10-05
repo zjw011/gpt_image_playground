@@ -790,21 +790,18 @@ def all_runtimes():
 
 
 def boot_all():
-    """进程启动时恢复：开着的库存监听 + 每日重复的未完成任务。"""
+    """进程启动时恢复：每日重复的未完成任务。
+
+    ★ 库存监听**不在用户侧恢复**：监听统一由服务端用后台配置的「公共账号」拉商品
+      （见 global_list），客户账号只在开抢前 LEAD_LOGIN_SEC 秒被用到。
+      历史用户设置里残留的 watch.enabled 一律不再启动 —— 否则等于拿客户账号去轮询商品。
+    """
     from sqlalchemy import select
 
     from .models import Task, User
     with db_session() as s:
         users = list(s.scalars(select(User)))
         tasks = list(s.scalars(select(Task)))
-    for u in users:
-        rt = runtime_for(u.id)
-        if (u.st().get("watch") or {}).get("enabled"):
-            try:
-                rt.watch_start()
-                rt.log("[启动] 已自动恢复库存监听")
-            except Exception as e:
-                rt.log("[启动] 恢复库存监听失败：%r" % (e,), "error")
     for t in tasks:
         if t.status in (ST_WAIT, ST_RUN):
             rt = runtime_for(t.user_id)

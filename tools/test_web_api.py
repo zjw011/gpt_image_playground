@@ -318,13 +318,13 @@ def main():
         print("  ! 只有一个可用账号，跳过跨用户隔离用例")
 
     # ---------------------------------------------------------------- 设置
-    sec("⑧ 设置 / 推送 / 库存监听 / 答题")
-    r = s.post(BASE + "/api/settings", json={"watch": {"interval_sec": 45, "notify_new": True,
-                                                       "notify_restock": False},
+    sec("⑧ 设置 / 推送 / 已下线功能")
+    r = s.post(BASE + "/api/settings", json={"watch": {"interval_sec": 45, "notify_new": True},
                                              "fallback": {"enabled": True, "min_ratio": 0.2}})
     j = r.json()
     ck("保存设置成功", j.get("ok") is True)
-    ck("库存间隔已落库", (j.get("settings", {}).get("watch") or {}).get("interval_sec") == 45)
+    ck("★ 遗留的 watch 段仍能落库（不报错，只是用户端不再有入口）",
+       (j.get("settings", {}).get("watch") or {}).get("interval_sec") == 45)
     ck("降级比例已落库", (j.get("settings", {}).get("fallback") or {}).get("min_ratio") == 0.2)
 
     r = s.post(BASE + "/api/settings", json={"push": {"topic": "dewu!!中文"}})
@@ -336,14 +336,17 @@ def main():
 
     r = s.get(BASE + "/api/answer/today")
     j = r.json()
-    ck("答题接口可访问（ok 或给出可读原因）", "ok" in j, r.text[:160])
+    ck("★ 每日答题已下线（给可读原因，不再登录客户账号）",
+       j.get("ok") is False and "下线" in (j.get("msg") or ""), r.text[:160])
 
     r = s.post(BASE + "/api/watch/start", json={"interval_sec": 300})
-    ck("开启库存监听", r.json().get("ok") is True, r.text[:120])
+    j = r.json()
+    ck("★ 库存监听已下线（用户端不再起监听、不拿客户账号轮询商品）",
+       j.get("ok") is False and "下线" in (j.get("msg") or ""), r.text[:120])
     st = s.get(BASE + "/api/state").json()
-    ck("监听状态 running=True", (st.get("watch") or {}).get("running") is True)
+    ck("★ 没有监听线程在跑", (st.get("watch") or {}).get("running") is not True)
     r = s.post(BASE + "/api/watch/stop", json={})
-    ck("关闭库存监听", r.json().get("ok") is True)
+    ck("关闭库存监听幂等可用", "ok" in r.json(), r.text[:120])
 
     # ---------------------------------------------------------------- 登出
     # ---------------------------------------------------------------- 代理 IP

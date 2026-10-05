@@ -336,21 +336,23 @@ def clear_done(request: Request):
     return {"ok": True}
 
 
-# ==================================================================== 库存监听
+# ==================================================================== 库存监听（已下线）
+# ★ Web 端不再让用户自己跑监听：客户的账号只在开抢前 LEAD_LOGIN_SEC 秒被用到，
+#   库存变化由服务端用公共账号统一拉（商品列表那份），实时提醒走组织群二维码公告。
+#   这两个写接口保留路径只为让老客户端拿到一句人话，不再真的去登录客户账号。
+_WATCH_RETIRED = ("库存监听已下线：库存由服务端统一监控（不占用你的账号）。"
+                  "请在「设置 → 公告」扫码加入组织群，实时库存变化会在群里通知。")
+
+
 @router.post("/watch/start")
 def watch_start(payload: dict, request: Request):
-    u = current_user(request)
-    rt = runtime_for(u.id)
-    # 监听要一直拉用户的列表 → 必须有登录态。懒登录模式下这里按需登一次（直连）。
-    ok, msg = rt.ensure_login()
-    if not ok:
-        return {"ok": False, "msg": msg}
-    ok, msg = rt.watch_start(interval_sec=(payload or {}).get("interval_sec"))
-    return {"ok": ok, "msg": msg}
+    current_user(request)
+    return {"ok": False, "msg": _WATCH_RETIRED}
 
 
 @router.post("/watch/stop")
 def watch_stop(request: Request):
+    """保留：把历史遗留的监听线程停掉（幂等，不会再起）。"""
     u = current_user(request)
     ok, msg = runtime_for(u.id).watch_stop_now()
     return {"ok": ok, "msg": msg}
@@ -358,13 +360,8 @@ def watch_stop(request: Request):
 
 @router.post("/watch/once")
 def watch_once(request: Request):
-    u = current_user(request)
-    rt = runtime_for(u.id)
-    rt._watch_tick()
-    info = rt.watch_info()
-    if info.get("last_error"):
-        return {"ok": False, "msg": "检查失败：%s" % info["last_error"]}
-    return {"ok": True, "msg": "检查完成 · 已监听 %s 个商品" % info.get("tracked", 0)}
+    current_user(request)
+    return {"ok": False, "msg": _WATCH_RETIRED}
 
 
 # ==================================================================== 设置
@@ -450,50 +447,20 @@ def probe(request: Request):
     return {"ok": bool(ok), "msg": msg}
 
 
-# ==================================================================== 每日答题
+# ==================================================================== 每日答题（已下线）
+# ★ 客户账号只在开抢前 LEAD_LOGIN_SEC 秒被用到，答题要登录客户账号 → Web 端不再提供。
+#   路径保留只为给老客户端一句人话，不再触发任何登录。
+_ANSWER_RETIRED = ("每日答题已下线：为避免频繁登录，你的账号只在抢兑前 2 分钟被用到。"
+                   "金币请直接在得物 App 里答。")
+
+
 @router.get("/answer/today")
 def answer_today(request: Request):
-    u = current_user(request)
-    rt = runtime_for(u.id)
-    ok0, msg0 = rt.ensure_login()          # 答题要真登录 → 按需登一次
-    if not ok0:
-        return {"ok": False, "msg": msg0}
-    sess = rt.session()
-    if sess is None:
-        return {"ok": False, "msg": "登录态丢失，请重新提交账号密码"}
-    a = (u.st().get("answer") or {})
-    info, err = sess.answer_today(biz=a.get("biz_activity") or 2)
-    if err:
-        return {"ok": False, "msg": err}
-    return {"ok": True, "info": info, "hint": DW.answer_hint(info)}
+    current_user(request)
+    return {"ok": False, "msg": _ANSWER_RETIRED}
 
 
 @router.post("/answer/submit")
 def answer_submit(payload: dict, request: Request):
-    u = current_user(request)
-    rt = runtime_for(u.id)
-    ok0, msg0 = rt.ensure_login()
-    if not ok0:
-        return {"ok": False, "msg": msg0}
-    sess = rt.session()
-    if sess is None:
-        return {"ok": False, "msg": "登录态丢失，请重新提交账号密码"}
-    a = (u.st().get("answer") or {})
-    ans = str(payload.get("answer") or "").strip()
-    if not ans:
-        return {"ok": False, "msg": "答案不能为空"}
-    info, err = sess.answer_today(biz=a.get("biz_activity") or 2)
-    if err:
-        return {"ok": False, "msg": err}
-    if info.get("answered"):
-        return {"ok": True, "kind": "done", "msg": "今日已答对", "info": info}
-    if info.get("remain") is not None and info["remain"] <= 0:
-        return {"ok": True, "kind": "done", "msg": "今日次数已用完", "info": info}
-    j, err = sess.answer_submit(info["question_id"], ans,
-                                biz=a.get("biz_activity") or 2, sign=a.get("sign"))
-    if err:
-        return {"ok": False, "msg": err}
-    kind, text = DW.answer_classify(j)
-    rt.log("[答题] 提交「%s」→ %s" % (ans, text), "ok" if kind == "ok" else "warn")
-    info2, _ = sess.answer_today(biz=a.get("biz_activity") or 2)
-    return {"ok": True, "kind": kind, "msg": text, "info": info2 or info}
+    current_user(request)
+    return {"ok": False, "msg": _ANSWER_RETIRED}

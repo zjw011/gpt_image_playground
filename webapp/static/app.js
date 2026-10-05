@@ -16,7 +16,7 @@ const APP = (() => {
 
   const S = {
     view: 'overview',
-    me: null, cfg: null, global: null, state: null, proxy: null, login: null,
+    me: null, cfg: null, global: null, state: null, login: null,
     admin: null, adminTab: 'overview', adminData: {},
     sel: null, timer: null, tickTimer: null, lastPSig: '', lastTSig: '',
     filter: { q: '', stock: 'all', sort: 'default' },
@@ -235,7 +235,7 @@ const APP = (() => {
     products: { t: '商品列表', s: '点任意商品即可创建定时兑换任务', n: 'bag' },
     tasks:    { t: '我的任务', s: '到点自动抢兑，结果推送到微信', n: 'clock' },
     logs:     { t: '运行日志', s: '本账号的全部操作记录', n: 'terminal' },
-    settings: { t: '设置', s: '微信推送 / 库存监听 / 自动降级 / 每日答题', n: 'sliders' },
+    settings: { t: '设置', s: '公告 / 微信推送 / 自动降级 / 任务默认值', n: 'sliders' },
   };
   const NAV = ['overview', 'products', 'tasks', 'logs', 'settings'];
 
@@ -278,8 +278,6 @@ const APP = (() => {
             <span class="pill coin" id="pillCoin" title="当前金币余额">${ic('coin')}<b>—</b></span>
             <span class="pill off hide-sm" id="pillIp" title="抢兑时自动登录用的出口 IP 归属地">
               ${ic('pulse')}<span id="ipTx">未登录</span></span>
-            <span class="pill off" id="pillWatch" title="库存监听状态">
-              <span class="dot"></span><span id="watchTx">监听 关</span></span>
             <span class="pill hide-sm" id="pillClock" title="本机时间">
               ${ic('clock')}<span id="clock">--:--:--</span></span>
             <button class="btn btn-s btn-sm hide-sm" onclick="APP.refreshList(this)" title="重新拉取商品列表">
@@ -365,7 +363,8 @@ const APP = (() => {
     const st = S.state || {};
     const ps = st.products || [];
     const ts = st.tasks || [];
-    const w = st.watch || {};
+    // ★ 用户设置只有 S.cfg 一份（/api/me 的顶层 settings），不是 S.me.settings
+    const push = (S.cfg || {}).push || {};
     const bal = st.balance;
 
     $('#ovBal').innerHTML = (bal == null ? '—' : esc(bal)) + '<em>金币</em>';
@@ -393,8 +392,8 @@ const APP = (() => {
       { i: 'check', c: ok ? 'green' : '', n: ok, l: '抢兑成功' },
       { i: 'zap', c: running ? 'red' : '', n: running, l: '进行中' },
       { i: 'alert', c: bad ? 'red' : '', n: bad, l: '抢兑失败' },
-      { i: 'bell', c: w.running ? 'green' : '', n: w.running ? '开' : '关',
-        l: '库存监听' + (w.tracked ? ' · ' + w.tracked + ' 件' : '') },
+      { i: 'send', c: push.enabled ? 'green' : '', n: push.enabled ? '开' : '关',
+        l: '微信推送' },
     ].map((s) => `<div class="stat"><div class="si ${s.c}">${ic(s.i, 'i-l')}</div>
       <div class="b"><div class="n">${esc(s.n)}</div><div class="l">${esc(s.l)}</div></div></div>`).join('');
 
@@ -435,12 +434,10 @@ const APP = (() => {
     }
 
     // 快捷磁贴
-    const push = ((S.me || {}).settings || {}).push || {};
     $('#ovTiles').innerHTML = [
       { i: 'refresh', n: '刷新商品', s: '重新拉列表', fn: 'APP.refreshList(this)' },
-      { i: 'bell', n: '库存监听', s: w.running ? '运行中' : '已关闭', on: !!w.running, fn: "APP.sec('watch')" },
       { i: 'send', n: '微信推送', s: push.enabled ? '已开启' : '未开启', on: !!push.enabled, fn: "APP.sec('push')" },
-      { i: 'help', n: '每日答题', s: '赚金币', fn: 'APP.answerModal()' },
+      { i: 'bell', n: '加群 · 库存提醒', s: '扫码加入组织', fn: "APP.sec('notice')" },
       { i: 'pulse', n: '链路诊断', s: '不扣金币', fn: 'APP.probe(this)' },
       { i: 'sliders', n: '全部设置', s: '兜底/默认值', fn: "APP.go('settings')" },
     ].map((t) => `<div class="tile ${t.on ? 'on' : ''}" onclick="${t.fn}">
@@ -667,13 +664,31 @@ const APP = (() => {
 
   VIEWS_HTML.settings = () => `
     <div class="set-grid">
+      <div class="card" id="sec-notice" style="margin:0">
+        <div class="sec-t"><span class="si">${ic('bell')}</span>公告 · 库存实时监听
+          <span class="sp"></span><span class="state on">服务端在跑</span></div>
+        <div class="card-b">
+          <div class="desc" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px;line-height:1.7">
+            库存实时监听由<b>服务端统一监控</b>（走公共账号拉商品，<b>不占用你的账号</b>），
+            有新上架 / 补货就会推给你。Web 端不再单独跑监听，你的账号只在抢兑前 2 分钟被用到。
+            想第一时间收到提醒，<b>扫码加入组织群</b>。</div>
+          <div style="text-align:center">
+            <img src="/qr_group.png" alt="扫码加入组织群" loading="lazy"
+              style="width:210px;height:210px;border-radius:12px;border:1px solid var(--line);background:#fff;padding:6px">
+            <div class="muted" style="margin-top:10px;font-size:12px">
+              微信扫码加入组织群 · 库存变化第一时间推送</div>
+          </div>
+        </div>
+      </div>
+
       <div class="card" id="sec-push" style="margin:0">
         <div class="sec-t"><span class="si">${ic('send')}</span>微信推送
           <span class="sp"></span><span class="state off" id="stPush">未开启</span></div>
         <div class="card-b">
           <div class="desc" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px;line-height:1.65">
-            抢兑结果、库存变化推到微信。没填 token 就只能在本页看结果。去
-            <b>pushplus.plus</b> 登录后复制 token。</div>
+            抢兑结果、库存变化推到微信。没填 token 就只能在本页看结果。先去
+            <a href="https://www.pushplus.plus/" target="_blank" rel="noopener">PushPlus 官网（pushplus.plus）</a>
+            用微信扫码登录，复制 token 填到下面。</div>
           <label class="chk"><input type="checkbox" id="pEn"> 开启推送</label>
           <label class="fld"><span>PushPlus token</span>
             <input id="pToken" placeholder="32 位 token"></label>
@@ -690,28 +705,6 @@ const APP = (() => {
           <div class="row" style="margin-top:14px">
             <button class="btn btn-p btn-sm" onclick="APP.savePush(this)">${ic('check')}保存</button>
             <button class="btn btn-s btn-sm" onclick="APP.testPush(this)">${ic('send')}发送测试</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="card" id="sec-watch" style="margin:0">
-        <div class="sec-t"><span class="si">${ic('bell')}</span>库存监听
-          <span class="sp"></span><span class="state off" id="stWatch">已关闭</span></div>
-        <div class="card-b">
-          <div class="desc" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px;line-height:1.65">
-            定时拉商品列表，发现「新品上架 / 补货」就通知你，商品墙也跟着自动更新。</div>
-          <div class="kv"><span class="k">已监听商品</span><span class="v" id="wTracked">0 件</span></div>
-          <div class="kv"><span class="k">已通知次数</span><span class="v" id="wNotified">0</span></div>
-          <div class="kv"><span class="k">最近检查</span><span class="v mono" id="wChecked">—</span></div>
-          <label class="fld" style="margin-top:14px"><span>检查间隔（秒，最小 5）</span>
-            <input id="wInt" type="number" min="5" placeholder="30"></label>
-          <label class="chk"><input type="checkbox" id="wNew"> 新品上架时通知</label>
-          <label class="chk"><input type="checkbox" id="wRes"> 补货时通知</label>
-          <div class="msg" id="wMsg"></div>
-          <div class="row" style="margin-top:14px">
-            <button class="btn btn-p btn-sm" id="wStart" onclick="APP.watchStart(this)">${ic('play')}开启监听</button>
-            <button class="btn btn-s btn-sm" id="wStop" onclick="APP.watchStop(this)">${ic('power')}关闭</button>
-            <button class="btn btn-g btn-sm" onclick="APP.watchOnce(this)">${ic('refresh')}检查一次</button>
           </div>
         </div>
       </div>
@@ -751,55 +744,6 @@ const APP = (() => {
         </div>
       </div>
 
-      <div class="card" id="sec-answer" style="margin:0">
-        <div class="sec-t"><span class="si">${ic('help')}</span>每日答题
-          <span class="sp"></span><span class="state off">赚金币</span></div>
-        <div class="card-b">
-          <div class="desc" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px;line-height:1.65">
-            每天答对一题能拿金币。点下面按钮看今天的题目，也可以只把参数改好存着。</div>
-          <div class="grid2">
-            <label class="fld"><span>业务活动 id</span><input id="aBiz" type="number" placeholder="2"></label>
-            <label class="fld"><span>答题 sign（一般不用改）</span><input id="aSign" placeholder="留空 = 用内置"></label>
-          </div>
-          <label class="chk"><input type="checkbox" id="aSkip"> 今日已答对就不再取题</label>
-          <div class="msg" id="aMsg"></div>
-          <div class="row" style="margin-top:14px">
-            <button class="btn btn-p btn-sm" onclick="APP.answerModal()">${ic('help')}打开今日题目</button>
-            <button class="btn btn-s btn-sm" onclick="APP.saveAnswer(this)">${ic('check')}保存</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="card" id="sec-proxy" style="margin:0">
-        <div class="sec-t"><span class="si">${ic('pulse')}</span>代理 IP
-          <span class="sp"></span><span class="state off" id="stPxy">未启用</span></div>
-        <div class="card-b">
-          <div class="desc" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px;line-height:1.65">
-            抢购时从管理员导入的 IP 池里走一个独立出口，避免同服务器上的多个账号
-            被按 IP 关联。默认只作用于<b>兑换请求</b>，拉列表和登录还是直连。</div>
-          <div class="kv"><span class="k">当前出口</span><span class="v mono" id="pxCur">—</span></div>
-          <div class="kv"><span class="k">出口 IP / 延迟</span><span class="v mono" id="pxIp">—</span></div>
-          <div class="kv"><span class="k">IP 池</span><span class="v" id="pxPool">—</span></div>
-          <label class="chk" style="margin-top:12px"><input type="checkbox" id="pxEn"> 抢购时使用代理 IP</label>
-          <label class="fld"><span>用哪个出口</span>
-            <select id="pxMode">
-              <option value="sticky">固定一个 IP（推荐 —— 换 IP 要重新握手，拖慢抢购节奏）</option>
-              <option value="rotate">自动轮换（每 N 次换一个，容易被风控时用）</option>
-            </select></label>
-          <label class="fld" id="pxRnWrap"><span>轮换间隔（次）</span>
-            <input id="pxRn" type="number" min="1" placeholder="20">
-            <div class="hint">只有选了「自动轮换」才生效。被风控（700）时会立即换一个，不等满 N 次。</div></label>
-          <label class="chk"><input type="checkbox" id="pxList"> 拉商品列表也走代理（默认直连，更快）</label>
-          <div class="msg" id="pxMsg"></div>
-          <div class="row" style="margin-top:14px">
-            <button class="btn btn-p btn-sm" onclick="APP.saveProxy(this)">${ic('check')}保存</button>
-            <button class="btn btn-s btn-sm" onclick="APP.testProxy(this)">${ic('pulse')}测一下</button>
-            <button class="btn btn-g btn-sm" onclick="APP.rotateProxy(this)">${ic('refresh')}换个 IP</button>
-            <button class="btn btn-s btn-sm" onclick="APP.proxyPool(this)">${ic('eye')}看池子</button>
-          </div>
-        </div>
-      </div>
-
       <div class="card" style="margin:0">
         <div class="sec-t"><span class="si">${ic('key')}</span>账号</div>
         <div class="card-b">
@@ -816,28 +760,17 @@ const APP = (() => {
     </div>`;
 
   BIND.settings = function () {
-    const p = SEC('push'), w = SEC('watch'), f = SEC('fallback'),
-      d = SEC('task_defaults'), a = SEC('answer');
+    const p = SEC('push'), f = SEC('fallback'), d = SEC('task_defaults');
     const ck = (id, v) => { const e = $(id); if (e) e.checked = v !== false && !!v; };
     const val = (id, v) => { const e = $(id); if (e) e.value = v == null ? '' : v; };
     ck('#pEn', p.enabled); val('#pToken', p.token); ck('#pFail', p.on_fail);
     val('#pTopic', p.topic); ck('#pGs', p.group_stock); ck('#pGst', p.group_self_too);
-
-    val('#wInt', w.interval_sec || 30); ck('#wNew', w.notify_new); ck('#wRes', w.notify_restock);
 
     ck('#fEn', f.enabled); ck('#fGone', f.on_gone); ck('#fSold', f.on_soldout);
     ck('#fPoor', f.on_poor); val('#fMin', Math.round((f.min_ratio || 0) * 100));
 
     val('#dTime', d.time || '10:00:00'); val('#dLead', d.lead_ms);
     val('#dInt', d.interval_ms); val('#dMax', d.max_attempts);
-
-    val('#aBiz', a.biz_activity || 2); val('#aSign', a.sign); ck('#aSkip', a.skip_answered);
-
-    const px = SEC('proxy');
-    ck('#pxEn', px.enabled); ck('#pxList', px.also_list);
-    val('#pxMode', px.mode || 'sticky'); val('#pxRn', px.rotate_n || 20);
-    syncPxMode();
-    $('#pxMode').onchange = syncPxMode;
 
     // 账号卡里的这几项是 <span>，要用 textContent（用 val() 写 value 是写不进去的）
     const txt = (id, v) => { const e = $(id); if (e) e.textContent = (v == null || v === '') ? '—' : v; };
@@ -848,17 +781,11 @@ const APP = (() => {
   };
 
   function paintSettings() {
-    const w = (S.state || {}).watch || {};
     const e1 = $('#stPush');
     if (e1) {
       const en = !!SEC('push').enabled;
       e1.className = 'state ' + (en ? 'on' : 'off');
       e1.textContent = en ? '已开启' : '未开启';
-    }
-    const e2 = $('#stWatch');
-    if (e2) {
-      e2.className = 'state ' + (w.running ? 'on' : 'off');
-      e2.textContent = w.running ? '运行中' : '已关闭';
     }
     const e3 = $('#stFb');
     if (e3) {
@@ -866,16 +793,6 @@ const APP = (() => {
       e3.className = 'state ' + (en ? 'on' : 'off');
       e3.textContent = en ? '已开启' : '已关闭';
     }
-    paintProxy();
-    const set = (id, v) => { const e = $(id); if (e) e.textContent = v; };
-    set('#wTracked', (w.tracked || 0) + ' 件');
-    set('#wNotified', w.notified || 0);
-    set('#wChecked', w.checked_at || '—');
-    const sb = $('#wStart');
-    if (sb) sb.disabled = !!w.running;
-    const sp = $('#wStop');
-    if (sp) sp.disabled = !w.running;
-    if (w.last_error) setMsg('#wMsg', w.last_error, 'err');
   }
 
   /* ============================================================ 用户动作 */
@@ -893,15 +810,8 @@ const APP = (() => {
 
   function paintHead() {
     const st = S.state || {};
-    const w = st.watch || {};
     const coin = $('#pillCoin b');
     if (coin) coin.textContent = st.balance == null ? '—' : st.balance;
-    const wp = $('#pillWatch');
-    if (wp) {
-      wp.className = 'pill ' + (w.running ? 'live' : 'off');
-      $('#watchTx').textContent = '监听 ' + (w.running ? '开' : '关')
-        + (w.tracked ? ' · ' + w.tracked + ' 件' : '');
-    }
     const nP = (st.products || []).length;
     const nT = (st.tasks || []).filter((t) => ['等待', '兑换中'].includes(t.status)).length;
     ['bd-products', 'tbd-products'].forEach((id) => {
@@ -1081,46 +991,6 @@ const APP = (() => {
     };
   }
 
-  /* ============================================================ 弹窗：每日答题 */
-  async function answerModal() {
-    modal(`<h3>${ic('help')}每日答题</h3><div class="desc">正在取今日题目…</div>`);
-    let j = null;
-    try { j = await api('/api/answer/today'); } catch (e) { j = { ok: false, msg: e.message }; }
-    if (!j.ok) {
-      modal(`<h3>${ic('help')}每日答题</h3><div class="msg err show">${esc(j.msg)}</div>
-        <div class="foot"><button class="btn btn-s" onclick="APP.closeModal()">关闭</button></div>`);
-      return;
-    }
-    const i = j.info;
-    modal(`
-      <h3>${ic('help')}每日答题</h3>
-      <div class="desc">看图片猜词。${i.answered
-        ? '<b style="color:#0f9d58">今日已答对</b>'
-        : '还有 ' + (i.remain == null ? '?' : i.remain) + ' 次机会'}
-        · 当前余额 ${i.balance == null ? '—' : esc(i.balance)}</div>
-      <div style="text-align:center;margin-bottom:14px">
-        ${i.image_url
-          ? `<img src="${esc(i.image_url)}" style="max-width:100%;border-radius:12px;border:1px solid var(--line)">`
-          : '<div class="muted">今日题目没有图片</div>'}
-      </div>
-      <div class="muted" style="text-align:center;margin-bottom:14px">提示：${esc(j.hint || '—')}</div>
-      ${i.answered ? '' : '<label class="fld"><span>你的答案</span><input id="aAns" placeholder="输入答案" autocomplete="off"></label>'}
-      <div class="msg" id="aMsg"></div>
-      <div class="foot">
-        <button class="btn btn-s" onclick="APP.closeModal()">关闭</button>
-        ${i.answered ? '' : '<button class="btn btn-p" id="aOk">提交答案</button>'}
-      </div>`);
-    const ok = $('#aOk');
-    if (ok) ok.onclick = async () => {
-      busy(ok, true, '提交中…');
-      try {
-        const r = await api('/api/answer/submit', { answer: $('#aAns').value.trim() });
-        setMsg('#aMsg', r.msg, r.kind === 'ok' ? 'ok' : 'err');
-        busy(ok, false);
-        if (r.kind === 'ok') setTimeout(() => { closeModal(); answerModal(); }, 1100);
-      } catch (e) { busy(ok, false); toast(e.message, 'err'); }
-    };
-  }
 
   /* ============================================================ 设置保存 */
   async function savePush(btn) {
@@ -1174,155 +1044,6 @@ const APP = (() => {
       if (j.ok) { S.cfg = j.settings; setMsg('#dMsg', '已保存', 'ok'); }
     } catch (e) { setMsg('#dMsg', e.message, 'err'); }
     busy(btn, false);
-  }
-  async function saveAnswer(btn) {
-    busy(btn, true, '保存中…');
-    try {
-      const j = await api('/api/settings', {
-        answer: {
-          biz_activity: +$('#aBiz').value || 2,
-          sign: $('#aSign').value.trim(), skip_answered: $('#aSkip').checked,
-        },
-      });
-      if (j.ok) { S.cfg = j.settings; setMsg('#aMsg', '已保存', 'ok'); }
-    } catch (e) { setMsg('#aMsg', e.message, 'err'); }
-    busy(btn, false);
-  }
-  async function watchStart(btn) {
-    busy(btn, true, '开启中…');
-    try {
-      await api('/api/settings', {
-        watch: {
-          interval_sec: Math.max(5, +$('#wInt').value || 30),
-          notify_new: $('#wNew').checked, notify_restock: $('#wRes').checked,
-        },
-      });
-      const j = await api('/api/watch/start', { interval_sec: Math.max(5, +$('#wInt').value || 30) });
-      toast(j.msg, j.ok ? 'ok' : 'err');
-      await refreshState();
-    } catch (e) { toast(e.message, 'err'); }
-    busy(btn, false);
-    paintSettings();
-  }
-  async function watchStop(btn) {
-    busy(btn, true, '关闭中…');
-    try {
-      const j = await api('/api/watch/stop', {});
-      toast(j.msg, 'ok'); await refreshState();
-    } catch (e) { toast(e.message, 'err'); }
-    busy(btn, false);
-    paintSettings();
-  }
-  async function watchOnce(btn) {
-    busy(btn, true, '检查中…');
-    try {
-      await api('/api/settings', {
-        watch: {
-          interval_sec: Math.max(5, +$('#wInt').value || 30),
-          notify_new: $('#wNew').checked, notify_restock: $('#wRes').checked,
-        },
-      });
-      const j = await api('/api/watch/once', {});
-      toast(j.msg, j.ok ? 'ok' : 'err'); await refreshState();
-    } catch (e) { toast(e.message, 'err'); }
-    busy(btn, false);
-    paintSettings();
-  }
-
-  /* ============================================================ 代理 IP */
-  function syncPxMode() {
-    const w = $('#pxRnWrap');
-    if (w) w.style.display = ($('#pxMode') || {}).value === 'rotate' ? '' : 'none';
-  }
-
-  function paintProxy() {
-    const px = S.proxy || {};
-    const e = $('#stPxy');
-    if (e) {
-      const on = !!px.ready;
-      e.className = 'state ' + (on ? 'on' : 'off');
-      e.textContent = on ? '已启用' : (px.master ? (px.assigned ? '未启用' : '没分到 IP') : '管理员未开启');
-    }
-    const set = (id, v) => { const n = $(id); if (n) n.textContent = v; };
-    set('#pxCur', px.assigned ? (px.current + (px.assigned_label ? ' · ' + px.assigned_label : '')) : '还没分配出口 IP');
-    set('#pxIp', px.exit_ip ? (px.exit_ip + (px.latency_ms ? ' / ' + px.latency_ms + ' ms' : '')) : '—（点「测一下」探测）');
-    set('#pxPool', '共 ' + (px.pool_total || 0) + ' 个 · 启用 ' + (px.pool_alive || 0)
-      + ' 个 · 探测可用 ' + (px.pool_ok || 0) + ' 个' + (px.required ? ' · 管理员已强制启用' : ''));
-  }
-
-  async function refreshProxy() {
-    try {
-      const j = await api('/api/proxy');
-      if (j.ok) { S.proxy = j.proxy; paintProxy(); }
-    } catch (e) { /* 忽略 */ }
-  }
-
-  async function saveProxy(btn) {
-    busy(btn, true, '保存中…');
-    try {
-      const j = await api('/api/settings', {
-        proxy: {
-          enabled: $('#pxEn').checked, mode: $('#pxMode').value,
-          rotate_n: Math.max(1, +$('#pxRn').value || 20),
-          also_list: $('#pxList').checked,
-        },
-      });
-      if (j.ok) {
-        S.cfg = j.settings;
-        setMsg('#pxMsg', '已保存' + (S.proxy && !S.proxy.master
-          ? '（注意：管理员还没打开代理总开关，现在不会生效）' : ''), 'ok');
-        await refreshProxy();
-      }
-    } catch (e) { setMsg('#pxMsg', e.message, 'err'); }
-    busy(btn, false);
-  }
-
-  async function testProxy(btn) {
-    busy(btn, true, '探测中…');
-    try {
-      const j = await api('/api/proxy/test', {});
-      S.proxy = j.proxy || S.proxy;
-      setMsg('#pxMsg', j.msg, j.ok ? 'ok' : 'err');
-      paintProxy();
-    } catch (e) { setMsg('#pxMsg', e.message, 'err'); }
-    busy(btn, false);
-  }
-
-  async function rotateProxy(btn) {
-    busy(btn, true, '切换中…');
-    try {
-      const j = await api('/api/proxy/rotate', {});
-      S.proxy = j.proxy || S.proxy;
-      toast(j.msg, j.ok ? 'ok' : 'err');
-      setMsg('#pxMsg', j.msg, j.ok ? 'ok' : 'err');
-      paintProxy();
-    } catch (e) { setMsg('#pxMsg', e.message, 'err'); }
-    busy(btn, false);
-  }
-
-  /* 看池子：用户只能看到「有哪些可用出口」，看不到别人的完整地址和密码 */
-  function proxyPool() {
-    const px = S.proxy || {};
-    modal(`
-      <h3>${ic('eye')}可用出口 IP</h3>
-      <div class="desc">管理员导入的池子里，当前能分给你的出口。地址已脱敏，
-        密码不会显示。想换一个就点下面的按钮。</div>
-      ${px.assigned
-        ? `<div class="kv"><span class="k">我当前的出口</span>
-             <span class="v mono">${esc(px.current)}</span></div>
-           ${px.exit_ip ? `<div class="kv"><span class="k">出口 IP</span>
-             <span class="v mono">${esc(px.exit_ip)}${px.latency_ms ? ' · ' + px.latency_ms + ' ms' : ''}</span></div>` : ''}`
-        : '<div class="msg err show">这个账号还没有分到代理 IP，抢购会走服务器本机 IP。</div>'}
-      <div class="kv"><span class="k">池子总量</span><span class="v">${px.pool_total || 0} 个（启用 ${px.pool_alive || 0} 个）</span></div>
-      <div class="kv"><span class="k">探测可用</span><span class="v">${px.pool_ok || 0} 个</span></div>
-      <div class="kv"><span class="k">总开关</span>
-        <span class="v">${px.master ? '<span class="tag ok">管理员已开启</span>' : '<span class="tag bad">管理员未开启</span>'}</span></div>
-      <div class="kv"><span class="k">强制模式</span>
-        <span class="v">${px.required ? '<span class="tag warn">所有任务都必须走代理</span>' : '<span class="tag wait">跟随个人设置</span>'}</span></div>
-      <div class="foot">
-        <button class="btn btn-s" onclick="APP.closeModal()">关闭</button>
-        <button class="btn btn-g" onclick="APP.rotateProxy(this)">${ic('refresh')}换个 IP</button>
-      </div>`);
   }
 
   /* ============================================================ 管理后台 */
@@ -2176,7 +1897,6 @@ const APP = (() => {
     try {
       const m = await api('/api/me');
       S.me = m.user; S.cfg = m.settings; S.global = m.global;
-      S.proxy = m.proxy || null;
       S.login = m.login || null;        // ★ 登录状态（懒登录模式下长期是「未登录」）
     } catch (e) {
       if (e.status === 401) {
@@ -2206,14 +1926,11 @@ const APP = (() => {
     // 路由 / 生命周期
     boot, logout, go, sec, closeModal,
     // 用户端
-    pick, refreshList, probe, clearDone, delTask, runNow, clearLogView, answerModal,
-    savePush, testPush, saveFallback, saveDefaults, saveAnswer,
-    watchStart, watchStop, watchOnce,
-    // 代理 IP（用户端）
-    saveProxy, testProxy, rotateProxy, proxyPool, refreshProxy,
+    pick, refreshList, probe, clearDone, delTask, runNow, clearLogView,
+    savePush, testPush, saveFallback, saveDefaults,
     // 兼容旧入口：跳到设置页对应段落
     pushModal: () => sec('push'),
-    watchModal: () => sec('watch'),
+    noticeModal: () => sec('notice'),
     // 管理端
     adminGo, adminLogout, loadUsers, userStatus, userKick, userDel,
     loadCodes, genCodes, exportCodes, codeStatus, codeDel,

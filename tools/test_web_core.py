@@ -843,7 +843,7 @@ def main():
     ck("★ 没有任何地方再往 S.me.settings 写（写了也没人读）",
        "S.me.settings =" not in appjs)
     ck("保存设置后回写的是 S.cfg",
-       appjs.count("S.cfg = j.settings") >= 5, appjs.count("S.cfg = j.settings"))
+       appjs.count("S.cfg = j.settings") >= 3, appjs.count("S.cfg = j.settings"))
     ck("boot() 把 /api/me 的 settings 放进 S.cfg",
        re.search(r"S\.me = m\.user;\s*S\.cfg = m\.settings;", appjs) is not None)
 
@@ -922,6 +922,51 @@ def main():
     ck("APP 导出了公共账号相关函数",
        all(k in src_js for k in ("savePublic", "testPublic", "refreshPublic")))
     ck("用户端会提示「管理员统一提供」", "管理员统一提供" in src_js)
+
+    # ============================================================== ⑳ Web 端做减法
+    sec("⑳ Web 端做减法（用户端只留该留的）")
+    src_run = open(os.path.join(ROOT, "webapp", "runtime.py"), encoding="utf-8").read()
+
+    # 代理 IP / 每日答题 / 库存监听 这三块从用户端整块删掉。
+    # 理由：代理 IP 由管理员在后台统一提供；答题和监听都要「用客户账号登录」，
+    # 而客户账号按设计只在开抢前 2 分钟被用到。
+    for _gone in ("sec-proxy", "sec-answer", "sec-watch"):
+        ck("用户端不再有 #%s 卡片" % _gone, _gone not in src_js)
+    for _fn in ("answerModal", "saveAnswer", "watchStart", "watchStop", "watchOnce",
+                "syncPxMode", "paintProxy", "saveProxy", "testProxy", "rotateProxy",
+                "proxyPool", "refreshProxy"):
+        ck("用户端不再引用 %s()" % _fn, _fn not in src_js)
+    ck("头部不再有「监听 开/关」胶囊",
+       "pillWatch" not in src_js and "watchTx" not in src_js)
+    ck("概览磁贴不再有「库存监听 / 每日答题」入口",
+       "'库存监听', s:" not in src_js and "赚金币" not in src_js)
+    ck("设置页不再往 /api/settings 提交 watch/answer/proxy 段",
+       "watch: {" not in src_js and "answer: {" not in src_js and "proxy: {" not in src_js)
+
+    # 公告：库存实时监听 + 扫码加群（二维码是真文件，不是占位）
+    ck("用户端有「公告 · 库存实时监听」卡", 'id="sec-notice"' in src_js)
+    ck("公告里挂了加群二维码", 'src="/qr_group.png"' in src_js)
+    ck("二维码文件真的在 static 里（不是空占位）",
+       os.path.getsize(os.path.join(ROOT, "webapp", "static", "qr_group.png")) > 5000)
+    ck("公告说清楚了「不占用你的账号」", "不占用你的账号" in src_js)
+    ck("概览磁贴能跳到公告", "APP.sec('notice')" in src_js)
+
+    # 微信推送卡：pushplus 要能点进官网（之前只是一句加粗纯文本）
+    ck("推送卡放了 pushplus 官网可点链接",
+       'href="https://www.pushplus.plus/"' in src_js
+       and 'target="_blank"' in src_js and 'rel="noopener"' in src_js)
+    ck("旧的纯文本 pushplus.plus 已换掉", "<b>pushplus.plus</b>" not in src_js)
+
+    # 后端：客户账号不再被拿去监听 / 答题
+    ck("★ 启动时不再恢复用户侧库存监听（否则等于拿客户账号轮询商品）",
+       "watch_start()" not in src_run)
+    ck("★ /watch/start 不再去登录客户账号",
+       "rt.watch_start(interval_sec=" not in src_user
+       and "rt.ensure_login()\n" not in src_user.split("/watch/start")[1].split("router.")[0])
+    ck("★ /watch/start 与 /watch/once 都改成「已下线」文案",
+       src_user.count("_WATCH_RETIRED") >= 3, src_user.count("_WATCH_RETIRED"))
+    ck("★ /answer/* 也改成「已下线」，不再登录客户账号",
+       src_user.count("_ANSWER_RETIRED") >= 3, src_user.count("_ANSWER_RETIRED"))
 
     _test_public_account_logic()
     _test_lazy_login_logic()

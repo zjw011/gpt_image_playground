@@ -21,6 +21,10 @@ dist_new/
 # app.ico 同样要入库：spec 里 datas=[(app.ico,'.')] + icon=['app.ico'] 都指着它，
 # 缺了它就打不了包（或打出来任务栏是系统默认图标）。161KB，值。
 !app.ico
+#
+# 加群二维码：用户端设置页「公告 · 库存实时监听」直接 <img src="/qr_group.png"> 引它。
+# 42KB，缺了就是一张裂图，所以必须入库（静态资源一律跟着代码走）。
+!webapp/static/qr_group.png
 icon_src/
 
 # ---------------- 运行期数据（含账号 token，绝不入库） ----------------
