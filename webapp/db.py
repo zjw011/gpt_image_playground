@@ -86,6 +86,10 @@ def init_db():
         "allow_new_user": settings.allow_new_user,
         "max_users": settings.max_users,
         "require_code_for_task": settings.require_code_for_task,
+        # 代理 IP：总开关关着的时候，谁都不走代理（池子留着也不生效）
+        "proxy_enabled": False,
+        # 强制模式：开了就无视用户自己的开关，抢兑一律走代理
+        "proxy_required": False,
     }
     with db_session() as s:
         for k, v in defaults.items():
@@ -102,6 +106,8 @@ def global_cfg():
         "allow_new_user": settings.allow_new_user,
         "max_users": settings.max_users,
         "require_code_for_task": settings.require_code_for_task,
+        "proxy_enabled": False,
+        "proxy_required": False,
     }
     out = {}
     with db_session() as s:

@@ -25,6 +25,7 @@ import requests
 
 import dewu_login as LOGIN
 
+from . import proxies as PX
 from .curlparse import parse_curl, xat_of_curl   # noqa: F401  (对外也导出)
 
 BASE = "https://app.dewu.com"
@@ -310,14 +311,35 @@ def diff_stock(prev_seen, prizes, notify_new=True, notify_restock=True):
 
 # ------------------------------------------------------------------ 会话
 class DewuSession:
-    """一个得物账号的请求会话（token + 活动 id + 请求头 + 兑换循环）。"""
+    """一个得物账号的请求会话（token + 活动 id + 请求头 + 兑换循环）。
 
-    def __init__(self, token, activity=None, device=None, sign=None, timeout=12):
+    ``proxy`` 是 :mod:`webapp.proxies` 里的 ``Provider``。默认**只作用于兑换请求**：
+    抢购是最容易被按 IP 风控的一步，而拉列表/登录走直连又快又稳，
+    也免得代理一挂就整个界面刷不出商品（``also_list=True`` 可以打开）。
+    """
+
+    def __init__(self, token, activity=None, device=None, sign=None, timeout=12,
+                 proxy=None, also_list=False):
         self.token = _bearer(token)
         self.activity = str(activity or "").strip()
         self.device = device or {}
         self.sign = (sign or DEFAULT_LIST_SIGN).strip()
         self.timeout = timeout
+        self.proxy = proxy                      # proxies.Provider 或 None
+        self.also_list = bool(also_list)
+
+    # ---------- 代理 ----------
+    @property
+    def proxy_enabled(self):
+        return bool(self.proxy is not None and getattr(self.proxy, "enabled", False))
+
+    def _px(self, for_list=False):
+        """本次请求要用的 proxies dict（不用代理时返回 None）。"""
+        if not self.proxy_enabled:
+            return None
+        if for_list and not self.also_list:
+            return None
+        return PX.proxies_map(self.proxy.current_url)
 
     # ---------- 列表 ----------
     def fetch_list(self, activity=None):
@@ -330,7 +352,7 @@ class DewuSession:
         for attempt in range(3):          # 700 风控时带退避重试
             try:
                 r = requests.get(url, headers=h5_headers(self.token, self.device),
-                                 timeout=self.timeout)
+                                 timeout=self.timeout, proxies=self._px(for_list=True))
                 j = r.json()
             except Exception as e:
                 return False, {"_err": "网络异常：%r" % (e,)}
@@ -346,14 +368,15 @@ class DewuSession:
         return False, {"code": code, "msg": msg, "_err": friendly_code(code, msg)}
 
     # ---------- 兑换 ----------
-    def exchange(self, prize):
+    def exchange(self, prize, use_proxy=True):
         """发一次兑换请求，返回接口原始 json（异常时返回 {_err:...}）。"""
         headers = h5_headers(self.token, self.device)
         headers["Content-Type"] = "application/x-www-form-urlencoded"
         data = {"cId": prize.get("cId"), "pId": prize.get("pId"),
                 "skuId": prize.get("skuId"), "activity": self.activity}
         try:
-            r = requests.post(EXCHANGE_URL, data=data, headers=headers, timeout=8)
+            r = requests.post(EXCHANGE_URL, data=data, headers=headers, timeout=8,
+                              proxies=self._px() if use_proxy else None)
             return r.json()
         except Exception as e:
             return {"_err": repr(e)}
@@ -372,7 +395,15 @@ class DewuSession:
         c700 = 0
         sess = requests.Session()
         res = {"ok": False, "why": "soldout", "attempts": attempt_offset,
-               "detail": "", "raw": None, "balance": None, "sess": sess}
+               "detail": "", "raw": None, "balance": None, "sess": sess,
+               "proxy_used": None, "proxy_switched": [], "proxy_errors": 0}
+
+        # ---- 代理：本轮先定一个出口 IP ----
+        px_url = None
+        if self.proxy_enabled:
+            px_url = self.proxy.prime() or self.proxy.current_url
+            res["proxy_used"] = px_url
+            log("代理：%s" % self.proxy.describe())
 
         log("开始兑换「%s」金币%s（cId=%s pId=%s skuId=%s，最多 %d 次 / %ds）"
             % (prize.get("cName"), prize.get("cost"), prize.get("cId"),
@@ -389,11 +420,34 @@ class DewuSession:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
             data = {"cId": prize.get("cId"), "pId": prize.get("pId"),
                     "skuId": prize.get("skuId"), "activity": self.activity}
+
+            # 换 IP 时把旧的 keep-alive 隧道丢掉，不然还走老出口
+            pmap = None
+            if self.proxy_enabled:
+                self.proxy.next()          # rotate 模式下可能在这里轮换
+                if self.proxy.current_url != px_url:
+                    px_url = self.proxy.current_url
+                    try:
+                        sess.close()
+                    except Exception:
+                        pass
+                    sess = requests.Session()
+                    res["proxy_switched"].append(px_url)
+                    res["proxy_used"] = px_url
+                    log("↻ 换出口 IP → %s" % PX.mask(px_url), "warn")
+                pmap = PX.proxies_map(px_url)
+
             try:
-                r = sess.post(EXCHANGE_URL, data=data, headers=headers, timeout=6)
+                r = sess.post(EXCHANGE_URL, data=data, headers=headers,
+                              timeout=6, proxies=pmap)
                 j = r.json()
             except Exception as e:
                 j = {"_err": repr(e)}
+                if self.proxy_enabled and PX.is_proxy_error(e):
+                    res["proxy_errors"] += 1
+                    new = self.proxy.on_risk("代理异常")
+                    log("代理出错（%s）→ 换 IP 重试：%s" % (PX._short(e), PX.mask(new or "")),
+                        "warn")
             code = j.get("code")
 
             if code == CODE_SUCCESS:
@@ -414,6 +468,22 @@ class DewuSession:
             msg = j.get("msg") or j.get("_err") or ""
             if attempts <= 8 or attempts % 20 == 0:
                 log("第 %d 次：code=%s msg=%s" % (attempt_offset + attempts, code, msg))
+
+            # 被风控盯上了（700 / 参数错误）→ 换个出口 IP 再打。
+            # 每 3 次连续 700 才换一个，别把池子刷穿。
+            if self.proxy_enabled and code in (CODE_NOT_LOGIN, CODE_PARAM_ERR):
+                risk_n = res.setdefault("_risk_n", 0) + 1
+                res["_risk_n"] = risk_n
+                if risk_n % 3 == 0:
+                    new = self.proxy.on_risk("风控 %s" % code)
+                    log("被风控（code=%s）→ 换出口 IP：%s" % (code, PX.mask(new or "")), "warn")
+                    try:
+                        sess.close()
+                    except Exception:
+                        pass
+                    sess = requests.Session()
+                    res["proxy_switched"].append(new)
+                    res["proxy_used"] = new
 
             if is_fatal(msg):
                 fatal_n += 1
@@ -460,7 +530,8 @@ class DewuSession:
         cur = dict(prize)
         fb = dict(cfg.get("fallback") or {})
         out = {"ok": False, "status": "失败", "detail": "", "attempts": 0,
-               "prize": cur, "fell_back": False, "balance": None, "raw": None}
+               "prize": cur, "fell_back": False, "balance": None, "raw": None,
+               "proxy_used": None, "proxy_switched": [], "proxy_errors": 0}
 
         # 开抢前校正：列表里商品可能换了 cId（活动换批次）
         ok, data = self.fetch_list()
@@ -480,6 +551,11 @@ class DewuSession:
             out["attempts"] = res["attempts"]
             out["raw"] = res.get("raw")
             out["balance"] = res.get("balance") or out["balance"]
+            out["proxy_used"] = res.get("proxy_used") or out.get("proxy_used")
+            out["proxy_switched"] = list(out.get("proxy_switched") or []) \
+                + list(res.get("proxy_switched") or [])
+            out["proxy_errors"] = int(out.get("proxy_errors") or 0) \
+                + int(res.get("proxy_errors") or 0)
             if res["ok"]:
                 out.update(ok=True, status="成功", detail=res["detail"])
                 return out

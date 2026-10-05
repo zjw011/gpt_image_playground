@@ -23,7 +23,8 @@ RUN set -eux; \
 #   恢复未完成任务线程、甚至在开着监听时自动拉起监听线程 —— Web 进程不能有这种副作用。
 #   （dewu_push 里对它的引用包在 try/except 里，import 失败会静默跳过。）
 COPY webapp/ ./webapp/
-COPY dewu_login.py dewu_push.py ./
+# dewu_proxies.py = 代理 IP 池的实现，桌面版和 Web 版共用一份（webapp/proxies.py 只是转发）
+COPY dewu_proxies.py dewu_login.py dewu_push.py ./
 COPY run_web.py .
 
 RUN mkdir -p /app/webdata

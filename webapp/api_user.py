@@ -107,8 +107,11 @@ def me(request: Request):
                  "dewu_user_id": u.dewu_user_id or "",
                  "created_at": u.created_at.strftime("%Y-%m-%d %H:%M") if u.created_at else ""},
         "settings": u.st(),
+        "proxy": runtime_for(u.id).proxy_info(),
         "global": {"activity": g.get("dewu_activity"),
-                   "require_code": g.get("require_code_for_task")},
+                   "require_code": g.get("require_code_for_task"),
+                   "proxy_enabled": g.get("proxy_enabled"),
+                   "proxy_required": g.get("proxy_required")},
     }
 
 
@@ -293,10 +296,10 @@ def watch_once(request: Request):
 # ==================================================================== 设置
 @router.post("/settings")
 def save_settings(payload: dict, request: Request):
-    """保存推送 / 库存监听 / 自动降级 / 答题 的开关（只允许改这几个 section）。"""
+    """保存推送 / 库存监听 / 自动降级 / 答题 / 代理 的开关（只允许改这几个 section）。"""
     u = current_user(request)
     st = u.st()
-    for sec in ("push", "watch", "fallback", "answer", "task_defaults"):
+    for sec in ("push", "watch", "fallback", "answer", "task_defaults", "proxy"):
         got = payload.get(sec)
         if isinstance(got, dict):
             st[sec].update({k: v for k, v in got.items() if k in st[sec]})
@@ -306,6 +309,32 @@ def save_settings(payload: dict, request: Request):
         row = s.get(User, u.id)
         row.settings = st
     return {"ok": True, "settings": st}
+
+
+# ==================================================================== 代理 IP
+@router.get("/proxy")
+def proxy_get(request: Request):
+    """这个账号的代理状态（当前出口 IP / 池子大小 / 会不会真的走代理）。"""
+    u = current_user(request)
+    return {"ok": True, "proxy": runtime_for(u.id).proxy_info()}
+
+
+@router.post("/proxy/rotate")
+def proxy_rotate(request: Request, payload: dict = None):
+    """换一个出口 IP（从管理员导入的池子里挑另一个绑过来）。"""
+    u = current_user(request)
+    rt = runtime_for(u.id)
+    ok, msg = rt.proxy_rotate(prefer_id=(payload or {}).get("id"))
+    return {"ok": ok, "msg": msg, "proxy": rt.proxy_info()}
+
+
+@router.post("/proxy/test")
+def proxy_test(request: Request):
+    """探一次当前代理：出口 IP 是几、延迟多少。"""
+    u = current_user(request)
+    rt = runtime_for(u.id)
+    ok, msg = rt.proxy_test()
+    return {"ok": ok, "msg": msg, "proxy": rt.proxy_info()}
 
 
 @router.post("/push/test")

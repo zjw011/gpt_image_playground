@@ -35,6 +35,9 @@ DEFAULT_SETTINGS = {
     "answer": {"biz_activity": 2, "sign": "", "skip_answered": True},
     "task_defaults": {"time": "10:00:00", "lead_ms": 300,
                       "interval_ms": 200, "max_attempts": 600},
+    # 代理 IP：只作用于「兑换/抢购」请求，拉列表和登录默认还是直连
+    "proxy": {"enabled": False, "mode": "sticky", "rotate_n": 20,
+              "also_list": False, "also_login": False},
 }
 
 
@@ -166,6 +169,41 @@ class Log(Base):
     ts = Column(DateTime, default=now)
     level = Column(String(10), default="info")
     msg = Column(Text, default="")
+
+
+class Proxy(Base):
+    """代理 IP 池。
+
+    一个用户默认绑一个代理（bound_user_id），这样「同一个账号固定走同一个出口 IP」，
+    不会因为换 IP 触发风控；池子不够分的时候 allow_share 打开就允许多人共用一个。
+
+    status:
+        new       刚导入，还没测过
+        ok        最近一次探测是通的
+        bad       最近一次探测失败（连续失败会变成 bad）
+        disabled  管理员手动停用（不参与分配）
+    """
+    __tablename__ = "proxies"
+
+    id = Column(Integer, primary_key=True)
+    url = Column(Text, nullable=False, index=True)     # 完整 URL，含账号密码
+    kind = Column(String(8), default="socks")          # socks / http
+    scheme = Column(String(10), default="socks5h")
+    host = Column(String(120), default="")
+    port = Column(Integer, default=0)
+    user = Column(String(80), default="")
+    label = Column(String(80), default="")             # 备注（比如「上海电信」）
+    status = Column(String(12), default="new")
+    exit_ip = Column(String(40), default="")           # 探测到的出口 IP
+    latency_ms = Column(Integer, default=0)
+    ok_count = Column(Integer, default=0)
+    fail_count = Column(Integer, default=0)
+    fail_streak = Column(Integer, default=0)
+    bound_user_id = Column(Integer, index=True)        # 固定分配给谁
+    enabled = Column(Boolean, default=True)
+    last_ok_at = Column(DateTime)
+    last_error = Column(Text, default="")
+    created_at = Column(DateTime, default=now)
 
 
 class Setting(Base):

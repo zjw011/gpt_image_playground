@@ -12,7 +12,8 @@ from sqlalchemy import func, select
 from .auth import (clear_cookie, create_session, current_admin, drop_session,
                    set_cookie)
 from .db import db_session, put_setting
-from .models import Admin, RedeemCode, Session as DbSession, Setting, Task, User
+from .models import (Admin, Proxy, RedeemCode, Session as DbSession, Setting,
+                     Task, User)
 from .runtime import ST_DELETED, runtime_for
 from .security import COOKIE_ADMIN, hash_pw, verify_pw
 
@@ -255,6 +256,223 @@ def export_codes(payload: dict, request: Request):
     return {"ok": True, "text": txt, "count": len(rows)}
 
 
+# ==================================================================== 代理 IP
+def _px_row(p):
+    from . import proxies as PX
+    return {
+        "id": p.id,
+        "mask": PX.mask(p.url),
+        "hostport": PX.hostport(p.url),
+        "kind": p.kind, "scheme": p.scheme,
+        "label": p.label or "",
+        "status": p.status, "enabled": bool(p.enabled),
+        "exit_ip": p.exit_ip or "", "latency_ms": p.latency_ms or 0,
+        "ok_count": p.ok_count or 0, "fail_count": p.fail_count or 0,
+        "fail_streak": p.fail_streak or 0,
+        "bound_user_id": p.bound_user_id,
+        "last_ok_at": p.last_ok_at.strftime("%m-%d %H:%M") if p.last_ok_at else "",
+        "last_error": p.last_error or "",
+        "created_at": p.created_at.strftime("%Y-%m-%d %H:%M") if p.created_at else "",
+    }
+
+
+@router.get("/proxies")
+def list_proxies(request: Request, q: str = "", status: str = ""):
+    """代理池列表 + 汇总结论。"""
+    from . import proxies as PX
+    current_admin(request)
+    with db_session() as s:
+        rows = list(s.scalars(select(Proxy).order_by(Proxy.id.desc())))
+        users = {u.id: _mask(u.phone) for u in s.scalars(select(User))}
+        g = {r.key: r.value for r in s.scalars(select(Setting))}
+        items = [_px_row(p) for p in rows]
+    if q:
+        ql = q.strip().lower()
+        items = [i for i in items if ql in i["mask"].lower() or ql in i["label"].lower()
+                 or ql in i["hostport"].lower() or ql in i["exit_ip"]]
+    if status:
+        items = [i for i in items if i["status"] == status]
+    for i in items:
+        i["bound_phone"] = users.get(i["bound_user_id"], "")
+    stats = {
+        "total": len(items),
+        "alive": sum(1 for i in items if i["enabled"]),
+        "ok": sum(1 for i in items if i["enabled"] and i["status"] == "ok"),
+        "bad": sum(1 for i in items if i["enabled"] and i["status"] == "bad"),
+        "bound": sum(1 for i in items if i["bound_user_id"]),
+        "untested": sum(1 for i in items if i["status"] == "new"),
+        "master": bool(g.get("proxy_enabled")),
+        "required": bool(g.get("proxy_required")),
+        "socks": sum(1 for i in items if i["kind"] == "socks"),
+    }
+    return {"ok": True, "proxies": items, "stats": stats,
+            "schemes": list(PX.SCHEMES)}
+
+
+@router.post("/proxies/import")
+def import_proxies(payload: dict, request: Request):
+    """批量粘贴导入。一行一个，格式见 webapp/proxies.normalize_line。
+
+    ``text``      多行文本
+    ``scheme``    裸 ``host:port`` 行默认当成什么协议（socks5h / socks5 / http）
+    ``label``     给这一批统一打个备注
+    """
+    from . import proxies as PX
+    current_admin(request)
+    text = str(payload.get("text") or "")
+    scheme = str(payload.get("scheme") or PX.DEFAULT_SCHEME).lower()
+    if scheme not in PX.SCHEMES:
+        scheme = PX.DEFAULT_SCHEME
+    batch_label = str(payload.get("label") or "")[:60]
+    items, errors = PX.normalize_many(text, default_scheme=scheme)
+    if not items:
+        return {"ok": False, "msg": "没有解析出任何代理（检查一下格式）",
+                "errors": errors, "added": 0}
+
+    added, dup = 0, 0
+    with db_session() as s:
+        exist = {u for (u,) in s.execute(select(Proxy.url)).all()}
+        for d in items:
+            if d["url"] in exist:
+                dup += 1
+                continue
+            s.add(Proxy(url=d["url"], kind=d["kind"], scheme=d["scheme"],
+                        host=d["host"], port=d["port"], user=d["user"],
+                        label=d["label"] or batch_label, status="new"))
+            exist.add(d["url"])
+            added += 1
+    return {"ok": True, "added": added, "dup": dup, "errors": errors[:20],
+            "bad_count": len(errors),
+            "msg": "导入 %d 个（跳过重复 %d 个，格式不对 %d 行）"
+                   % (added, dup, len(errors))}
+
+
+@router.post("/proxies/check")
+def check_proxies(payload: dict, request: Request):
+    """探测代理：``ids`` 为空则测全部未禁用的（上限 200 个，免得卡死）。"""
+    from . import proxies as PX
+    current_admin(request)
+    ids = payload.get("ids") or []
+    with db_session() as s:
+        stmt = select(Proxy).where(Proxy.enabled.is_(True)).order_by(Proxy.id).limit(200)
+        rows = list(s.scalars(stmt))
+        if ids:
+            rows = [r for r in rows if r.id in [int(i) for i in ids]]
+        targets = [(r.id, r.url) for r in rows]
+
+    good, bad, out = 0, 0, []
+    for pid, url in targets:
+        ok, ip, ms, err = PX.check(url)
+        with db_session() as s:
+            p = s.get(Proxy, pid)
+            if p is None:
+                continue
+            p.latency_ms = ms
+            if ok:
+                p.exit_ip = ip or ""
+                p.status = "ok"
+                p.last_ok_at = datetime.datetime.now()
+                p.last_error = ""
+                p.fail_streak = 0
+                good += 1
+            else:
+                p.status = "bad"
+                p.last_error = str(err or "")[:300]
+                p.fail_streak = int(p.fail_streak or 0) + 1
+                bad += 1
+        out.append({"id": pid, "ok": ok, "exit_ip": ip, "latency_ms": ms,
+                    "error": err})
+    return {"ok": True, "good": good, "bad": bad, "results": out,
+            "msg": "检测完成：可用 %d 个，不通 %d 个" % (good, bad)}
+
+
+@router.post("/proxies/delete")
+def delete_proxies(payload: dict, request: Request):
+    current_admin(request)
+    ids = payload.get("ids") or []
+    if not isinstance(ids, list):
+        return {"ok": False, "msg": "ids 必须是数组"}
+    n = 0
+    with db_session() as s:
+        for i in ids:
+            p = s.get(Proxy, int(i))
+            if p is not None:
+                s.delete(p)
+                n += 1
+    return {"ok": True, "msg": "已删除 %d 个" % n}
+
+
+@router.post("/proxies/auto_assign")
+def auto_assign_proxies(payload: dict, request: Request):
+    """把「还没绑人」的可用代理，按顺序发给「还没代理」的用户。
+
+    ``only_ok`` 默认 True：只发探测通过的。池子不够就有人分不到 ——
+    分不到的用户抢兑走直连，不会报错。
+    """
+    current_admin(request)
+    only_ok = payload.get("only_ok", True)
+    with db_session() as s:
+        q = select(Proxy).where(Proxy.enabled.is_(True), Proxy.bound_user_id.is_(None))
+        if only_ok:
+            q = q.where(Proxy.status == "ok")
+        free = list(s.scalars(q.order_by(Proxy.latency_ms.asc(), Proxy.id.asc())))
+        busy_users = {u for (u,) in s.execute(
+            select(Proxy.bound_user_id).where(Proxy.bound_user_id.isnot(None))).all()}
+        users = [u for u in s.scalars(select(User).order_by(User.id)) if u.id not in busy_users]
+        n = 0
+        for p, u in zip(free, users):
+            p.bound_user_id = u.id
+            n += 1
+    return {"ok": True, "assigned": n,
+            "msg": "已分配 %d 个（空余代理 %d，等待分配的用户 %d）"
+                   % (n, len(free), len(users))}
+
+
+# ★ 注意顺序：FastAPI 按声明顺序匹配，带 {pid} 的这条路必须放在所有
+#   字面量路径（import / check / delete / auto_assign）后面，
+#   否则 /proxies/auto_assign 会被当成 pid=auto_assign 而 422。
+@router.post("/proxies/{pid}")
+def update_proxy(pid: int, payload: dict, request: Request):
+    """改单个代理：启用/停用、备注、绑定给谁（bound_user_id=0 表示解绑）。
+
+    也允许直接改 ``status / exit_ip / latency_ms`` —— 管理员手工标注用：
+    比如代理商那边换了出口、或者你知道这个 IP 已经废了，不用等探测就能标出来。
+    """
+    current_admin(request)
+    with db_session() as s:
+        p = s.get(Proxy, pid)
+        if p is None:
+            return {"ok": False, "msg": "代理不存在"}
+        if "enabled" in payload:
+            p.enabled = bool(payload.get("enabled"))
+        if "label" in payload:
+            p.label = str(payload.get("label") or "")[:60]
+        if "status" in payload:
+            v = str(payload.get("status") or "").strip()
+            p.status = v if v in ("ok", "bad", "untested") else p.status
+        if "exit_ip" in payload:
+            p.exit_ip = str(payload.get("exit_ip") or "")[:64]
+        if "latency_ms" in payload:
+            try:
+                p.latency_ms = max(0, int(payload.get("latency_ms") or 0))
+            except (TypeError, ValueError):
+                pass
+        if "bound_user_id" in payload:
+            v = payload.get("bound_user_id")
+            try:
+                v = int(v or 0)
+            except Exception:
+                v = 0
+            if v:
+                # 一个用户只留一个代理：先把别人身上的这个用户解绑
+                for other in s.scalars(select(Proxy).where(
+                        Proxy.bound_user_id == v, Proxy.id != pid)):
+                    other.bound_user_id = None
+            p.bound_user_id = v or None
+        row = _px_row(p)
+    return {"ok": True, "proxy": row}
+
+
 # ==================================================================== 全局设置
 @router.get("/settings")
 def get_global(request: Request):
@@ -268,7 +486,8 @@ def get_global(request: Request):
 def save_global(payload: dict, request: Request):
     current_admin(request)
     allowed = {"dewu_activity", "dewu_sign", "dewu_answer_sign",
-               "allow_new_user", "max_users", "require_code_for_task"}
+               "allow_new_user", "max_users", "require_code_for_task",
+               "proxy_enabled", "proxy_required"}
     for k, v in (payload or {}).items():
         if k in allowed:
             if k == "max_users":
@@ -276,7 +495,8 @@ def save_global(payload: dict, request: Request):
                     v = int(v or 0)
                 except Exception:
                     v = 0
-            elif k in ("allow_new_user", "require_code_for_task"):
+            elif k in ("allow_new_user", "require_code_for_task",
+                       "proxy_enabled", "proxy_required"):
                 v = bool(v)
             else:
                 v = str(v or "")

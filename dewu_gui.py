@@ -45,6 +45,14 @@ class _WatchBridge(QObject):
     done = Signal(bool, str, dict)     # 成功?, 提示文本, 最新监听状态
 
 
+class _ProxyBridge(QObject):
+    """代理检测是网络操作（一个不通的代理要等到超时）→ 必须放子线程。
+
+    done = (全部完成?, 提示文本)
+    """
+    done = Signal(bool, str)
+
+
 class _AnswerBridge(QObject):
     """答题全是网络操作: 取题目 / 下图片 / 依次提交, 全部放子线程。"""
     qinfo = Signal(dict, str)      # 今日题目信息, 错误文本(空串=成功)
@@ -1525,6 +1533,473 @@ class MainWindow(QMainWindow):
         bb.accepted.connect(on_ok)
         dlg.exec()
 
+    # ---------- 代理 IP 池 ----------
+    def _refresh_proxy_btn(self):
+        """顶部按钮直接显示代理开没开 + 池子里有几个能用的。"""
+        try:
+            st = M.proxy_status()
+        except Exception:
+            return
+        if st.get("enabled") and st.get("alive"):
+            text = "代理 IP · %d 个可用" % (st.get("ok") or 0)
+            tip = ("每个账号从不同的 IP 出去（已绑 %d/%d 个账号）\n"
+                   "池子共 %d 个：%d 可用 / %d 没测 / %d 有问题\n点这里导入 / 检测 / 分配"
+                   % (st.get("bound") or 0, st.get("accounts") or 0, st.get("total") or 0,
+                      st.get("ok") or 0, st.get("untested") or 0, st.get("bad") or 0))
+        elif st.get("total"):
+            text = "代理 IP · 已关闭"
+            tip = "池子里有 %d 个 IP，但总开关关着（抢购还在用本机 IP）· 点这里开启" % (st.get("total") or 0)
+        else:
+            text = "代理 IP"
+            tip = ("每个账号走不同的出口 IP（只抢购用）\n"
+                   "买了 socks5 的国内 IP 就从这里导入，然后一键分配给各账号")
+        if self.btn_proxy.text() != text or self.btn_proxy.toolTip() != tip:
+            self.btn_proxy.setText(text)
+            self.btn_proxy.setToolTip(tip)
+
+    def proxy_settings(self):
+        """弹窗：代理 IP 池 —— 导入 / 检测 / 给账号分配 / 换 IP。"""
+        accounts = [dict(a) for a in M.accounts]
+        pool = M.proxy_pool()
+        st = M.proxy_status()
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("代理 IP 池 · 每个账号走不同的出口")
+        dlg.setMinimumWidth(880)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(20, 18, 20, 14)
+        v.setSpacing(10)
+
+        head = QLabel("让每个账号从不同的 IP 出去")
+        hf = QFont()
+        hf.setPointSize(11)
+        hf.setBold(True)
+        head.setFont(hf)
+        v.addWidget(head)
+
+        tip = QLabel(
+            "· 默认只有「抢购那一下」走代理 —— 拉商品列表 / 登录还是直连（快，代理挂了界面也不会刷不出商品）\n"
+            "· 导入格式随便贴：1.2.3.4:1080 ／ 1.2.3.4:1080:账号:密码 ／ socks5://账号:密码@1.2.3.4:1080\n"
+            "· 建议用 socks5h（DNS 也在代理侧解析，对国内 IP 商最稳）；没写协议前缀就按 socks5h 处理\n"
+            "· 默认「一个 IP 用满这一轮」：抢购循环间隔 200ms，每换一次 IP 都要重新握手，一换就把节奏打没了\n"
+            "· 遇到风控（700 请先登录 / 900）程序会自己换一个 IP 接着抢，连击 3 次才换，避免把池子刷穿\n"
+            "· 买国内动态 IP / SOCKS5 都行，按上面的格式粘进来 → 导入 → 自动分配，每个账号就有独立出口了")
+        tip.setWordWrap(True)
+        tip.setObjectName("sectip")
+        v.addWidget(tip)
+
+        # ---- 状态 ----
+        box = QFrame()
+        box.setObjectName("card")
+        g = QGridLayout(box)
+        g.setContentsMargins(14, 12, 14, 12)
+        g.setHorizontalSpacing(10)
+        g.setVerticalSpacing(6)
+
+        def kv(row, key):
+            lb = QLabel(key)
+            lb.setObjectName("fieldlbl")
+            val = QLabel("—")
+            val.setWordWrap(True)
+            g.addWidget(lb, row, 0, Qt.AlignTop)
+            g.addWidget(val, row, 1)
+            return val
+
+        lb_pool = kv(0, "代理池")
+        lb_use = kv(1, "当前用途")
+        lb_dep = kv(2, "socks 依赖")
+        g.setColumnStretch(1, 1)
+        v.addWidget(box)
+
+        def render_status():
+            s = M.proxy_status()
+            lb_pool.setText(s.get("summary") or "—")
+            if s.get("enabled"):
+                how = ("一个 IP 用满一轮" if s.get("mode") == "sticky"
+                       else "每 %d 次换一个 IP" % (s.get("rotate_n") or 0))
+                lb_use.setText("抢购走代理（%s）· 商品列表%s · 已绑 %d/%d 个账号"
+                               % (how, "也走代理" if s.get("also_list") else "直连",
+                                  s.get("bound") or 0, s.get("accounts") or 0))
+                lb_use.setStyleSheet("color:%s;" % (C_OK if s.get("ok") else C_ERR))
+            else:
+                lb_use.setText("总开关关着 —— 抢购仍然用本机 IP（直连）")
+                lb_use.setStyleSheet("color:%s;" % C_SUB)
+            if s.get("socks_ready"):
+                lb_dep.setText("PySocks 已安装 ✓")
+                lb_dep.setStyleSheet("color:%s;" % C_OK)
+            else:
+                lb_dep.setText("缺 PySocks ✗ —— socks5 代理用不了，请先 pip install PySocks")
+                lb_dep.setStyleSheet("color:%s;" % C_ERR)
+
+        render_status()
+
+        # ---- 开关与策略 ----
+        chk_on = QCheckBox("启用代理（抢购走代理 IP）")
+        chk_on.setChecked(bool(st.get("enabled")))
+        chk_on.setToolTip("关掉后抢购立刻回到直连，池子和绑定关系都保留")
+        chk_list = QCheckBox("商品列表也走代理")
+        chk_list.setChecked(bool(st.get("also_list")))
+        chk_list.setToolTip("默认关。列表请求量大、走代理慢，代理一挂界面就刷不出商品，不划算。")
+        row1 = QHBoxLayout()
+        row1.setSpacing(18)
+        row1.addWidget(chk_on)
+        row1.addWidget(chk_list)
+        row1.addStretch(1)
+        v.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(10)
+        lb_mode = QLabel("换 IP 频率")
+        lb_mode.setObjectName("fieldlbl")
+        cb_mode = QComboBox()
+        cb_mode.addItem("固定一个 IP 用满这一轮（推荐）", "sticky")
+        cb_mode.addItem("每 N 次换一个 IP", "rotate")
+        idx = cb_mode.findData(st.get("mode") or "sticky")
+        if idx >= 0:
+            cb_mode.setCurrentIndex(idx)
+        cb_mode.setMinimumWidth(210)
+        sp_n = QSpinBox()
+        sp_n.setRange(1, 9999)
+        sp_n.setValue(int(st.get("rotate_n") or 20))
+        sp_n.setSuffix(" 次")
+        sp_n.setFixedWidth(96)
+        sp_n.setEnabled(cb_mode.currentData() == "rotate")
+        sp_n.setToolTip("轮换模式下，同一个 IP 用满这么多次就换下一个")
+        cb_mode.currentIndexChanged.connect(
+            lambda _=None: sp_n.setEnabled(cb_mode.currentData() == "rotate"))
+        row2.addWidget(lb_mode)
+        row2.addWidget(cb_mode)
+        row2.addWidget(sp_n)
+        row2.addStretch(1)
+        v.addLayout(row2)
+
+        # ---- 池子表格 ----
+        lb_t = QLabel("代理池（可多选：按住 Ctrl / Shift 点行）")
+        lb_t.setObjectName("fieldlbl")
+        v.addWidget(lb_t)
+
+        tbl = QTableWidget(0, 8)
+        tbl.setHorizontalHeaderLabels(
+            ["用途", "地址", "协议", "备注", "状态", "出口 IP", "延迟", "成功/失败"])
+        # 除「备注」外一律让 Qt 按内容自适应 —— 手写的固定宽度会被布局挤掉，
+        # 结果就是「sock...」「18...」这种被截断的列，比不设还难看。
+        for _c in (1, 2, 4, 5, 6, 7):
+            tbl.horizontalHeader().setSectionResizeMode(_c, QHeaderView.ResizeToContents)
+        tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        tbl.setColumnWidth(0, 104)
+        tbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        tbl.horizontalHeader().setMinimumSectionSize(52)
+        tbl.setMinimumWidth(820)
+        tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        tbl.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        tbl.verticalHeader().setVisible(False)
+        tbl.setShowGrid(False)
+        tbl.setWordWrap(False)
+        tbl.setTextElideMode(Qt.ElideRight)
+        tbl.setMinimumHeight(216)
+        v.addWidget(round_wrap(tbl))
+
+        acc_name = {a.get("id"): (a.get("name") or ("账号%s" % a.get("id"))) for a in accounts}
+
+        def row_cells(p):
+            aid = p.get("account_id")
+            use = acc_name.get(aid) or "公共池"
+            status = p.get("status") or "untested"
+            smap = {"ok": ("可用", C_OK), "bad": ("有问题", C_ERR),
+                    "untested": ("没测过", C_SUB), "": ("没测过", C_SUB)}
+            stext, scolor = smap.get(status, (status, C_SUB))
+            if not p.get("enabled", True):
+                stext = "已停用"
+                scolor = C_SUB
+            lat = int(p.get("latency_ms") or 0)
+            return [use, "%s:%s" % (p.get("host"), p.get("port")),
+                    p.get("scheme") or "socks5h", p.get("label") or "",
+                    stext, p.get("exit_ip") or "—",
+                    ("%dms" % lat) if lat else "—",
+                    "%d / %d" % (int(p.get("ok_count") or 0), int(p.get("fail_count") or 0))], scolor
+
+        def selected_ids():
+            ids = []
+            for r in sorted({i.row() for i in tbl.selectedIndexes()}):
+                it = tbl.item(r, 1)
+                if it is not None:
+                    ids.append(it.data(Qt.UserRole))
+            return ids
+
+        def fill(keep_sel=False):
+            keep = selected_ids() if keep_sel else []
+            rows = M.proxy_pool()
+            tbl.setRowCount(0)
+            for p in rows:
+                cells, scolor = row_cells(p)
+                r = tbl.rowCount()
+                tbl.insertRow(r)
+                for c, txt in enumerate(cells):
+                    item = QTableWidgetItem(str(txt))
+                    if c == 0:
+                        item.setData(Qt.UserRole, p.get("id"))
+                    if c == 4:
+                        item.setForeground(QColor(scolor))
+                    tbl.setItem(r, c, item)
+                if p.get("id") in keep:
+                    tbl.selectRow(r)
+            render_status()
+            self._refresh_proxy_btn()
+
+        fill()
+
+        # ---- 操作按钮 ----
+        b1 = QHBoxLayout()
+        b1.setSpacing(8)
+        btn_chk = QPushButton("检测全部")
+        btn_chk.setToolTip("逐个探出口 IP 和延迟。一个不通的代理要等到超时，数量多时请耐心等")
+        btn_chk_new = QPushButton("只测没测过的")
+        btn_chk_new.setToolTip("批量导入几百个时省时间：已经测过（有结论）的跳过")
+        btn_on = QPushButton("启用/停用")
+        btn_on.setToolTip("停用不会删除，只是不参与分配、抢购时也不会选到它")
+        btn_del = QPushButton("删除选中")
+        btn_del.setObjectName("minidanger")
+        for w in (btn_chk, btn_chk_new, btn_on, btn_del):
+            b1.addWidget(w)
+        b1.addStretch(1)
+        v.addLayout(b1)
+
+        b2 = QHBoxLayout()
+        b2.setSpacing(8)
+        lb_bind = QLabel("把选中的 IP 绑给")
+        lb_bind.setObjectName("fieldlbl")
+        cb_acc = QComboBox()
+        for a in accounts:
+            cb_acc.addItem(a.get("name") or ("账号%s" % a.get("id")), a.get("id"))
+        cb_acc.setMinimumWidth(140)
+        cb_acc.setMaximumWidth(200)
+        btn_bind = QPushButton("绑定")
+        btn_bind.setToolTip("绑好之后，这个账号抢购就固定从这一个 IP 出去")
+        btn_unbind = QPushButton("解除绑定")
+        btn_auto = QPushButton("自动分配（每账号一个）")
+        btn_auto.setObjectName("mini")
+        btn_auto.setToolTip("把池子里的 IP 一个一个分给各账号，尽量保证每个账号的出口都不一样")
+        btn_rot = QPushButton("换个 IP")
+        btn_rot.setObjectName("mini")
+        btn_rot.setToolTip("把这个账号换到池子里的下一个 IP（原来那个回到公共池）")
+        for w in (lb_bind, cb_acc, btn_bind, btn_unbind, btn_auto, btn_rot):
+            b2.addWidget(w)
+        b2.addStretch(1)
+        v.addLayout(b2)
+
+        # ---- 批量导入 ----
+        lb_i = QLabel("批量导入（一行一个，可带备注）")
+        lb_i.setObjectName("fieldlbl")
+        v.addWidget(lb_i)
+        ed_new = QTextEdit()
+        ed_new.setFixedHeight(78)
+        ed_new.setPlaceholderText(
+            "1.2.3.4:1080:用户名:密码\n"
+            "5.6.7.8:1080:用户名:密码#上海电信\n"
+            "socks5://用户名:密码@9.9.9.9:1080")
+        row3 = QHBoxLayout()
+        row3.setSpacing(8)
+        cb_scheme = QComboBox()
+        for s in ("socks5h", "socks5", "socks4", "http", "https"):
+            cb_scheme.addItem(s, s)
+        cb_scheme.setToolTip("没写协议前缀的行按这个协议处理。socks5h = 域名也在代理侧解析，最稳")
+        cb_scheme.setFixedWidth(112)
+        btn_imp = QPushButton("导入")
+        btn_imp.setObjectName("primary")
+        row3.addWidget(cb_scheme)
+        row3.addWidget(btn_imp)
+        row3.addStretch(1)
+        v.addWidget(ed_new)
+        v.addLayout(row3)
+
+        lbl = QLabel("")
+        lbl.setWordWrap(True)
+        lbl.setObjectName("sectip")
+        v.addWidget(lbl)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("保存并关闭")
+        bb.button(QDialogButtonBox.Ok).setObjectName("primary")
+        bb.button(QDialogButtonBox.Cancel).setText("取消")
+        bb.rejected.connect(dlg.reject)
+        v.addWidget(bb)
+
+        bridge = _ProxyBridge()
+
+        def save_cfg():
+            return M.proxy_save_cfg(enabled=chk_on.isChecked(),
+                                    mode=cb_mode.currentData(),
+                                    rotate_n=int(sp_n.value()),
+                                    also_list=chk_list.isChecked())
+
+        def say(ok, text):
+            lbl.setStyleSheet("color:%s;" % (C_OK if ok else C_ERR))
+            lbl.setText(text)
+
+        def do_import():
+            text = ed_new.toPlainText()
+            if not text.strip():
+                say(False, "先把 IP 粘到上面的框里")
+                return
+            r = M.proxy_add(text, scheme=cb_scheme.currentData())
+            parts = ["✓ 导入 %d 个" % r.get("added", 0)]
+            if r.get("dup"):
+                parts.append("跳过重复 %d 个" % r["dup"])
+            if r.get("bad"):
+                parts.append("认不出 %d 行" % r["bad"])
+            msg = "，".join(parts)
+            errs = r.get("errors") or []
+            if errs:
+                msg += "：第 %s 行 %s" % (errs[0]["line"], errs[0]["err"])
+                if len(errs) > 1:
+                    msg += " 等"
+            say(bool(r.get("added")), msg)
+            if r.get("added"):
+                ed_new.clear()
+            fill()
+
+        btn_imp.clicked.connect(do_import)
+
+        def on_check_done(ok, msg):
+            btn_chk.setEnabled(True)
+            btn_chk_new.setEnabled(True)
+            say(ok, msg)
+            fill()
+
+        bridge.done.connect(on_check_done)
+
+        def run_check(only_new):
+            # 只测没测过的 → 不限定 id；否则「选中了就只测选中的，没选就全测」
+            ids = None if only_new else (selected_ids() or None)
+            if not only_new:
+                if ids:
+                    say(True, "只测选中的 %d 个…" % len(ids))
+                else:
+                    say(True, "没选中任何行 → 检测全部（一个不通的代理要等到超时，请等一会儿）")
+            btn_chk.setEnabled(False)
+            btn_chk_new.setEnabled(False)
+
+            def work():
+                try:
+                    r = M.proxy_check(ids=ids, only_new=only_new)
+                    n, p = r.get("checked", 0), r.get("passed", 0)
+                    if n == 0:
+                        ok, msg = True, "没有需要检测的代理（都测过了 / 都被停用了）"
+                    else:
+                        ok = p > 0
+                        msg = "✓ 检测完 %d 个：%d 通 / %d 不通" % (n, p, n - p)
+                except Exception as e:
+                    ok, msg = False, "检测出错：%r" % (e,)
+                bridge.done.emit(ok, msg)
+
+            threading.Thread(target=work, name="proxy-check", daemon=True).start()
+
+        btn_chk.clicked.connect(lambda: run_check(False))
+        btn_chk_new.clicked.connect(lambda: run_check(True))
+
+        def do_toggle():
+            ids = selected_ids()
+            if not ids:
+                say(False, "先在表格里选一行")
+                return
+            cur = {p["id"]: p for p in M.proxy_pool()}
+            n_on = 0
+            for i in ids:
+                p = cur.get(i)
+                if p is None:
+                    continue
+                newv = not p.get("enabled", True)
+                n_on += 1 if newv else 0
+                M.proxy_edit(i, enabled=newv)
+            say(True, "已切换 %d 个（%d 个启用 / %d 个停用）" % (len(ids), n_on, len(ids) - n_on))
+            fill(keep_sel=True)
+
+        btn_on.clicked.connect(do_toggle)
+
+        def do_del():
+            ids = selected_ids()
+            if not ids:
+                say(False, "先在表格里选一行")
+                return
+            if QMessageBox.question(dlg, "确认删除",
+                                    "要删除选中的 %d 个代理吗？\n（只是从池子里移除，不影响账号）"
+                                    % len(ids)) != QMessageBox.Yes:
+                return
+            M.proxy_del(ids)
+            say(True, "已删除 %d 个" % len(ids))
+            fill()
+
+        btn_del.clicked.connect(do_del)
+
+        def do_bind():
+            ids = selected_ids()
+            if len(ids) != 1:
+                say(False, "绑定要正好选中 1 行（现在选了 %d 行）" % len(ids))
+                return
+            aid = cb_acc.currentData()
+            show = tbl.item(tbl.currentRow(), 1)
+            M.proxy_assign(ids[0], aid)
+            say(True, "已把 %s 绑给「%s」（该账号原来那个 IP 会自动回到公共池）"
+                % (show.text() if show is not None else "该 IP", cb_acc.currentText()))
+            fill()
+
+        btn_bind.clicked.connect(do_bind)
+
+        def do_unbind():
+            ids = selected_ids()
+            if not ids:
+                say(False, "先在表格里选一行")
+                return
+            for i in ids:
+                M.proxy_edit(i, account_id=None)
+            say(True, "已解除绑定 %d 个（回到公共池）" % len(ids))
+            fill()
+
+        btn_unbind.clicked.connect(do_unbind)
+
+        def do_auto():
+            r = M.proxy_auto_assign()
+            n = r.get("assigned", 0)
+            if n:
+                say(True, "✓ 给 %d 个账号各分了一个 IP（还剩 %d 个空闲）"
+                    % (n, r.get("free", 0)))
+            else:
+                say(True, "没有可分配的账号 —— 要么每个账号都绑好了，要么池子里没有空闲 IP")
+            fill()
+
+        btn_auto.clicked.connect(do_auto)
+
+        def do_rotate():
+            aid = cb_acc.currentData()
+            r = M.proxy_rotate(aid)
+            say(r.get("ok"), r.get("msg") or "换不了")
+            fill()
+
+        btn_rot.clicked.connect(do_rotate)
+
+        def on_ok():
+            if chk_on.isChecked() and not M.proxy_pool():
+                QMessageBox.warning(dlg, "还不能开启",
+                                    "池子是空的。\n先在下面把买到的代理 IP 粘进来导入，再打开开关。")
+                return
+            if chk_on.isChecked() and not M.proxy_status().get("socks_ready") \
+                    and any((p.get("scheme") or "").startswith("socks") for p in M.proxy_pool()):
+                if QMessageBox.question(
+                        dlg, "缺 PySocks",
+                        "你配的是 socks 代理，但当前环境没装 PySocks，抢购时会直接报错。\n\n"
+                        "先在命令行执行：pip install PySocks\n\n还是要保存吗？") != QMessageBox.Yes:
+                    return
+            save_cfg()
+            self._refresh_proxy_btn()
+            dlg.accept()
+
+        bb.accepted.connect(on_ok)
+        chk_on.toggled.connect(lambda _=None: render_status())
+        chk_list.toggled.connect(lambda _=None: render_status())
+        cb_mode.currentIndexChanged.connect(lambda _=None: render_status())
+        dlg.exec()
+
     # ---------- 顶部状态栏 ----------
     def _build_header(self):
         f = QFrame()
@@ -1584,9 +2059,15 @@ class MainWindow(QMainWindow):
         self.btn_watch.setObjectName("mini")
         self.btn_watch.setToolTip("盯住商品列表：有新品上架 / 补货就推微信")
         self.btn_watch.clicked.connect(self.stock_watch)
+        self.btn_proxy = QPushButton("代理 IP")
+        self.btn_proxy.setObjectName("mini")
+        self.btn_proxy.setToolTip("每个账号走不同的出口 IP（只抢购用）")
+        self.btn_proxy.clicked.connect(self.proxy_settings)
         for w in (self.chip_acc, self.chip_task, btn_fit, self.chip_ntp,
-                  btn_ntp, self.btn_answer, self.btn_watch, self.btn_push):
+                  btn_ntp, self.btn_answer, self.btn_watch, self.btn_proxy,
+                  self.btn_push):
             lay.addWidget(w)
+        self._refresh_proxy_btn()
 
         sep = QFrame()
         sep.setFixedWidth(1)
@@ -2468,6 +2949,7 @@ class MainWindow(QMainWindow):
         self._sync_account_table(accounts)
         self._sync_header(accounts, tasks)
         self._refresh_watch_btn()
+        self._refresh_proxy_btn()
 
         acc_id = self._acct_id()
         st = M.acct_state.get(acc_id, {}) if acc_id is not None else {}

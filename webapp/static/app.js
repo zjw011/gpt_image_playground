@@ -16,7 +16,7 @@ const APP = (() => {
 
   const S = {
     view: 'overview',
-    me: null, cfg: null, global: null, state: null,
+    me: null, cfg: null, global: null, state: null, proxy: null,
     admin: null, adminTab: 'overview', adminData: {},
     sel: null, timer: null, tickTimer: null, lastPSig: '', lastTSig: '',
     filter: { q: '', stock: 'all', sort: 'default' },
@@ -632,7 +632,11 @@ const APP = (() => {
   }
 
   /* ============================================================ 设置 */
-  const SEC = (k, id) => ((S.me || {}).settings || {})[k] || {};
+  /* ★ 用户设置只有一份：boot() 里放的 S.cfg（= /api/me 顶层的 settings）。
+     /api/me 的结构是 {user, settings, proxy, global} —— settings 是 user 的**兄弟**，
+     不在 user 里面。早先这里写成 S.me.settings，等于永远取到空对象：
+     设置页所有输入框都会显示默认值，而且点「保存」会把用户的真实配置覆盖成默认值。 */
+  const SEC = (k, id) => (S.cfg || {})[k] || {};
 
   VIEWS_HTML.settings = () => `
     <div class="set-grid">
@@ -739,6 +743,36 @@ const APP = (() => {
         </div>
       </div>
 
+      <div class="card" id="sec-proxy" style="margin:0">
+        <div class="sec-t"><span class="si">${ic('pulse')}</span>代理 IP
+          <span class="sp"></span><span class="state off" id="stPxy">未启用</span></div>
+        <div class="card-b">
+          <div class="desc" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px;line-height:1.65">
+            抢购时从管理员导入的 IP 池里走一个独立出口，避免同服务器上的多个账号
+            被按 IP 关联。默认只作用于<b>兑换请求</b>，拉列表和登录还是直连。</div>
+          <div class="kv"><span class="k">当前出口</span><span class="v mono" id="pxCur">—</span></div>
+          <div class="kv"><span class="k">出口 IP / 延迟</span><span class="v mono" id="pxIp">—</span></div>
+          <div class="kv"><span class="k">IP 池</span><span class="v" id="pxPool">—</span></div>
+          <label class="chk" style="margin-top:12px"><input type="checkbox" id="pxEn"> 抢购时使用代理 IP</label>
+          <label class="fld"><span>用哪个出口</span>
+            <select id="pxMode">
+              <option value="sticky">固定一个 IP（推荐 —— 换 IP 要重新握手，拖慢抢购节奏）</option>
+              <option value="rotate">自动轮换（每 N 次换一个，容易被风控时用）</option>
+            </select></label>
+          <label class="fld" id="pxRnWrap"><span>轮换间隔（次）</span>
+            <input id="pxRn" type="number" min="1" placeholder="20">
+            <div class="hint">只有选了「自动轮换」才生效。被风控（700）时会立即换一个，不等满 N 次。</div></label>
+          <label class="chk"><input type="checkbox" id="pxList"> 拉商品列表也走代理（默认直连，更快）</label>
+          <div class="msg" id="pxMsg"></div>
+          <div class="row" style="margin-top:14px">
+            <button class="btn btn-p btn-sm" onclick="APP.saveProxy(this)">${ic('check')}保存</button>
+            <button class="btn btn-s btn-sm" onclick="APP.testProxy(this)">${ic('pulse')}测一下</button>
+            <button class="btn btn-g btn-sm" onclick="APP.rotateProxy(this)">${ic('refresh')}换个 IP</button>
+            <button class="btn btn-s btn-sm" onclick="APP.proxyPool(this)">${ic('eye')}看池子</button>
+          </div>
+        </div>
+      </div>
+
       <div class="card" style="margin:0">
         <div class="sec-t"><span class="si">${ic('key')}</span>账号</div>
         <div class="card-b">
@@ -772,6 +806,12 @@ const APP = (() => {
 
     val('#aBiz', a.biz_activity || 2); val('#aSign', a.sign); ck('#aSkip', a.skip_answered);
 
+    const px = SEC('proxy');
+    ck('#pxEn', px.enabled); ck('#pxList', px.also_list);
+    val('#pxMode', px.mode || 'sticky'); val('#pxRn', px.rotate_n || 20);
+    syncPxMode();
+    $('#pxMode').onchange = syncPxMode;
+
     // 账号卡里的这几项是 <span>，要用 textContent（用 val() 写 value 是写不进去的）
     const txt = (id, v) => { const e = $(id); if (e) e.textContent = (v == null || v === '') ? '—' : v; };
     txt('#acPhone', (S.me || {}).phone); txt('#acUid', (S.me || {}).dewu_user_id);
@@ -799,6 +839,7 @@ const APP = (() => {
       e3.className = 'state ' + (en ? 'on' : 'off');
       e3.textContent = en ? '已开启' : '已关闭';
     }
+    paintProxy();
     const set = (id, v) => { const e = $(id); if (e) e.textContent = v; };
     set('#wTracked', (w.tracked || 0) + ' 件');
     set('#wNotified', w.notified || 0);
@@ -1034,7 +1075,7 @@ const APP = (() => {
           group_stock: $('#pGs').checked, group_self_too: $('#pGst').checked,
         },
       });
-      if (j.ok) { S.me.settings = j.settings; setMsg('#pMsg', '已保存', 'ok'); paintSettings(); }
+      if (j.ok) { S.cfg = j.settings; setMsg('#pMsg', '已保存', 'ok'); paintSettings(); }
     } catch (e) { setMsg('#pMsg', e.message, 'err'); }
     busy(btn, false);
   }
@@ -1057,7 +1098,7 @@ const APP = (() => {
           min_ratio: Math.max(0, Math.min(100, +$('#fMin').value || 0)) / 100,
         },
       });
-      if (j.ok) { S.me.settings = j.settings; setMsg('#fMsg', '已保存', 'ok'); paintSettings(); }
+      if (j.ok) { S.cfg = j.settings; setMsg('#fMsg', '已保存', 'ok'); paintSettings(); }
     } catch (e) { setMsg('#fMsg', e.message, 'err'); }
     busy(btn, false);
   }
@@ -1072,7 +1113,7 @@ const APP = (() => {
           max_attempts: +$('#dMax').value || 600,
         },
       });
-      if (j.ok) { S.me.settings = j.settings; setMsg('#dMsg', '已保存', 'ok'); }
+      if (j.ok) { S.cfg = j.settings; setMsg('#dMsg', '已保存', 'ok'); }
     } catch (e) { setMsg('#dMsg', e.message, 'err'); }
     busy(btn, false);
   }
@@ -1085,7 +1126,7 @@ const APP = (() => {
           sign: $('#aSign').value.trim(), skip_answered: $('#aSkip').checked,
         },
       });
-      if (j.ok) { S.me.settings = j.settings; setMsg('#aMsg', '已保存', 'ok'); }
+      if (j.ok) { S.cfg = j.settings; setMsg('#aMsg', '已保存', 'ok'); }
     } catch (e) { setMsg('#aMsg', e.message, 'err'); }
     busy(btn, false);
   }
@@ -1130,11 +1171,108 @@ const APP = (() => {
     paintSettings();
   }
 
+  /* ============================================================ 代理 IP */
+  function syncPxMode() {
+    const w = $('#pxRnWrap');
+    if (w) w.style.display = ($('#pxMode') || {}).value === 'rotate' ? '' : 'none';
+  }
+
+  function paintProxy() {
+    const px = S.proxy || {};
+    const e = $('#stPxy');
+    if (e) {
+      const on = !!px.ready;
+      e.className = 'state ' + (on ? 'on' : 'off');
+      e.textContent = on ? '已启用' : (px.master ? (px.assigned ? '未启用' : '没分到 IP') : '管理员未开启');
+    }
+    const set = (id, v) => { const n = $(id); if (n) n.textContent = v; };
+    set('#pxCur', px.assigned ? (px.current + (px.assigned_label ? ' · ' + px.assigned_label : '')) : '还没分配出口 IP');
+    set('#pxIp', px.exit_ip ? (px.exit_ip + (px.latency_ms ? ' / ' + px.latency_ms + ' ms' : '')) : '—（点「测一下」探测）');
+    set('#pxPool', '共 ' + (px.pool_total || 0) + ' 个 · 启用 ' + (px.pool_alive || 0)
+      + ' 个 · 探测可用 ' + (px.pool_ok || 0) + ' 个' + (px.required ? ' · 管理员已强制启用' : ''));
+  }
+
+  async function refreshProxy() {
+    try {
+      const j = await api('/api/proxy');
+      if (j.ok) { S.proxy = j.proxy; paintProxy(); }
+    } catch (e) { /* 忽略 */ }
+  }
+
+  async function saveProxy(btn) {
+    busy(btn, true, '保存中…');
+    try {
+      const j = await api('/api/settings', {
+        proxy: {
+          enabled: $('#pxEn').checked, mode: $('#pxMode').value,
+          rotate_n: Math.max(1, +$('#pxRn').value || 20),
+          also_list: $('#pxList').checked,
+        },
+      });
+      if (j.ok) {
+        S.cfg = j.settings;
+        setMsg('#pxMsg', '已保存' + (S.proxy && !S.proxy.master
+          ? '（注意：管理员还没打开代理总开关，现在不会生效）' : ''), 'ok');
+        await refreshProxy();
+      }
+    } catch (e) { setMsg('#pxMsg', e.message, 'err'); }
+    busy(btn, false);
+  }
+
+  async function testProxy(btn) {
+    busy(btn, true, '探测中…');
+    try {
+      const j = await api('/api/proxy/test', {});
+      S.proxy = j.proxy || S.proxy;
+      setMsg('#pxMsg', j.msg, j.ok ? 'ok' : 'err');
+      paintProxy();
+    } catch (e) { setMsg('#pxMsg', e.message, 'err'); }
+    busy(btn, false);
+  }
+
+  async function rotateProxy(btn) {
+    busy(btn, true, '切换中…');
+    try {
+      const j = await api('/api/proxy/rotate', {});
+      S.proxy = j.proxy || S.proxy;
+      toast(j.msg, j.ok ? 'ok' : 'err');
+      setMsg('#pxMsg', j.msg, j.ok ? 'ok' : 'err');
+      paintProxy();
+    } catch (e) { setMsg('#pxMsg', e.message, 'err'); }
+    busy(btn, false);
+  }
+
+  /* 看池子：用户只能看到「有哪些可用出口」，看不到别人的完整地址和密码 */
+  function proxyPool() {
+    const px = S.proxy || {};
+    modal(`
+      <h3>${ic('eye')}可用出口 IP</h3>
+      <div class="desc">管理员导入的池子里，当前能分给你的出口。地址已脱敏，
+        密码不会显示。想换一个就点下面的按钮。</div>
+      ${px.assigned
+        ? `<div class="kv"><span class="k">我当前的出口</span>
+             <span class="v mono">${esc(px.current)}</span></div>
+           ${px.exit_ip ? `<div class="kv"><span class="k">出口 IP</span>
+             <span class="v mono">${esc(px.exit_ip)}${px.latency_ms ? ' · ' + px.latency_ms + ' ms' : ''}</span></div>` : ''}`
+        : '<div class="msg err show">这个账号还没有分到代理 IP，抢购会走服务器本机 IP。</div>'}
+      <div class="kv"><span class="k">池子总量</span><span class="v">${px.pool_total || 0} 个（启用 ${px.pool_alive || 0} 个）</span></div>
+      <div class="kv"><span class="k">探测可用</span><span class="v">${px.pool_ok || 0} 个</span></div>
+      <div class="kv"><span class="k">总开关</span>
+        <span class="v">${px.master ? '<span class="tag ok">管理员已开启</span>' : '<span class="tag bad">管理员未开启</span>'}</span></div>
+      <div class="kv"><span class="k">强制模式</span>
+        <span class="v">${px.required ? '<span class="tag warn">所有任务都必须走代理</span>' : '<span class="tag wait">跟随个人设置</span>'}</span></div>
+      <div class="foot">
+        <button class="btn btn-s" onclick="APP.closeModal()">关闭</button>
+        <button class="btn btn-g" onclick="APP.rotateProxy(this)">${ic('refresh')}换个 IP</button>
+      </div>`);
+  }
+
   /* ============================================================ 管理后台 */
   const AV = {
     overview: { t: '概览', s: '整体数据与最近动态', n: 'grid' },
     codes:    { t: '兑换码', s: '批量生成、作废、导出', n: 'ticket' },
     users:    { t: '用户', s: '禁用、踢下线、删除', n: 'users' },
+    proxies:  { t: '代理 IP', s: '导入 IP 池、探测、按用户分配', n: 'pulse' },
     settings: { t: '全局设置', s: '活动 id / sign / 注册开关', n: 'sliders' },
   };
 
@@ -1460,6 +1598,19 @@ const APP = (() => {
   ADMIN_HTML.settings = () => `
     <div class="set-grid">
       <div class="card" style="margin:0">
+        <div class="sec-t"><span class="si">${ic('pulse')}</span>代理 IP 总开关</div>
+        <div class="card-b">
+          <div class="desc" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px;line-height:1.65">
+            关着的时候，谁都不会走代理（池子留着也不生效）。<b>抢兑是最容易被按 IP
+            风控的一步</b>，拉列表和登录默认仍走直连，又快又稳。</div>
+          <label class="chk"><input type="checkbox" id="gxEn"> 启用代理 IP 池</label>
+          <label class="chk"><input type="checkbox" id="gxReq"> 强制所有任务都走代理（无视用户自己的开关）</label>
+          <div class="msg" id="gxMsg"></div>
+          <button class="btn btn-p btn-sm" style="margin-top:14px" onclick="APP.saveGlobal(this)">
+            ${ic('check')}保存设置</button>
+        </div>
+      </div>
+      <div class="card" style="margin:0">
         <div class="sec-t"><span class="si">${ic('sliders')}</span>接口参数</div>
         <div class="card-b">
           <div class="desc" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px;line-height:1.65">
@@ -1477,7 +1628,8 @@ const APP = (() => {
           <label class="chk"><input type="checkbox" id="stNew"> 允许新用户登录（关闭后只有已存在的账号能登录）</label>
           <label class="chk"><input type="checkbox" id="stCode"> 创建任务必须填兑换码</label>
           <div class="msg" id="stMsg"></div>
-          <button class="btn btn-p btn-sm" style="margin-top:14px" onclick="APP.saveGlobal(this)">${ic('check')}保存设置</button>
+          <button class="btn btn-p btn-sm" style="margin-top:14px" onclick="APP.saveGlobal(this)">
+            ${ic('check')}保存设置</button>
         </div>
       </div>
       <div class="card" style="margin:0">
@@ -1491,6 +1643,57 @@ const APP = (() => {
       </div>
     </div>`;
 
+  ADMIN_HTML.proxies = () => `
+    <div class="stats" id="gxStats"></div>
+    <div class="card">
+      <div class="card-h"><h3>${ic('pulse')}IP 池 <span class="num" id="gxCount">0</span></h3>
+        <div class="sp"></div>
+        <input id="gxq" placeholder="搜 IP / 备注" style="max-width:150px">
+        <select id="gxs" style="max-width:110px">
+          <option value="">全部状态</option><option value="new">未测</option>
+          <option value="ok">可用</option><option value="bad">不通</option>
+        </select>
+        <button class="btn btn-s btn-sm" onclick="APP.loadProxies()">${ic('search')}查找</button></div>
+      <div class="card-b">
+        <div class="row" style="margin-bottom:14px">
+          <button class="btn btn-p btn-sm" onclick="APP.checkProxies(this, false)">
+            ${ic('pulse')}检测全部</button>
+          <button class="btn btn-s btn-sm" onclick="APP.checkProxies(this, true)">
+            ${ic('refresh')}只测没测过的</button>
+          <button class="btn btn-s btn-sm" onclick="APP.autoAssign(this)">
+            ${ic('users')}自动分配给用户</button>
+        </div>
+        <div id="gxBox"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>${ic('download')}批量导入</h3><div class="sp"></div>
+        <span class="sub">一行一个 · 支持 # 备注</span></div>
+      <div class="card-b">
+        <textarea id="gxText" style="min-height:130px"
+          placeholder="1.2.3.4:1080:user:pass&#10;5.6.7.8:1080:user:pass&#10;9.10.11.12:8080#广州电信"></textarea>
+        <div class="grid2" style="margin-top:12px">
+          <label class="fld"><span>裸 host:port 按什么协议</span>
+            <select id="gxScheme">
+              <option value="socks5h">socks5h（域名也走代理，最稳）</option>
+              <option value="socks5">socks5（本地解析 DNS）</option>
+              <option value="http">http（CONNECT 隧道）</option>
+            </select></label>
+          <label class="fld"><span>这一批统一备注</span>
+            <input id="gxLabel" placeholder="例如：10 月上海动态"></label>
+        </div>
+        <div class="msg" id="gxImpMsg"></div>
+        <button class="btn btn-p btn-sm" style="margin-top:14px" onclick="APP.importProxies(this)">
+          ${ic('download')}导入</button>
+      </div>
+    </div>`;
+
+  ADMIN_BIND.proxies = () => {
+    $('#gxq').onkeydown = (e) => { if (e.key === 'Enter') loadProxies(); };
+    $('#gxs').onchange = () => loadProxies();
+    loadProxies();
+  };
+
   ADMIN_BIND.settings = () => loadSettings();
   async function saveGlobal(btn) {
     busy(btn, true, '保存中…');
@@ -1499,8 +1702,11 @@ const APP = (() => {
         dewu_activity: $('#stAct').value.trim(), dewu_sign: $('#stSign').value.trim(),
         dewu_answer_sign: $('#stAsign').value.trim(), max_users: +$('#stMax').value,
         allow_new_user: $('#stNew').checked, require_code_for_task: $('#stCode').checked,
+        proxy_enabled: $('#gxEn') ? $('#gxEn').checked : undefined,
+        proxy_required: $('#gxReq') ? $('#gxReq').checked : undefined,
       });
       setMsg('#stMsg', j.ok ? '已保存' : '保存失败', j.ok ? 'ok' : 'err');
+      if (j.ok && $('#gxMsg')) setMsg('#gxMsg', '已保存', 'ok');
     } catch (e) { setMsg('#stMsg', e.message, 'err'); }
     busy(btn, false);
   }
@@ -1523,6 +1729,135 @@ const APP = (() => {
     set('#stMax', s.max_users == null ? 0 : s.max_users);
     if ($('#stNew')) $('#stNew').checked = !!s.allow_new_user;
     if ($('#stCode')) $('#stCode').checked = !!s.require_code_for_task;
+    if ($('#gxEn')) $('#gxEn').checked = !!s.proxy_enabled;
+    if ($('#gxReq')) $('#gxReq').checked = !!s.proxy_required;
+  }
+
+  /* ------------------------------------------------ 代理 IP（管理端） */
+  async function loadProxies() {
+    const box = $('#gxBox'); if (!box) return;
+    box.innerHTML = '<div class="empty" style="padding:26px">加载中…</div>';
+    const q = encodeURIComponent(($('#gxq') || {}).value || '');
+    const st = ($('#gxs') || {}).value || '';
+    let j;
+    try { j = await api(`/api/admin/proxies?q=${q}&status=${st}`); }
+    catch (e) {
+      box.innerHTML = '<div class="empty" style="padding:26px">加载失败：' + esc(e.message) + '</div>';
+      if (e.status === 401) renderAdminLogin();
+      return;
+    }
+    S.adminData.proxies = j.proxies;
+    $('#gxCount').textContent = j.stats.total;
+    const s = j.stats;
+    $('#gxStats').innerHTML = [
+      { i: 'pulse', c: s.master ? 'green' : '', n: s.master ? '开' : '关', l: '总开关' },
+      { i: 'inbox', c: 'blue', n: s.total, l: '池子总数' },
+      { i: 'check', c: s.ok ? 'green' : '', n: s.ok, l: '探测可用' },
+      { i: 'alert', c: s.bad ? 'red' : '', n: s.bad, l: '探测不通' },
+      { i: 'users', c: 'gold', n: s.bound, l: '已绑定用户' },
+      { i: 'help', c: '', n: s.untested, l: '还没测过' },
+    ].map((x) => `<div class="stat"><div class="si ${x.c}">${ic(x.i, 'i-l')}</div>
+      <div class="b"><div class="n">${esc(x.n)}</div><div class="l">${x.l}</div></div></div>`).join('');
+    if ($('#gxEn')) $('#gxEn').checked = s.master;
+    if ($('#gxReq')) $('#gxReq').checked = s.required;
+    if ($('#gxScheme') && j.schemes) { /* 保留用户当前选择 */ }
+
+    if (!j.proxies.length) {
+      box.innerHTML = `<div class="empty"><div class="ico">${ic('pulse')}</div>
+        <b>池子是空的</b>把 IP 商后台的列表粘到下面「批量导入」里</div>`;
+      return;
+    }
+    const tg = (x) => ({ ok: 'ok', bad: 'bad', new: 'wait' }[x] || 'wait');
+    const lb = (x) => ({ ok: '可用', bad: '不通', new: '未测' }[x] || x);
+    box.innerHTML = `<div class="tbl-wrap"><table><thead><tr>
+      <th>#</th><th>代理</th><th>备注</th><th>状态</th><th>出口 IP</th><th>延迟</th>
+      <th>成功/失败</th><th>分给谁</th><th>操作</th></tr></thead><tbody>${j.proxies.map((p) => `<tr>
+        <td class="mono">${p.id}</td>
+        <td class="mono" style="font-size:12px">${esc(p.mask)}
+            <div class="muted" style="font-size:11px">${esc(p.scheme)}</div></td>
+        <td class="muted">${esc(p.label || '—')}</td>
+        <td><span class="tag ${p.enabled ? tg(p.status) : 'bad'}">${
+            p.enabled ? lb(p.status) : '已停用'}</span>
+          ${p.fail_streak >= 3 ? '<span class="tag warn">连错 ' + p.fail_streak + '</span>' : ''}</td>
+        <td class="mono" style="font-size:12px">${esc(p.exit_ip || '—')}</td>
+        <td class="mono">${p.latency_ms ? p.latency_ms + 'ms' : '—'}</td>
+        <td class="mono"><span style="color:#0f9d58">${p.ok_count}</span> / ${p.fail_count}</td>
+        <td>${p.bound_user_id
+            ? `<span class="tag ok">#${p.bound_user_id}</span>
+               <div class="muted mono" style="font-size:11px">${esc(p.bound_phone || '')}</div>`
+            : '<span class="tag wait">未分配</span>'}</td>
+        <td><div class="acts">
+          <button class="btn btn-s btn-sm" onclick="APP.checkOne(${p.id}, this)">测速</button>
+          <button class="btn btn-s btn-sm" onclick="APP.proxyToggle(${p.id}, ${p.enabled ? 'false' : 'true'})">
+            ${p.enabled ? '停用' : '启用'}</button>
+          ${p.bound_user_id ? `<button class="btn btn-s btn-sm" onclick="APP.proxyBind(${p.id}, 0)">解绑</button>` : ''}
+          <button class="btn btn-danger btn-sm" onclick="APP.proxyDel(${p.id})">删除</button>
+        </div></td></tr>`).join('')}</tbody></table></div>`;
+  }
+
+  async function importProxies(btn) {
+    const text = $('#gxText').value;
+    if (!text.trim()) { setMsg('#gxImpMsg', '先粘贴点东西进来', 'err'); return; }
+    busy(btn, true, '导入中…');
+    try {
+      const j = await api('/api/admin/proxies/import', {
+        text, scheme: $('#gxScheme').value, label: $('#gxLabel').value.trim(),
+      });
+      const m = $('#gxImpMsg');
+      m.className = 'msg ' + (j.ok ? 'ok' : 'err') + ' show';
+      m.innerHTML = esc(j.msg || j.msg) + (j.errors && j.errors.length
+        ? '<br><span class="mono" style="font-size:11px">格式不对：'
+          + j.errors.slice(0, 5).map((e) => '第' + e.line + '行 ' + esc(e.text) + '（' + esc(e.err) + '）').join('；')
+          + (j.errors.length > 5 ? ' …' : '') + '</span>' : '');
+      if (j.added) { toast('导入 ' + j.added + ' 个', 'ok'); $('#gxText').value = ''; loadProxies(); }
+    } catch (e) { setMsg('#gxImpMsg', e.message, 'err'); }
+    busy(btn, false);
+  }
+
+  async function checkProxies(btn, onlyNew) {
+    const ids = onlyNew
+      ? (S.adminData.proxies || []).filter((p) => p.status === 'new').map((p) => p.id)
+      : [];
+    if (onlyNew && !ids.length) { toast('没有没测过的了', 'err'); return; }
+    busy(btn, true, '检测中…（逐个探，可能要几十秒）');
+    try {
+      const j = await api('/api/admin/proxies/check', { ids });
+      toast(j.msg, j.bad ? 'err' : 'ok');
+      loadProxies();
+    } catch (e) { toast(e.message, 'err'); }
+    busy(btn, false);
+  }
+  async function checkOne(id, btn) {
+    busy(btn, true, '…');
+    try {
+      const j = await api('/api/admin/proxies/check', { ids: [id] });
+      const r = (j.results || [])[0] || {};
+      toast(r.ok ? ('可用 · 出口 ' + (r.exit_ip || '未回显') + ' · ' + r.latency_ms + 'ms')
+        : ('不通：' + (r.error || '')), r.ok ? 'ok' : 'err');
+      loadProxies();
+    } catch (e) { toast(e.message, 'err'); }
+    busy(btn, false);
+  }
+  async function proxyToggle(id, on) {
+    await api(`/api/admin/proxies/${id}`, { enabled: on });
+    toast(on ? '已启用' : '已停用', 'ok'); loadProxies();
+  }
+  async function proxyBind(id, uid) {
+    const j = await api(`/api/admin/proxies/${id}`, { bound_user_id: uid });
+    toast(j.ok ? '已更新绑定' : (j.msg || '失败'), j.ok ? 'ok' : 'err'); loadProxies();
+  }
+  async function proxyDel(id) {
+    if (!confirm('从池子里删除这个代理？已经用它的用户会回到「没分到 IP」。')) return;
+    await api('/api/admin/proxies/delete', { ids: [id] });
+    toast('已删除', 'ok'); loadProxies();
+  }
+  async function autoAssign(btn) {
+    busy(btn, true, '分配中…');
+    try {
+      const j = await api('/api/admin/proxies/auto_assign', { only_ok: true });
+      toast(j.msg, 'ok'); loadProxies();
+    } catch (e) { toast(e.message, 'err'); }
+    busy(btn, false);
   }
 
   async function adminLogout() {
@@ -1535,6 +1870,7 @@ const APP = (() => {
     try {
       const m = await api('/api/me');
       S.me = m.user; S.cfg = m.settings; S.global = m.global;
+      S.proxy = m.proxy || null;
     } catch (e) {
       if (e.status === 401) {
         if (location.pathname.startsWith('/admin')) renderAdminLogin(); else renderLogin();
@@ -1566,6 +1902,8 @@ const APP = (() => {
     pick, refreshList, probe, clearDone, delTask, runNow, clearLogView, answerModal,
     savePush, testPush, saveFallback, saveDefaults, saveAnswer,
     watchStart, watchStop, watchOnce,
+    // 代理 IP（用户端）
+    saveProxy, testProxy, rotateProxy, proxyPool, refreshProxy,
     // 兼容旧入口：跳到设置页对应段落
     pushModal: () => sec('push'),
     watchModal: () => sec('watch'),
@@ -1573,5 +1911,8 @@ const APP = (() => {
     adminGo, adminLogout, loadUsers, userStatus, userKick, userDel,
     loadCodes, genCodes, exportCodes, codeStatus, codeDel,
     saveGlobal, savePw, adminRefresh,
+    // 代理 IP（管理端）
+    loadProxies, importProxies, checkProxies, checkOne, proxyToggle, proxyBind,
+    proxyDel, autoAssign,
   };
 })();

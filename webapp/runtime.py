@@ -19,9 +19,11 @@ import traceback
 from collections import deque
 
 import dewu_push as PUSH
+from sqlalchemy import func, or_, select
 
 from .db import db_session
 from .dewu_client import DewuSession, diff_stock
+from . import proxies as PX
 
 MAX_LOGS = 400
 
@@ -86,15 +88,186 @@ class UserRuntime:
         return u.st() if u else {}
 
     def session(self):
-        """按用户当前 token 造一个 DewuSession。"""
+        """按用户当前 token 造一个 DewuSession（带上这个用户的代理）。"""
         u = self._fresh_user()
         if not u or not u.token:
             return None
         s = self.settings()
         from .db import global_cfg
         act = u.activity or global_cfg().get("dewu_activity")
+        pc = dict(s.get("proxy") or {})
         return DewuSession(u.token, activity=act, device=u.device or {},
-                           sign=global_cfg().get("dewu_sign"))
+                           sign=global_cfg().get("dewu_sign"),
+                           proxy=self.proxy_provider(),
+                           also_list=bool(pc.get("also_list")))
+
+    # ------------------------------------------------------------------ 代理
+    def proxy_rows(self):
+        """这个用户能用的代理：先看有没有专门绑给他的，没有就退回公共池。"""
+        from .models import Proxy
+        with db_session() as s:
+            mine = list(s.scalars(select(Proxy).where(
+                Proxy.bound_user_id == self.user_id, Proxy.enabled.is_(True))))
+            if mine:
+                return [{"id": p.id, "url": p.url} for p in mine]
+            shared = list(s.scalars(select(Proxy).where(
+                Proxy.enabled.is_(True), Proxy.bound_user_id.is_(None))))
+        return [{"id": p.id, "url": p.url} for p in shared]
+
+    def proxy_provider(self):
+        """造一个本轮抢兑用的代理选择器（没开或没配就返回 None）。"""
+        from .db import global_cfg
+        g = global_cfg()
+        if not g.get("proxy_enabled"):        # 管理员总开关
+            return None
+        pc = dict((self.settings().get("proxy") or {}))
+        if not pc.get("enabled") and not g.get("proxy_required"):
+            return None
+        rows = self.proxy_rows()
+        if not rows:
+            return None
+        return PX.provider_from_rows(
+            rows, mode=pc.get("mode") or "sticky",
+            rotate_n=pc.get("rotate_n") or 0, user_id=self.user_id)
+
+    def proxy_info(self):
+        """给界面看的代理状态。"""
+        from .db import global_cfg
+        from .models import Proxy
+        g = global_cfg()
+        pc = dict((self.settings().get("proxy") or {}))
+        with db_session() as s:
+            mine = s.scalars(select(Proxy).where(
+                Proxy.bound_user_id == self.user_id)).first()
+            total = s.scalar(select(func.count(Proxy.id))) or 0
+            alive = s.scalar(select(func.count(Proxy.id)).where(
+                Proxy.enabled.is_(True))) or 0
+            good = s.scalar(select(func.count(Proxy.id)).where(
+                Proxy.enabled.is_(True), Proxy.status == "ok")) or 0
+        out = dict(pc)
+        out.update({
+            "assigned": bool(mine),
+            "assigned_id": mine.id if mine else None,
+            "assigned_label": (mine.label or "") if mine else "",
+            "current": PX.mask(mine.url) if mine else "",
+            "exit_ip": (mine.exit_ip or "") if mine else "",
+            "latency_ms": (mine.latency_ms or 0) if mine else 0,
+            "pool_total": total,
+            "pool_alive": alive,
+            "pool_ok": good,
+            "master": bool(g.get("proxy_enabled")),
+            "required": bool(g.get("proxy_required")),
+            # 「真的会走代理吗」——界面就靠这个给结论
+            "ready": bool(g.get("proxy_enabled")
+                          and (pc.get("enabled") or g.get("proxy_required"))
+                          and (mine or alive)),
+        })
+        return out
+
+    def proxy_note_result(self, url, ok, err=""):
+        """把一次抢兑的成败记到这个代理头上（哪个 IP 好使一目了然）。"""
+        if not url:
+            return
+        from .models import Proxy
+        with db_session() as s:
+            p = s.scalars(select(Proxy).where(Proxy.url == url)).first()
+            if p is None:
+                return
+            if ok:
+                p.ok_count = int(p.ok_count or 0) + 1
+                p.fail_streak = 0
+                p.status = "ok"
+                p.last_ok_at = datetime.datetime.now()
+                p.last_error = ""
+            else:
+                p.fail_count = int(p.fail_count or 0) + 1
+                p.fail_streak = int(p.fail_streak or 0) + 1
+                if err:
+                    p.last_error = str(err)[:300]
+                if p.fail_streak >= 3 and p.status != "ok":
+                    p.status = "bad"
+
+    def _log_proxy_result(self, res):
+        """抢兑收尾时把代理结果写库 + 写日志。"""
+        used = res.get("proxy_used")
+        if not used:
+            return
+        errs = int(res.get("proxy_errors") or 0)
+        switched = res.get("proxy_switched") or []
+        self.proxy_note_result(used, bool(res.get("ok")) and not errs,
+                               "代理错误 x%d" % errs if errs else "")
+        for u2 in switched:
+            if u2 != used:
+                self.proxy_note_result(u2, False, "中途被换掉")
+        if errs or switched:
+            self.log("[代理] 本轮出口 %s%s%s"
+                     % (PX.mask(used),
+                        "，换过 %d 次：%s" % (len(switched), "、".join(
+                            PX.mask(x) for x in switched)) if switched else "",
+                        "，代理层报错 %d 次" % errs if errs else ""),
+                     "warn" if errs else "info")
+
+    def proxy_rotate(self, prefer_id=None):
+        """换一个出口 IP（把绑定改到池子里的下一个）。"""
+        from .models import Proxy
+        with db_session() as s:
+            cur = s.scalars(select(Proxy).where(
+                Proxy.bound_user_id == self.user_id)).first()
+            cur_url = cur.url if cur else None
+            pool = list(s.scalars(select(Proxy).where(
+                Proxy.enabled.is_(True),
+                or_(Proxy.bound_user_id.is_(None),
+                    Proxy.bound_user_id == self.user_id)
+            ).order_by(Proxy.latency_ms.asc(), Proxy.id.asc())))
+            if prefer_id:
+                pool.sort(key=lambda p: 0 if p.id == int(prefer_id) else 1)
+            nxt = next((p for p in pool if p.url != cur_url), None)
+            if nxt is None:
+                return False, "池子里没有别的可用代理了（只有一个，或者都是同一个出口）"
+            if cur is not None:
+                cur.bound_user_id = None
+            nxt.bound_user_id = self.user_id
+            show = nxt.exit_ip or PX.hostport(nxt.url)
+            lat = nxt.latency_ms or 0
+        self.log("[代理] 手动换出口 → %s%s"
+                 % (show, "（%dms）" % lat if lat else ""))
+        return True, "已换到 %s%s" % (show, "（%d ms）" % lat if lat else "")
+
+    def proxy_test(self, proxy_id=None):
+        """探一次这个用户当前的代理。返回 (ok, msg)。"""
+        from .models import Proxy
+        with db_session() as s:
+            row = None
+            if proxy_id:
+                row = s.get(Proxy, int(proxy_id))
+            if row is None:
+                row = s.scalars(select(Proxy).where(
+                    Proxy.bound_user_id == self.user_id)).first()
+            if row is None:
+                return False, "这个账号还没分配代理 IP（让管理员导入并分配一个）"
+            pid, url, host_show = row.id, row.url, PX.hostport(row.url)
+        ok, ip, ms, err = PX.check(url)
+        with db_session() as s:
+            p = s.get(Proxy, pid)
+            if p is not None:
+                p.latency_ms = ms
+                p.exit_ip = ip or ""
+                if ok:
+                    p.status = "ok"
+                    p.last_ok_at = datetime.datetime.now()
+                    p.last_error = ""
+                    p.fail_streak = 0
+                else:
+                    p.status = "bad"
+                    p.last_error = str(err or "")[:300]
+                    p.fail_streak = int(p.fail_streak or 0) + 1
+        if ok:
+            msg = "代理可用：%s 出口 IP %s，延迟 %d ms" % (host_show, ip or "未回显", ms)
+            self.log("[代理] %s" % msg, "ok")
+            return True, msg
+        msg = "代理不通：%s → %s" % (host_show, err)
+        self.log("[代理] %s" % msg, "error")
+        return False, msg
 
     # ------------------------------------------------------------------ 列表
     def refresh(self):
@@ -390,6 +563,7 @@ class UserRuntime:
                 self.log("[任务#%d] %s（用时 %.1fs，%d 次）"
                          % (task_id, res["detail"], time.time() - t0, res["attempts"]),
                          "ok" if res["ok"] else "warn")
+                self._log_proxy_result(res)
 
                 # 抢到的商品可能被降级换过 → 落库
                 with db_session() as s:

@@ -65,6 +65,7 @@ def main():
     # 造一个「等待中」的任务，任务页/概览页才有东西可看；截完删掉。
     # 注意：全局开了「必须填兑换码」，所以得先让管理员发一个一次性码。
     made_task = None
+    made_proxies = []
     st = s.get(BASE + "/api/state").json()
     ps = [p for p in st.get("products", []) if not p.get("outOfStock")]
     if ps and admin_cookie:
@@ -84,6 +85,40 @@ def main():
             print("演示任务:", made_task, "（码 %s）" % code)
         else:
             print("演示任务没建上：", j.get("msg"))
+
+    # 代理池里放几条假数据，"设置 → 代理 IP" 卡和"后台 → 代理 IP"页才有内容可看；截完删掉。
+    if admin_cookie:
+        before_ids = {p["id"] for p in
+                      aw.get(BASE + "/api/admin/proxies").json().get("proxies", [])}
+        aw.post(BASE + "/api/admin/proxies/import",
+                json={"text": "112.17.36.108:1080:dewu:shot1#杭州电信 · 独享\n"
+                              "120.79.44.21:1080:dewu:shot2#阿里云 · 独享\n"
+                              "47.98.120.6:1080:dewu:shot3#杭州 · 独享\n"
+                              "39.108.88.240:1080:dewu:shot4#深圳 · 备用\n"
+                              "121.40.11.77:1080:dewu:shot5#上海 · 备用",
+                      "scheme": "socks5h", "label": "截图演示（用完即弃）"})
+        lst = aw.get(BASE + "/api/admin/proxies").json().get("proxies", [])
+        made_proxies = [p["id"] for p in lst if p["id"] not in before_ids]
+        # 造几条「已测过」的痕迹，免得整页都是「没测过」
+        for i, p in enumerate([x for x in lst if x["id"] in made_proxies][:4]):
+            aw.post(BASE + "/api/admin/proxies/%d" % p["id"],
+                    json={"exit_ip": p["hostport"].split(":")[0], "latency_ms": 186 + i * 47,
+                          "status": "ok" if i < 3 else "bad"})
+        if made_proxies:
+            aw.post(BASE + "/api/admin/proxies/auto_assign", json={"only_ok": False})
+            aw.post(BASE + "/api/admin/settings", json={"proxy_enabled": True})
+            s.post(BASE + "/api/settings",
+                   json={"proxy": {"enabled": True, "mode": "sticky", "rotate_n": 20}})
+            # 首页那个用户列表里的号可能不止一个，auto_assign 不一定轮到我们登录的这个 →
+            # 显式把第 1 个代理绑给当前用户，设置页/概览页才有「当前出口」可看。
+            uid = (s.get(BASE + "/api/me").json().get("user") or {}).get("id")
+            if uid and made_proxies:
+                aw.post(BASE + "/api/admin/proxies/%d" % made_proxies[0],
+                        json={"bound_user_id": uid})
+            _me = s.get(BASE + "/api/me").json()
+            print("演示代理:", made_proxies, "· 用户%d" % (uid or 0),
+                  "proxy.enabled =", (_me.get("settings") or {}).get("proxy", {}).get("enabled"),
+                  "· assigned =", (_me.get("proxy") or {}).get("assigned"))
 
     port = free_port()
     proc = subprocess.Popen(
@@ -168,6 +203,16 @@ def main():
 
     js("APP.go('settings')", 1.4)
     shot("web_6_设置.png", full=True)
+    _chk = ws.call("Runtime.evaluate", {"returnByValue": True, "awaitPromise": True, "expression":
+        "(async()=>{const m=await (await fetch('/api/me')).json();"
+        "return JSON.stringify({pxEn:!!(document.getElementById('pxEn')||{}).checked,"
+        " pxMode:(document.getElementById('pxMode')||{}).value,"
+        " pxRn:(document.getElementById('pxRn')||{}).value,"
+        " meProxy:(m.settings||{}).proxy,"
+        " badge:(document.getElementById('stPxy')||{}).textContent,"
+        " pool:(document.getElementById('pxPool')||{}).textContent,"
+        " cur:(document.getElementById('pxCur')||{}).textContent})})()"})
+    print("  代理卡 DOM:", _chk["result"]["result"].get("value"))
 
     js("APP.go('logs')", 1.2)
     shot("web_7_日志.png")
@@ -178,7 +223,8 @@ def main():
         set_cookie("dw_admin", admin_cookie)
         nav(BASE + "/admin", 4.0)
         shot("web_a1_后台_概览.png", full=True)
-        for tab, name in (("codes", "兑换码"), ("users", "用户"), ("settings", "设置")):
+        for tab, name in (("codes", "兑换码"), ("users", "用户"),
+                          ("proxies", "代理IP"), ("settings", "设置")):
             js("APP.adminGo('%s')" % tab, 1.8)
             shot("web_a2_后台_%s.png" % name, full=True)
 
@@ -221,6 +267,15 @@ def main():
         try:
             s.post(BASE + "/api/tasks/%d/delete" % made_task, json={})
             print("已清理演示任务", made_task)
+        except Exception:
+            pass
+
+    if made_proxies:
+        try:
+            aw.post(BASE + "/api/admin/settings", json={"proxy_enabled": False})
+            s.post(BASE + "/api/settings", json={"proxy": {"enabled": False}})
+            aw.post(BASE + "/api/admin/proxies/delete", json={"ids": made_proxies})
+            print("已清理演示代理", len(made_proxies))
         except Exception:
             pass
 

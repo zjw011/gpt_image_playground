@@ -287,20 +287,142 @@ def main():
                 break
     ck("没有把全角引号当语法引号用", not bad_quote, bad_quote)
 
+    # ============================================================== 代理 IP
+    sec("⑭ 代理 IP：解析 / 打码 / 选择策略")
+    from webapp import proxies as PX
+
+    ck("裸 host:port 默认补 socks5h",
+       PX.normalize_line("1.2.3.4:1080")[0]["url"] == "socks5h://1.2.3.4:1080")
+    ck("四段式 host:port:user:pass（国内 IP 商最常见）",
+       PX.normalize_line("1.2.3.4:1080:tom:sec")[0]["url"]
+       == "socks5h://tom:sec@1.2.3.4:1080")
+    ck("user:pass@host:port", PX.normalize_line("tom:sec@1.2.3.4:1080")[0]["url"]
+       == "socks5h://tom:sec@1.2.3.4:1080")
+    ck("带协议头 socks5://", PX.normalize_line("socks5://u:p@1.2.3.4:1080")[0]["url"]
+       == "socks5://u:p@1.2.3.4:1080")
+    ck("带协议头 http://", PX.normalize_line("http://1.2.3.4:8080")[0]["url"]
+       == "http://1.2.3.4:8080")
+    ck("# 后面是备注", PX.normalize_line("1.2.3.4:1080#上海电信")[0]["label"] == "上海电信")
+    ck("| 后面也是备注", PX.normalize_line("1.2.3.4:1080|广州")[0]["label"] == "广州")
+    ck("密码里的特殊字符会被转义（不会把 URL 拼坏）",
+       "%40" in PX.normalize_line("tom:p@ss@1.2.3.4:1080")[0]["url"])
+    ck("账号密码里有冒号时（四段式）也能认",
+       PX.normalize_line("1.2.3.4:1080:tom:se:cret")[1] is not None)   # 有歧义就报错，别瞎猜
+
+    ck("没端口 → 报错", PX.normalize_line("1.2.3.4")[1] is not None)
+    ck("端口越界 → 报错", PX.normalize_line("1.2.3.4:99999")[1] is not None)
+    ck("不认识的协议 → 报错", PX.normalize_line("ftp://1.2.3.4:21")[1] is not None)
+    ck("空行/注释行直接跳过（不算错）",
+       PX.normalize_line("")[0] is None and PX.normalize_line("   ")[0] is None
+       and PX.normalize_line("# 这行是注释")[0] is None)
+
+    items, errs = PX.normalize_many(
+        "1.2.3.4:1080:u:p\n\n5.6.7.8:1080:u:p\n1.2.3.4:1080:u:p\n坏行\n")
+    ck("批量解析：3 条有效里去掉 1 条重复 → 2 条", len(items) == 2, len(items))
+    ck("批量解析：坏行进 errors 且带行号", len(errs) == 1 and errs[0]["line"] == 5, errs)
+
+    ck("打码把密码吃掉", PX.mask("socks5h://tom:secret@1.2.3.4:1080")
+       == "socks5h://to***@1.2.3.4:1080")
+    ck("无账号密码时打码不变", PX.mask("http://1.2.3.4:8080") == "http://1.2.3.4:8080")
+    ck("hostport 短标签", PX.hostport("socks5h://u:p@1.2.3.4:1080") == "1.2.3.4:1080")
+
+    ck("proxies_map 同时给 http 和 https",
+       PX.proxies_map("socks5h://1.2.3.4:1080")
+       == {"http": "socks5h://1.2.3.4:1080", "https": "socks5h://1.2.3.4:1080"})
+    ck("空 url → None（= 直连）", PX.proxies_map("") is None)
+    ck("is_socks 能认出来", PX.is_socks("socks5h://x") and not PX.is_socks("http://x"))
+
+    # ---- 选择策略 ----
+    pool = [{"url": "socks5h://a:1"}, {"url": "socks5h://b:2"}, {"url": "socks5h://c:3"}]
+    p0 = PX.Provider([], user_id=7)
+    ck("空池子 = 直连", (not p0.enabled) and p0.next() is None)
+
+    p1 = PX.Provider(pool, mode="sticky", user_id=7)
+    first = p1.current_url
+    ck("固定模式：同一个人每次都是同一个出口",
+       all(p1.next() == PX.proxies_map(first) for _ in range(5)))
+    ck("固定模式：user_id 决定初始出口（同一个 id 结果稳定）",
+       PX.Provider(pool, user_id=7).current_url == first)
+    ck("固定模式：不同 user_id 会分到不同出口",
+       PX.Provider(pool, mode="sticky", user_id=1).current_url
+       != PX.Provider(pool, mode="sticky", user_id=2).current_url)
+
+    p2 = PX.Provider(pool, mode="rotate", rotate_n=3, user_id=7)
+    u0 = p2.current_url
+    seq = []
+    for _ in range(6):
+        p2.next()
+        seq.append(p2.current_url)
+    # 语义是「一个 IP 用满 rotate_n 次再换」，所以是 [a,a,a,b,b,b]
+    ck("轮换模式：每个出口用满 3 次才换",
+       seq[2] == u0 and seq[3] != u0 and seq[5] == seq[3], seq)
+
+    p3 = PX.Provider(pool, mode="sticky", user_id=7)
+    before = p3.current_url
+    after = p3.on_risk("风控")
+    ck("on_risk() 立刻换一个（且换的是别的）", after and after != before)
+
+    secret = [{"url": "socks5h://tom:secret@1.2.3.4:1080"}]
+    d = PX.Provider(secret, user_id=1).describe()
+    ck("describe() 不泄露密码", "secret" not in d and "***" in d, d)
+    ck("没有代理时 describe 说明是直连", "直连" in PX.Provider([]).describe())
+
+    ok_prov = PX.provider_from_rows([{"id": 1, "url": "socks5h://z:9"}], user_id=3)
+    ck("provider_from_rows 能吃 dict 行", ok_prov.enabled and ok_prov.current_url == "socks5h://z:9")
+
+    ck("is_proxy_error 认得出代理层故障",
+       PX.is_proxy_error("SOCKSConnectionPool: Max retries exceeded")
+       and not PX.is_proxy_error("json decode error"))
+
+    # ============================================================== 前端源码守卫
+    sec("⑭ 前端源码守卫（这几条都是踩过的坑）")
+    appjs = open(os.path.join(ROOT, "webapp", "static", "app.js"),
+                 encoding="utf-8").read()
+
+    # 坑一：/api/me 的结构是 {user, settings, proxy, global}，settings 是 user 的兄弟。
+    # 早先 SEC() 写成读 S.me.settings → 永远拿到空对象 → 设置页所有输入框显示默认值，
+    # 而且一点「保存」就把用户真实配置覆盖成默认值（等于偷偷清空他的推送 token）。
+    ck("SEC() 从 S.cfg 读设置（不是 S.me.settings）",
+       "const SEC = (k, id) => (S.cfg || {})[k] || {}" in appjs)
+    ck("★ 没有任何地方再往 S.me.settings 写（写了也没人读）",
+       "S.me.settings =" not in appjs)
+    ck("保存设置后回写的是 S.cfg",
+       appjs.count("S.cfg = j.settings") >= 5, appjs.count("S.cfg = j.settings"))
+    ck("boot() 把 /api/me 的 settings 放进 S.cfg",
+       re.search(r"S\.me = m\.user;\s*S\.cfg = m\.settings;", appjs) is not None)
+
+    # 坑二：换 IP 必须重建 requests.Session()，否则 keep-alive 复用旧隧道、出口 IP 没变。
+    # 桌面版和 Web 版各有一处，两边都要守住。
+    snip = open(os.path.join(ROOT, "dewu_sniper.py"), encoding="utf-8").read()
+    dcli = open(os.path.join(ROOT, "webapp", "dewu_client.py"), encoding="utf-8").read()
+    for name, src in (("桌面版", snip), ("Web 版", dcli)):
+        ck("%s：换出口 IP 时重建了会话（否则复用旧隧道，IP 根本没变）" % name,
+           "session.close()" in src or "sess.close()" in src)
+
     # ============================================================== 路由
-    sec("⑬ 路由清单")
+    sec("⑮ 路由清单")
     # FastAPI 0.14x 起 app.routes 里子路由是 _IncludedRouter（不展开），
     # 所以用 openapi() 拿真实的路径清单，这才是「服务端真的认的」那套。
     paths = set(webapp.main.app.openapi().get("paths", {}).keys())
     need = ["/api/login", "/api/logout", "/api/me", "/api/state", "/api/products/refresh",
             "/api/tasks", "/api/watch/start", "/api/watch/stop", "/api/settings",
             "/api/push/test", "/api/probe", "/api/answer/today", "/api/answer/submit",
+            "/api/proxy", "/api/proxy/rotate", "/api/proxy/test",
             "/api/admin/login", "/api/admin/overview", "/api/admin/users",
-            "/api/admin/codes", "/api/admin/codes/generate", "/api/admin/settings"]
+            "/api/admin/codes", "/api/admin/codes/generate", "/api/admin/settings",
+            "/api/admin/proxies", "/api/admin/proxies/import", "/api/admin/proxies/check",
+            "/api/admin/proxies/delete", "/api/admin/proxies/auto_assign",
+            "/api/admin/proxies/{pid}"]
     miss = [p for p in need if p not in paths]
     ck("所有关键路由都在", not miss, miss)
     ck("用户端与 /admin 共用同一个 SPA", "/admin" in paths)
     ck("健康检查在", "/healthz" in paths)
+    # 顺序守卫：/proxies/auto_assign 必须比 /proxies/{pid} 先声明，
+    # 否则 FastAPI 会把 auto_assign 当 pid 解析 → 422（上线踩过一次）
+    src_admin = open(os.path.join(ROOT, "webapp", "api_admin.py"), encoding="utf-8").read()
+    ck("字面量路由声明在 {pid} 之前",
+       src_admin.index('"/proxies/auto_assign"') < src_admin.index('"/proxies/{pid}"')
+       and src_admin.index('"/proxies/delete"') < src_admin.index('"/proxies/{pid}"'))
 
     # ============================================================== 结果
     print("\n" + "=" * 68)

@@ -72,10 +72,61 @@ docker compose logs -f app
 - **每日答题**：自动取今日题目、提交答案赚金币。
 - **链路诊断**：挑一个「余额买不起」的商品去兑换，服务端会回「余额不足」——
   既证明 token/参数/接口全通，又不会真的扣金币。
+- **代理 IP（每个账号一个出口）**：抢购时从管理员导入的 IP 池里走一个独立出口，
+  避免同一台服务器上的多个账号被按 IP 关联。详见上面第四节。
 
 ---
 
-## 四、兑换码：一码一任务
+## 四、代理 IP 池（只作用于抢购）
+
+**为什么需要**：多个账号从同一台服务器出去，出口 IP 是一个，很容易被按 IP 关联。
+给每个账号分一个不同的国内 IP，这一层关联就断了。
+
+**怎么开**
+
+1. 管理员进 `/admin` → 「代理 IP」→ 把买到的 IP 粘贴进「批量导入」→ 导入。
+2. 「检测全部」探一遍出口 IP / 延迟，把不通的挑出来删掉。
+3. 「自动分配（每账号一个）」→ 一个账号一个不同 IP。
+4. 管理后台「全局设置」里打开**代理 IP 总开关**（不开的话用户自己勾了也不会生效）。
+5. 用户在「设置 → 代理 IP」里勾上「抢购时使用代理 IP」。
+
+**导入格式**（一行一个，随便贴，认得出就行）
+
+```
+1.2.3.4:1080                          没写协议 → 按商家的默认协议
+1.2.3.4:1080:用户名:密码               国内 IP 商最常见的四段式
+用户名:密码@1.2.3.4:1080              密码里有 @ 就写成 %40
+socks5://用户名:密码@1.2.3.4:1080
+http://1.2.3.4:8080
+1.2.3.4:1080#上海电信                   # 或 | 后面是备注
+```
+
+**协议怎么选**
+
+| 协议 | 说明 | 什么时候用 |
+| --- | --- | --- |
+| `socks5h` | **DNS 也在代理侧解析**（域名不落地） | 默认，对国内 IP 商最稳 |
+| `socks5` | 本地解析 DNS | 代理商的 DNS 不通时 |
+| `http` / `https` | 普通 CONNECT 隧道 | 商家给的是 HTTP 代理时 |
+
+socks 全都依赖 `PySocks`（`requirements.txt` 里已钉）。缺了会直接报
+`Missing dependencies for SOCKS support`，界面上也会红字提示。
+
+**几个刻意的设计**
+
+- **默认只有「抢购那一下」走代理**（`also_list` 可打开）。拉商品列表 / 登录还是直连：
+  列表请求量大、走代理慢，而且代理一挂界面就刷不出商品 —— 不划算。
+- **默认「一个 IP 用满这一轮」**，而不是每次换。抢购循环的目标间隔是 200ms，
+  每换一次 IP 都要重做 TCP + TLS 握手（100~300ms），一换就把节奏打没了。
+- 只有这三种情况才换：开了自动轮换且攒够 N 次、**命中风控（700 / 900）**、代理层报错。
+  风控换 IP 有节流：连击 3 次才换一个，否则会把池子刷穿。
+- **换 IP 一定会重建 `requests.Session()`**。不重建的话 keep-alive 继续复用旧隧道，
+  出口 IP 根本没变 —— 这是这个功能里最容易踩的坑，单元测试里专门守住了。
+- 每个 IP 的**成功/失败次数会记在它头上**，哪个 IP 好使、哪个已经被打上风控，一眼能看出来。
+
+---
+
+## 五、兑换码：一码一任务
 
 1. 管理员进 `/admin` → 「兑换码」→ 填数量（1-500）、每个码可创建任务数、前缀、备注 → 生成。
 2. 把码发给用户（「导出未使用的码」可以一键下载 txt，方便发群）。
@@ -85,7 +136,7 @@ docker compose logs -f app
 
 ---
 
-## 五、数据是怎么隔离的
+## 六、数据是怎么隔离的
 
 - **服务端会话**：cookie 里只放一个随机串，真正的身份在数据库里。改 cookie 也猜不出别人的。
 - **每个用户一棵数据树**：账号、token、设置、任务、库存快照全部按 `user_id` 归属，
@@ -94,7 +145,7 @@ docker compose logs -f app
 
 ---
 
-## 六、环境变量
+## 七、环境变量
 
 见 `.env.example`，常用几个：
 
@@ -112,28 +163,43 @@ docker compose logs -f app
 
 ---
 
-## 七、文件结构
+## 八、文件结构
 
 ```
 webapp/
   config.py        环境变量配置
   db.py            引擎 / 建表 / 全局设置读写
-  models.py        ORM：users / sessions / admins / redeem_codes / tasks / logs / settings
+  models.py        ORM：users / sessions / admins / redeem_codes / tasks / logs / settings / proxies
   security.py      pbkdf2 口令哈希、随机 token
   auth.py          会话建立与 FastAPI 依赖（current_user / current_admin）
-  dewu_client.py   ★ 得物接口层：登录、商品列表、兑换、降级、答题
+  dewu_client.py   ★ 得物接口层：登录、商品列表、兑换、降级、答题（带代理）
   curlparse.py     从桌面版搬过来的 curl 解析（不 import dewu_sniper，避免副作用）
-  runtime.py       ★ 每用户运行时：商品缓存 / 定时任务线程 / 库存监听 / 日志 / 推送
+  proxies.py       代理 IP 池 —— 只是转发到根目录的 dewu_proxies.py，不要在这里加东西
+  runtime.py       ★ 每用户运行时：商品缓存 / 定时任务线程 / 库存监听 / 日志 / 推送 / 代理
   api_user.py      用户端 API
   api_admin.py     管理端 API
   main.py          FastAPI 装配（含单 worker 提醒）
   static/          index.html / app.js / style.css —— 零构建前端
+dewu_proxies.py     ★ 代理 IP 池的**唯一实现**（桌面版 + Web 版共用，只依赖 requests/PySocks）
 run_web.py         本地启动入口
 deploy.sh          服务器一键部署
 docker-compose.yml app + PostgreSQL
-tools/test_web_api.py   端到端接口测试（55 项）
-tools/shot_web.py       无头浏览器截图
+tools/test_web_core.py       离线单测（144 项，含前端源码守卫）
+tools/test_web_api.py        端到端接口测试（77 项）
+tools/test_proxy_live.py     Web 版代理真机验证（起本机迷你代理做 A/B，15 项）
+tools/test_proxy_desktop.py  桌面版代理测试（单测 + 真机 A/B，59 项）
+tools/mini_proxy.py          本机迷你正向代理 / 迷你接口（两个真机测试共用）
+tools/shot_web.py            无头浏览器截图
+tools/shot_proxy.py          桌面版「代理 IP」弹窗截图
 ```
+
+### 代理 IP 为什么放在根目录
+
+`dewu_proxies.py` 要同时给**桌面版 exe** 和 **Web 版**用。桌面包里没有、也不该有
+`webapp/` 这棵依赖树（sqlalchemy / fastapi 一大串），所以实现放根目录，
+`webapp/proxies.py` 只做一层转发 —— 改代理逻辑只改一个文件。
+
+Dockerfile 里因此多了一行 `COPY dewu_proxies.py ...`。
 
 ### 复用了桌面版的什么
 
@@ -146,7 +212,7 @@ tools/shot_web.py       无头浏览器截图
 
 ---
 
-## 八、必须知道的几件事
+## 九、必须知道的几件事
 
 1. **只能单 worker 跑。** 定时抢兑是进程内线程，多 worker 会各跑一份任务重复抢。
    `run_web.py` 和 Dockerfile 都已经固定成 1 个 worker，**不要自己加 `--workers`**。
@@ -160,10 +226,23 @@ tools/shot_web.py       无头浏览器截图
 
 ---
 
-## 九、自测
+## 十、自测
 
 ```bash
-python run_web.py                      # 另开一个窗口
-python tools/test_web_api.py           # 55 项端到端接口测试
+# —— Web 版 ——
+python run_web.py                      # 另开一个窗口先把服务跑起来
+python tools/test_web_core.py          # 离线单测 144 项（不需要服务）
+python tools/test_web_api.py           # 端到端接口 77 项
+python tools/test_proxy_live.py        # 代理真机验证 15 项（起本机迷你代理做 A/B）
 python tools/shot_web.py               # 无头浏览器截图到 dist/
+
+# —— 桌面版 ——
+python tools/test_proxy_desktop.py     # 桌面版代理 59 项（单测 + 真机 A/B）
+python tools/test_gone.py              # 商品失效 / 降级 / 推送
+python tools/shot_proxy.py             # 「代理 IP」弹窗截图到 dist/
 ```
+
+**代理那两个真机测试是真的在验链路，不是 mock**：测试脚本在本机起一个极小的
+HTTP 正向代理（`tools/mini_proxy.py`），把它当「你买的 IP」导进池子，然后
+断言「开着代理时，代理侧确实看到了这次请求的转发；关掉之后，代理侧一条都没收到」。
+这样「请求真的穿过代理了」才有证据。

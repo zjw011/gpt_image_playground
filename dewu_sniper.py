@@ -26,6 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
 import dewu_push as PUSH
+import dewu_proxies as PX
 
 APP_DIR = os.path.dirname(os.path.abspath(sys.argv[0])) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
@@ -83,6 +84,19 @@ DEFAULT_CONFIG = {
     "fallback": {
         "enabled": True, "on_gone": True, "on_soldout": True,
         "on_poor": False, "min_ratio": 0.0,
+    },
+    # 代理 IP 池: 见 dewu_proxies.py
+    #   enabled   总开关。**默认关** —— 没配代理时开不开都一样, 别让人误会
+    #   mode      sticky = 一个 IP 用完这一轮(默认, 抢兑节奏最好)
+    #             rotate = 每 rotate_n 次换一个
+    #   rotate_n  rotate 模式下的换 IP 频率
+    #   also_list 拉商品列表也走代理。默认关: 列表请求量大、走代理慢,
+    #             而且一旦代理挂了界面就刷不出商品, 不划算。抢购才是要走代理的那一步。
+    #   pool      代理池。account_id 不为空 = 这个 IP 专门给那个账号用
+    #             (= 用户要的「每个账号不同 IP」), 为空 = 公共池/备用
+    "proxy": {
+        "enabled": False, "mode": "sticky", "rotate_n": 20, "also_list": False,
+        "pool": [],
     },
 }
 
@@ -196,7 +210,7 @@ class Manager:
         self.diag_seq = 0
         self.cfg = dict(DEFAULT_CONFIG, **load_json(CONFIG_PATH, {}))
         # 嵌套段要逐键补齐: 用户的 config.json 里可能只写了其中几个键
-        for _sec in ("watch", "answer", "pushplus", "fallback"):
+        for _sec in ("watch", "answer", "pushplus", "fallback", "proxy"):
             _d = DEFAULT_CONFIG.get(_sec)
             if isinstance(_d, dict):
                 self.cfg[_sec] = dict(_d, **(self.cfg.get(_sec) or {}))
@@ -317,6 +331,21 @@ class Manager:
             return m.group(1)
         return datetime.datetime.now().strftime("%Y%m%d")
 
+    def proxy_for_list(self, acc):
+        """拉商品列表要不要走代理 —— 由 proxy.also_list 决定，默认直连。
+
+        为什么默认不让列表走代理：列表请求量大、走代理慢，而且代理一挂界面就
+        刷不出商品。真正值得走代理的是「兑换」那一下。
+        """
+        if not acc:
+            return None
+        if not (self.cfg.get("proxy") or {}).get("also_list"):
+            return None
+        pv = self.proxy_for_account(acc.get("id"))
+        if pv is None or not pv.enabled:
+            return None
+        return PX.proxies_map(pv.prime() or pv.current_url)
+
     def _fetch_list(self, acc):
         """拉一次商品列表（700 风控带退避重试）。返回 (ok, j)。
 
@@ -325,9 +354,11 @@ class Manager:
         库存监听每几十秒就要查一次，不能让日志被刷屏。
         """
         j = None
+        pmap = self.proxy_for_list(acc)
         for attempt in range(3):
             try:
-                r = requests.get(self._list_url_for(acc), headers=self._headers_for(acc), timeout=8)
+                r = requests.get(self._list_url_for(acc), headers=self._headers_for(acc),
+                                 timeout=8, proxies=pmap)
                 j = r.json()
             except Exception as e:
                 return False, {"_exc": repr(e)}
@@ -583,6 +614,290 @@ class Manager:
         c.update({k: v for k, v in (task.get("fb") or {}).items() if v is not None})
         return c
 
+    # ---------- 代理 IP 池（只抢购走代理；每个账号一个 IP） ----------
+    # 这里是「桌面版的管理面」: 导入 / 检测 / 分配 / 换 IP。
+    # 真正决定「这次请求走哪个 IP」的是 dewu_proxies.Provider，
+    # 而「哪个账号该用哪个 IP」由 pool[].account_id 决定。
+    def proxy_cfg(self):
+        d = dict(DEFAULT_CONFIG["proxy"])
+        d.update(self.cfg.get("proxy") or {})
+        d["enabled"] = bool(d.get("enabled"))
+        d["also_list"] = bool(d.get("also_list"))
+        d["mode"] = d.get("mode") if d.get("mode") in ("sticky", "rotate") else "sticky"
+        try:
+            d["rotate_n"] = max(0, int(d.get("rotate_n") or 0))
+        except (TypeError, ValueError):
+            d["rotate_n"] = 0
+        d["pool"] = list(d.get("pool") or [])
+        return d
+
+    def proxy_save_cfg(self, **kw):
+        """改总开关 / 模式 / 频率。``pool`` 不从这里改（走 proxy_add / proxy_del）。"""
+        c = self.proxy_cfg()
+        c.update({k: v for k, v in kw.items() if v is not None and k != "pool"})
+        self.cfg["proxy"] = c
+        save_json(CONFIG_PATH, self.cfg)
+        return c
+
+    # ---- 池子本身 ----
+    def proxy_pool(self):
+        return [dict(p) for p in self.proxy_cfg()["pool"]]
+
+    def _proxy_store(self, pool):
+        c = self.proxy_cfg()
+        c["pool"] = pool
+        self.cfg["proxy"] = c
+        save_json(CONFIG_PATH, self.cfg)
+
+    def _next_proxy_id(self):
+        return 1 + max([int(p.get("id") or 0) for p in self.proxy_cfg()["pool"]], default=0)
+
+    def proxy_add(self, text, scheme=None, label=""):
+        """批量导入。一行一个，格式见 dewu_proxies.normalize_line。
+
+        返回 ``{"ok", "added", "dup", "bad", "errors": [...]}``。
+        """
+        items, errors = PX.normalize_many(text, default_scheme=scheme or PX.DEFAULT_SCHEME)
+        c = self.proxy_cfg()
+        pool = c["pool"]
+        have = {p.get("url") for p in pool}
+        # 同一批里自己重复的行：normalize_many 会静默去重，这里反推出来给用户一个交代
+        lines = [l for l in str(text or "").splitlines() if l.strip()]
+        dup_batch = max(0, len(lines) - len(errors) - len(items))
+        added = 0
+        dup = dup_batch
+        pid = self._next_proxy_id()
+        for it in items:
+            if it["url"] in have:
+                dup += 1
+                continue
+            have.add(it["url"])
+            pool.append({
+                "id": pid, "url": it["url"], "scheme": it["scheme"],
+                "host": it["host"], "port": it["port"], "label": it["label"] or label,
+                "account_id": None, "enabled": True,
+                "status": "untested", "exit_ip": "", "latency_ms": 0,
+                "ok_count": 0, "fail_count": 0, "fail_streak": 0,
+                "last_ok_at": "", "last_error": "",
+                "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            pid += 1
+            added += 1
+        if added:
+            self._proxy_store(pool)
+        self.log("[代理] 导入 %d 个（重复 %d / 认不出 %d）" % (added, dup, len(errors)))
+        return {"ok": True, "added": added, "dup": dup, "bad": len(errors),
+                "errors": errors[:30]}
+
+    def proxy_del(self, ids):
+        ids = {int(i) for i in (ids or [])}
+        c = self.proxy_cfg()
+        keep = [p for p in c["pool"] if int(p.get("id") or 0) not in ids]
+        n = len(c["pool"]) - len(keep)
+        c["pool"] = keep
+        self.cfg["proxy"] = c
+        save_json(CONFIG_PATH, self.cfg)
+        self.log("[代理] 删除 %d 个" % n)
+        return {"ok": True, "deleted": n}
+
+    def proxy_edit(self, pid, **kw):
+        """改备注 / 启用停用 / 手动绑定账号（account_id 传 None 表示解绑）。"""
+        c = self.proxy_cfg()
+        hit = None
+        for p in c["pool"]:
+            if int(p.get("id") or 0) == int(pid):
+                hit = p
+                break
+        if hit is None:
+            return {"ok": False, "msg": "找不到这个代理"}
+        for k in ("label", "enabled", "account_id"):
+            if k in kw:
+                hit[k] = kw[k]
+        hit["enabled"] = bool(hit.get("enabled", True))
+        self.cfg["proxy"] = c
+        save_json(CONFIG_PATH, self.cfg)
+        return {"ok": True, "proxy": dict(hit)}
+
+    def proxy_check(self, ids=None, only_new=False, timeout=8):
+        """探测出口 IP / 延迟。**网络操作，界面上要放子线程跑。**
+
+        ``only_new`` = 只测「还没测过」的，批量导入几百个时能省一大半时间。
+        """
+        c = self.proxy_cfg()
+        want = {int(i) for i in (ids or [])}
+        done, ok_n = [], 0
+        for p in c["pool"]:
+            if not p.get("enabled", True):
+                continue
+            if want and int(p.get("id") or 0) not in want:
+                continue
+            if only_new and p.get("status") not in ("", None, "untested"):
+                continue
+            ok, ip, ms, err = PX.check(p["url"], timeout=timeout)
+            p["latency_ms"] = ms
+            p["exit_ip"] = ip or ""
+            if ok:
+                ok_n += 1
+                p["status"] = "ok"
+                p["last_ok_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                p["last_error"] = ""
+                p["fail_streak"] = 0
+            else:
+                p["status"] = "bad"
+                p["last_error"] = str(err or "")[:200]
+                p["fail_streak"] = int(p.get("fail_streak") or 0) + 1
+            done.append({"id": p.get("id"), "host": PX.hostport(p), "ok": ok,
+                         "exit_ip": ip or "", "latency_ms": ms, "err": err or ""})
+        self._proxy_store(c["pool"])
+        self.log("[代理] 检测 %d 个：%d 通 / %d 不通" % (len(done), ok_n, len(done) - ok_n))
+        return {"ok": True, "checked": len(done), "passed": ok_n, "results": done}
+
+    # ---- 分配（每个账号一个 IP） ----
+    def proxy_assign(self, pid, account_id):
+        """把一个代理绑给某个账号（一个账号只留一个：绑新的会自动把旧的解绑）。"""
+        c = self.proxy_cfg()
+        if account_id is not None:
+            for p in c["pool"]:
+                if p.get("account_id") == account_id and int(p.get("id") or 0) != int(pid):
+                    p["account_id"] = None
+        hit = None
+        for p in c["pool"]:
+            if int(p.get("id") or 0) == int(pid):
+                p["account_id"] = account_id
+                p["enabled"] = True
+                hit = p
+                break
+        if hit is None:
+            return {"ok": False, "msg": "找不到这个代理"}
+        self.cfg["proxy"] = c
+        save_json(CONFIG_PATH, self.cfg)
+        return {"ok": True, "proxy": dict(hit)}
+
+    def proxy_auto_assign(self, only_ok=False):
+        """一个账号分一个不同的 IP（已经绑过的不动）。
+
+        ``only_ok`` = 只挑探测通过的。池子不够时按顺序发，剩下的账号退回公共池。
+        注意：**同一个 IP 不会分给两个账号**（除非池子实在不够）。
+        """
+        c = self.proxy_cfg()
+        pool = c["pool"]
+        used = {p["url"] for p in pool if p.get("account_id") is not None}
+        if only_ok:
+            free = [p for p in pool if p.get("enabled", True) and not p.get("account_id")
+                    and p.get("status") == "ok"]
+        else:
+            free = [p for p in pool if p.get("enabled", True) and not p.get("account_id")]
+        free.sort(key=lambda p: (int(p.get("latency_ms") or 0), int(p.get("id") or 0)))
+        assigned = 0
+        for a in self.accounts:
+            aid = a.get("id")
+            if any(p.get("account_id") == aid for p in pool):
+                continue
+            nxt = next((p for p in free if p["url"] not in used), None)
+            if nxt is None:
+                break
+            nxt["account_id"] = aid
+            used.add(nxt["url"])
+            assigned += 1
+        if assigned:
+            self.cfg["proxy"] = c
+            save_json(CONFIG_PATH, self.cfg)
+        self.log("[代理] 自动分配 %d 个账号各一个 IP" % assigned)
+        return {"ok": True, "assigned": assigned, "free": len(free) - assigned}
+
+    def proxy_rotate(self, account_id):
+        """把某个账号换到池子里的下一个 IP（手动换出口 / 遇到风控时用）。"""
+        c = self.proxy_cfg()
+        pool = c["pool"]
+        cur = next((p for p in pool if p.get("account_id") == account_id), None)
+        free = [p for p in pool if p.get("enabled", True)
+                and p.get("account_id") in (None, account_id)]
+        if not free:
+            return {"ok": False, "msg": "池子里没有可用的代理了"}
+        cand = [p for p in free if p is not cur]
+        if not cand:
+            return {"ok": False, "msg": "只有一个可用代理，没有别的出口能换（再去导入几个 IP）"}
+        cand.sort(key=lambda p: (int(p.get("latency_ms") or 0), int(p.get("id") or 0)))
+        nxt = cand[0]
+        if cur is not None:
+            cur["account_id"] = None
+        nxt["account_id"] = account_id
+        self.cfg["proxy"] = c
+        save_json(CONFIG_PATH, self.cfg)
+        show = nxt.get("exit_ip") or PX.hostport(nxt)
+        lat = int(nxt.get("latency_ms") or 0)
+        self.log("[代理] 账号#%s 换出口 → %s" % (account_id, show))
+        return {"ok": True, "msg": "已换到 %s%s" % (show, "（%d ms）" % lat if lat else ""),
+                "proxy": dict(nxt)}
+
+    def proxy_for_account(self, account_id):
+        """这个账号抢购时该用的代理。没有就返回 None（= 直连）。
+
+        优先级：专绑给它的 → 公共池（没绑账号的那些）。
+        """
+        c = self.proxy_cfg()
+        if not c["enabled"]:
+            return None
+        rows = [p for p in c["pool"] if p.get("enabled", True) and p.get("account_id") == account_id]
+        if not rows:
+            rows = [p for p in c["pool"] if p.get("enabled", True) and p.get("account_id") in (None, "")]
+        if not rows:
+            return None
+        return PX.provider_from_rows(rows, mode=c["mode"], rotate_n=c["rotate_n"],
+                                     user_id=account_id)
+
+    def proxy_pool_map(self):
+        """给界面用：账号 → 当前出口。返回 {account_id: {...}}。"""
+        out = {}
+        for p in self.proxy_cfg()["pool"]:
+            aid = p.get("account_id")
+            if aid is not None:
+                out[aid] = p
+        return out
+
+    def proxy_note(self, pid, ok, err=""):
+        """把一次抢兑的成败记到对应 IP 头上（哪个 IP 好使一目了然）。"""
+        if pid is None:
+            return
+        c = self.proxy_cfg()
+        for p in c["pool"]:
+            if int(p.get("id") or 0) != int(pid):
+                continue
+            if ok:
+                p["ok_count"] = int(p.get("ok_count") or 0) + 1
+                p["fail_streak"] = 0
+                p["status"] = "ok"
+                p["last_ok_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                p["last_error"] = ""
+            else:
+                p["fail_count"] = int(p.get("fail_count") or 0) + 1
+                p["fail_streak"] = int(p.get("fail_streak") or 0) + 1
+                if err:
+                    p["last_error"] = str(err)[:200]
+                if p["fail_streak"] >= 3 and p.get("status") != "ok":
+                    p["status"] = "bad"
+            self.cfg["proxy"] = c
+            save_json(CONFIG_PATH, self.cfg)
+            return
+
+    def proxy_status(self):
+        """给界面看的一行状态。"""
+        c = self.proxy_cfg()
+        pool = c["pool"]
+        alive = [p for p in pool if p.get("enabled", True)]
+        ok_n = len([p for p in alive if p.get("status") == "ok"])
+        bad_n = len([p for p in alive if p.get("status") == "bad"])
+        new_n = len([p for p in alive if p.get("status") in ("", None, "untested")])
+        bound = len([p for p in alive if p.get("account_id") is not None])
+        return {
+            "enabled": c["enabled"], "mode": c["mode"], "rotate_n": c["rotate_n"],
+            "also_list": c["also_list"],
+            "total": len(pool), "alive": len(alive), "ok": ok_n, "bad": bad_n,
+            "untested": new_n, "bound": bound, "accounts": len(self.accounts),
+            "socks_ready": PX.socks_ready(),
+            "summary": PX.describe_pool(pool),
+        }
+
     def pick_fallback(self, task, state):
         """在「有货 + 价格 <= 余额」的商品里挑一个替代品。
 
@@ -707,7 +1022,8 @@ class Manager:
 
         # ---- ② 登录态 ----
         try:
-            r = requests.get(self._list_url_for(acc), headers=headers, timeout=8)
+            r = requests.get(self._list_url_for(acc), headers=headers, timeout=8,
+                             proxies=self.proxy_for_list(acc))
             j = r.json()
         except Exception as e:
             out["verdict"] = "❌ 网络异常：无法连接得物服务器"
@@ -780,7 +1096,8 @@ class Manager:
         self.log("④ 兑换接口探测: %s · 金币%s · cId=%s pId=%s skuId=%s activity=%s"
                  % (prize["cName"], prize["cost"], prize["cId"], prize["pId"], prize["skuId"], activity))
         try:
-            r2 = requests.post(EXCHANGE_URL, data=payload, headers=headers2, timeout=8)
+            r2 = requests.post(EXCHANGE_URL, data=payload, headers=headers2, timeout=8,
+                               proxies=self.proxy_for_list(acc))
             raw = r2.text
             j2 = r2.json()
         except Exception as e:
@@ -1150,62 +1467,115 @@ class Manager:
         data = {"cId": p["cId"], "pId": p["pId"], "skuId": p["skuId"], "activity": activity}
         deadline = time.time() + self.cfg.get("max_duration_sec", 180)
         session = requests.Session()
+
+        # ---------- 代理 IP：只作用于兑换请求 ----------
+        # 这里就是「每个账号不同出口 IP」真正生效的地方：该账号绑的那个 IP 用满这一轮。
+        provider = self.proxy_for_account(acc.get("id"))
+        # 用 dict 装状态，是因为 finally 里要读到循环里的更新（局部 int 会被按值传走）
+        st = {"url": provider.prime() if provider else None,
+              "id": provider.current_id if provider else None,
+              "errors": 0, "dropped": [], "won": False, "log_switches": 0}
+        if provider:
+            self.log("[任务#%d] 代理出口: %s" % (task["id"], provider.describe()))
+
         self.log("[任务#%d] 开始兑换: %s (金币%s) cId=%s pId=%s skuId=%s" % (
             task["id"], p["cName"], p["cost"], p["cId"], p["pId"], p["skuId"]))
-        while task["status"] == "兑换中" and task["attempts"] < task["max_attempts"] and time.time() < deadline:
-            task["attempts"] += 1
-            try:
-                r = session.post(EXCHANGE_URL, data=data, headers=headers, timeout=5)
-                j = r.json()
-                code = j.get("code")
-                if code == CODE_SUCCESS:
-                    task["detail"] = json.dumps(j.get("data"), ensure_ascii=False)[:120]
-                    # 把原始 data 留下来: 若里面带 balance 就不必再发一次列表请求去查余额
-                    task["_last_data"] = j.get("data")
-                    self.log("[任务#%d] >>> 第 %d 次尝试: 兑换成功!" % (task["id"], task["attempts"]))
-                    return True
-                elif code == CODE_INSUFFICIENT:
-                    task["status"], task["detail"] = "失败", "余额不足"
-                    self.log("[任务#%d] 第 %d 次: 余额不足，停止" % (task["id"], task["attempts"]))
-                    return False
-                else:
-                    task["detail"] = "code=%s %s" % (code, j.get("msg", ""))
-                    if task["attempts"] <= 8 or task["attempts"] % 20 == 0:
-                        self.log("[任务#%d] 第 %d 次: code=%s msg=%s" % (task["id"], task["attempts"], code, j.get("msg", "")))
-                    # 商品/活动已失效 = 永久性错误。重试不会变好, 不该把 max_attempts 刷满,
-                    # 连续命中 FATAL_STRIKES 次就收手(单次抖动不算)。
-                    if self._is_fatal_gone(j.get("msg")):
-                        task["_fatal_n"] = task.get("_fatal_n", 0) + 1
-                        if task["_fatal_n"] >= FATAL_STRIKES:
-                            task["_fatal"] = True
-                            task["status"] = "失败"
-                            task["detail"] = "%s（商品/活动已失效，第 %d 次即停止重试）" % (
-                                task["detail"], task["attempts"])
-                            self.log("[任务#%d] 连续 %d 次「%s」→ 判定商品/活动已失效，立即停止"
-                                     "（只试了 %d 次，没有空刷）"
-                                     % (task["id"], task["_fatal_n"], j.get("msg", ""), task["attempts"]))
-                            return False
+        try:
+            while task["status"] == "兑换中" and task["attempts"] < task["max_attempts"] and time.time() < deadline:
+                task["attempts"] += 1
+                try:
+                    pmap = None
+                    if provider:
+                        provider.next()          # rotate 模式下可能在这里轮换
+                        if provider.current_url != st["url"]:
+                            # ★ 必须重建会话：不然 keep-alive 继续复用旧隧道，出口 IP 根本没变
+                            session.close()
+                            session = requests.Session()
+                            if st["id"] is not None:
+                                st["dropped"].append(st["id"])
+                            st["id"] = provider.current_id
+                            st["url"] = provider.current_url
+                            st["log_switches"] += 1
+                            self.log("[任务#%d] 换出口 IP → %s" % (task["id"], PX.mask(st["url"])))
+                        pmap = PX.proxies_map(st["url"])
+                    r = session.post(EXCHANGE_URL, data=data, headers=headers, timeout=5,
+                                     proxies=pmap)
+                    j = r.json()
+                    code = j.get("code")
+                    if code == CODE_SUCCESS:
+                        task["detail"] = json.dumps(j.get("data"), ensure_ascii=False)[:120]
+                        # 把原始 data 留下来: 若里面带 balance 就不必再发一次列表请求去查余额
+                        task["_last_data"] = j.get("data")
+                        self.log("[任务#%d] >>> 第 %d 次尝试: 兑换成功!" % (task["id"], task["attempts"]))
+                        st["won"] = True
+                        return True
+                    elif code == CODE_INSUFFICIENT:
+                        task["status"], task["detail"] = "失败", "余额不足"
+                        self.log("[任务#%d] 第 %d 次: 余额不足，停止" % (task["id"], task["attempts"]))
+                        return False
                     else:
-                        task["_fatal_n"] = 0
-                    # 700 请先登录 = 风控软拦截, 连续出现时拉长间隔避免火上浇油
-                    if code == 700:
-                        task["_c700"] = task.get("_c700", 0) + 1
-                        if task["_c700"] >= 10:
-                            task["status"], task["detail"] = "失败", "连续被风控拦截(请先登录)，请稍后重试或重新抓包导入"
-                            self.log("[任务#%d] 连续 10 次 700，停止: %s" % (task["id"], task["detail"]))
-                            return False
-                        time.sleep(min(2.0, 0.3 * (2 ** min(task["_c700"], 3))))
-                        continue
-            except Exception as e:
-                task["detail"] = repr(e)
-                self.log("[任务#%d] 第 %d 次异常: %r" % (task["id"], task["attempts"], e))
-            task["_c700"] = 0
-            time.sleep(task["interval_ms"] / 1000.0 + random.uniform(0, 0.02))
-        if task["status"] == "兑换中":
-            task["status"] = "失败"
-            task["detail"] = "尝试 %d 次未成功" % task["attempts"]
-        self.log("[任务#%d] 停止: %s" % (task["id"], task["detail"]))
-        return False
+                        task["detail"] = "code=%s %s" % (code, j.get("msg", ""))
+                        if task["attempts"] <= 8 or task["attempts"] % 20 == 0:
+                            self.log("[任务#%d] 第 %d 次: code=%s msg=%s" % (task["id"], task["attempts"], code, j.get("msg", "")))
+                        # 风控软拦截（700 请先登录 / 900 参数错误）→ 换个出口 IP 再战。
+                        # 节流：连击 3 次才换一个，否则会把池子刷穿、每次都重新握手。
+                        if provider and code in (CODE_NOT_LOGIN, CODE_PARAM_ERR):
+                            task["_risk_n"] = task.get("_risk_n", 0) + 1
+                            if task["_risk_n"] % 3 == 0 and provider.on_risk("风控"):
+                                self.log("[任务#%d] 第 %d 次被风控(code=%s) → 换出口 IP"
+                                         % (task["id"], task["attempts"], code))
+                        # 商品/活动已失效 = 永久性错误。重试不会变好, 不该把 max_attempts 刷满,
+                        # 连续命中 FATAL_STRIKES 次就收手(单次抖动不算)。
+                        if self._is_fatal_gone(j.get("msg")):
+                            task["_fatal_n"] = task.get("_fatal_n", 0) + 1
+                            if task["_fatal_n"] >= FATAL_STRIKES:
+                                task["_fatal"] = True
+                                task["status"] = "失败"
+                                task["detail"] = "%s（商品/活动已失效，第 %d 次即停止重试）" % (
+                                    task["detail"], task["attempts"])
+                                self.log("[任务#%d] 连续 %d 次「%s」→ 判定商品/活动已失效，立即停止"
+                                         "（只试了 %d 次，没有空刷）"
+                                         % (task["id"], task["_fatal_n"], j.get("msg", ""), task["attempts"]))
+                                return False
+                        else:
+                            task["_fatal_n"] = 0
+                        # 700 请先登录 = 风控软拦截, 连续出现时拉长间隔避免火上浇油
+                        if code == 700:
+                            task["_c700"] = task.get("_c700", 0) + 1
+                            if task["_c700"] >= 10:
+                                task["status"], task["detail"] = "失败", "连续被风控拦截(请先登录)，请稍后重试或重新抓包导入"
+                                self.log("[任务#%d] 连续 10 次 700，停止: %s" % (task["id"], task["detail"]))
+                                return False
+                            time.sleep(min(2.0, 0.3 * (2 ** min(task["_c700"], 3))))
+                            continue
+                except Exception as e:
+                    task["detail"] = repr(e)
+                    self.log("[任务#%d] 第 %d 次异常: %r" % (task["id"], task["attempts"], e))
+                    # 代理本身坏了（隧道断了 / 握手超时）→ 换个 IP 继续，别让一个死代理拖垮整轮
+                    if provider and PX.is_proxy_error(e):
+                        st["errors"] += 1
+                        if provider.on_risk("代理异常"):
+                            self.log("[任务#%d] 代理异常 → 换出口 IP" % task["id"])
+                task["_c700"] = 0
+                time.sleep(task["interval_ms"] / 1000.0 + random.uniform(0, 0.02))
+            if task["status"] == "兑换中":
+                task["status"] = "失败"
+                task["detail"] = "尝试 %d 次未成功" % task["attempts"]
+            self.log("[任务#%d] 停止: %s" % (task["id"], task["detail"]))
+            return False
+        finally:
+            # 收尾：把这一轮的成败记到用过的 IP 头上（哪个 IP 好使一目了然）
+            if provider and st["id"] is not None:
+                self.proxy_note(st["id"], bool(st["won"]) and not st["errors"],
+                                "代理层报错 x%d" % st["errors"] if st["errors"] else "")
+                for _id in st["dropped"]:
+                    if _id != st["id"]:
+                        self.proxy_note(_id, False, "中途被换掉")
+                if st["errors"] or st["dropped"]:
+                    self.log("[任务#%d] 本轮代理：出口 %s%s%s"
+                             % (task["id"], PX.mask(st["url"]) if st["url"] else "—",
+                                "，换过 %d 次" % len(st["dropped"]) if st["dropped"] else "",
+                                "，代理层报错 %d 次" % st["errors"] if st["errors"] else ""))
 
 
 M = Manager()

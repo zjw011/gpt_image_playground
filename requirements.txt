@@ -6,5 +6,7 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 SQLAlchemy>=2.0
 requests>=2.31
+# 代理 IP：socks5 / socks5h 走代理必须靠它，requests 自己不带
+PySocks>=1.7.1
 # PostgreSQL 驱动（本地用 SQLite 时不需要，但装着无妨；docker 里必用）
 psycopg2-binary>=2.9
