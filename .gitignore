@@ -1,0 +1,52 @@
+# ---------------- 大文件 / 构建产物（不进仓库） ----------------
+_apk/
+build/
+build_new/
+dist/
+dist_new/
+*.apk
+*.exe
+*.spec
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+icon_src/
+
+# ---------------- 运行期数据（含账号 token，绝不入库） ----------------
+accounts.json
+tasks.json
+watch_state.json
+config.json
+device.json
+dewu_sniper.log
+*.log
+data/
+*.db
+*.sqlite3
+
+# web 版本地数据
+webdata/
+
+# ---------------- 逆向/调试临时件 ----------------
+_reverse_login/
+tools/_*
+tools/diag/_*
+tools/__pycache__/
+__pycache__/
+*.py[cod]
+
+# ---------------- 环境 ----------------
+.venv/
+venv/
+env/
+.env
+.env.local
+
+# ---------------- 编辑器 ----------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
