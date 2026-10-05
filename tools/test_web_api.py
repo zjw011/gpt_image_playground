@@ -54,7 +54,8 @@ def main():
 
     # ---------------------------------------------------------------- 管理员
     sec("② 管理员：登录 / 生成兑换码 / 概览")
-    r = admin.post(BASE + "/api/admin/login", json={"username": "admin", "password": "bad"})
+    adm_user = os.environ.get("ADMIN_USER") or "admin"
+    r = admin.post(BASE + "/api/admin/login", json={"username": adm_user, "password": "bad"})
     ck("错误密码被拒", r.json().get("ok") is False)
     pw = os.environ.get("ADMIN_PW") or (open(os.path.join(ROOT, "webdata", "ADMIN_PASSWORD.txt"),
                                              encoding="utf-8").read().strip()
@@ -64,7 +65,10 @@ def main():
     if not pw:
         print("  ! 拿不到管理员密码（设 ADMIN_PW 环境变量），跳过管理端用例")
         return report()
-    r = admin.post(BASE + "/api/admin/login", json={"username": "admin", "password": pw})
+    r = admin.post(BASE + "/api/admin/login", json={"username": adm_user, "password": pw})
+    if not r.json().get("ok"):
+        # 用户名可能被改过（默认 admin，本项目已改成 xiaole）
+        r = admin.post(BASE + "/api/admin/login", json={"username": "xiaole", "password": pw})
     ck("管理员登录成功", r.json().get("ok") is True, r.text[:120])
     ck("管理 cookie 已下发", "dw_admin" in admin.cookies)
 
@@ -83,6 +87,45 @@ def main():
 
     r = admin.get(BASE + "/api/admin/settings")
     ck("全局设置含活动 id", "dewu_activity" in r.json().get("settings", {}))
+    ck("★ 通用设置接口不带公共账号（明文密码不外泄）",
+       "public_account" not in r.json().get("settings", {}))
+
+    # ---------------------------------------------------- 公共账号（拉商品用）
+    sec("②b 公共账号：配置读写 / 密码不回明文")
+    r = admin.get(BASE + "/api/admin/public-account")
+    j = r.json()
+    ck("GET /public-account 可用", j.get("ok") is True, r.text[:150])
+    ck("返回 config 且带打码字段", isinstance(j.get("config"), dict)
+       and "password_mask" in j["config"] and "has_password" in j["config"])
+    ck("返回 status（含 running/logs）",
+       isinstance(j.get("status"), dict) and "running" in j["status"]
+       and "logs" in j["status"])
+    ck("★ config 里没有明文字段 password", "password" not in j.get("config", {}))
+
+    r = admin.post(BASE + "/api/admin/public-account",
+                   json={"phone": "13800000000", "password": "test-pass-123",
+                         "enabled": False, "interval_sec": 45})
+    j = r.json()
+    ck("保存公共账号成功", j.get("ok") is True, r.text[:150])
+    ck("回显手机号正确", j.get("config", {}).get("phone") == "13800000000", str(j.get("config")))
+    ck("★ 回显密码是打码的", j.get("config", {}).get("password_mask") == "t************",
+       str(j.get("config", {}).get("password_mask")))
+    ck("间隔被保存（45）", j.get("config", {}).get("interval_sec") == 45)
+
+    r = admin.post(BASE + "/api/admin/public-account",
+                   json={"phone": "13800000000", "password": "**********"})
+    ck("★ 前端回显的星号不会覆盖真密码",
+       r.json().get("config", {}).get("password_mask") == "t************",
+       str(r.json().get("config", {}).get("password_mask")))
+
+    r = admin.post(BASE + "/api/admin/public-account/test", json={})
+    j = r.json()
+    ck("测试接口会真的去登录（失败也返回 ok=false + 原因）",
+       j.get("ok") is False and bool(j.get("msg")), r.text[:160])
+
+    r = admin.post(BASE + "/api/admin/public-account",
+                   json={"phone": "", "password": "", "enabled": False})
+    ck("★ 清空手机号后 configured=false", r.json().get("config", {}).get("configured") is False)
 
     # ---------------------------------------------------------------- 用户登录
     sec("③ 用户登录（粘贴 curl 兜底通道）")

@@ -32,7 +32,157 @@ def sec(t):
     print("\n" + "=" * 68 + "\n" + t + "\n" + "=" * 68)
 
 
+def _test_public_account_logic():
+    """公共账号（全局商品列表）的真实逻辑测试 —— 全 mock，不联网、不碰生产库。
+
+    ★ 必须放在 main() 里「所有 webapp 模块已经 import 完」之后调用：
+      webapp.config.settings 是模块级单例，DEWU_DATA_DIR 得在它之前设好。
+    """
+    import datetime
+    import threading
+    import time
+    from unittest import mock
+
+    from webapp import dewu_client as DW
+    from webapp import global_list as GL
+    from webapp.api_user import _apply_public_list
+    from webapp.db import init_db, put_setting
+
+    sec("⑱ 公共账号（拉商品列表用）逻辑 —— 全 mock，不联网")
+    init_db()
+    put_setting("public_account", {})          # 从干净状态开始
+    G = GL.GLOBAL
+    with G.lock:
+        G.products, G.balance, G.at, G.err, G.logs = [], None, "", "", []
+
+    # ---------------------------------------------------------- 配置读写
+    c = GL.save_cfg(phone="13800000000", password="pw-123456", enabled=False,
+                    interval_sec=5)
+    ck("配置落库（手机号）", GL.cfg()["phone"] == "13800000000")
+    ck("★ 刷新间隔有下限（填 5 → 兜到 20）", c["interval_sec"] == 20, c["interval_sec"])
+    ck("configured() 认「手机号 + 密码」", GL.configured() is True)
+
+    pv = GL.public_view()
+    ck("★ public_view 绝不回明文密码", "password" not in pv and pv["has_password"] is True)
+    ck("public_view 打码只留首位", pv["password_mask"] == "p" + "*" * 8, pv["password_mask"])
+    ck("public_view.configured 一致", pv["configured"] is True)
+
+    GL.save_cfg(password="")
+    ck("清掉密码 → configured()=False", GL.configured() is False)
+    ck("只留手机号不算配好", GL.public_view()["has_password"] is False)
+
+    # ---------------------------------------------------------- mock 打桩
+    calls = {"login": 0, "list": 0}
+    state = {"ok": True, "prizes": [{"cId": 7, "cName": "星巴克券", "cost": 300}],
+             "balance": 888}
+
+    def fake_fetch_list(self=None, activity=None):
+        calls["list"] += 1
+        time.sleep(0.05)                     # 拉慢点，好让并发挤在一起
+        if not state["ok"]:
+            return False, {"_err": state.get("err") or "boom"}
+        return True, {"prizes": list(state["prizes"]), "balance": state["balance"]}
+
+    def fake_login(phone, password, **kw):
+        calls["login"] += 1
+        if not state["ok"]:
+            return {"ok": False, "msg": "密码不对"}
+        return {"ok": True, "token": "tok-public-1", "user_id": "u1"}
+
+    class FakeSession:
+        def __init__(self, *a, **kw):
+            pass
+        fetch_list = fake_fetch_list
+
+    GL.save_cfg(phone="13800000000", password="pw-123456", token="")
+    with mock.patch.object(DW, "login", side_effect=fake_login), \
+         mock.patch.object(DW, "DewuSession", FakeSession):
+        # ------------------------------------------------------ 成功路径
+        ok, msg = G.refresh()
+        ck("refresh() 成功", ok is True, msg)
+        ck("商品进了缓存", [p["cId"] for p in G.products] == [7])
+        ck("余额记下来了", G.balance == 888)
+        ck("刷新时间有值", bool(G.at))
+        ck("错误被清空", G.err == "")
+        ck("★ 登录拿到的 token 落库了", GL.cfg()["token"] == "tok-public-1")
+
+        # 有 token 时不该再登录
+        n_login = calls["login"]
+        G.refresh()
+        ck("★ 已有 token 时不重复登录", calls["login"] == n_login, calls["login"])
+
+        # ------------------------------------------------------ 节流
+        n_list = calls["list"]
+        ok, msg = G.ensure_fresh(max_age=120)
+        ck("★ 刚刷过 → ensure_fresh 不再打接口", calls["list"] == n_list and ok is True, msg)
+        ok, msg = G.ensure_fresh(max_age=0)
+        ck("max_age=0 → 强制再刷一次", calls["list"] == n_list + 1)
+
+        # ------------------------------------------------------ 并发只拉一次
+        calls["list"] = 0
+        threads = [threading.Thread(target=G.refresh) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        ck("★ 6 个人同时点刷新，接口只被打 1 次（锁生效）",
+           calls["list"] == 1, "实际 %d 次" % calls["list"])
+
+        # ------------------------------------------------------ 失败路径
+        state["ok"] = False
+        ok, msg = G.refresh()
+        ck("抓不到列表 → refresh() 返回 False", ok is False)
+        ck("失败原因记进 err", bool(G.err), G.err)
+        ck("★ 失败不清空上一次的商品（宁可用旧的）", len(G.products) == 1)
+        ck("失败原因也落库了", bool(GL.cfg()["last_error"]))
+
+        state["ok"] = True
+        ok, msg = G.refresh(force_login=True)
+        ck("force_login 能重新登录并恢复", ok is True and calls["login"] > n_login)
+        ck("恢复后 err 清空", G.err == "")
+
+    # ---------------------------------------------------------- 用户端叠加
+    snap = {"products": [{"cId": 99, "cName": "旧的"}], "balance": 55, "list_error": "x"}
+    out = _apply_public_list(snap)
+    ck("★ 用户端商品被换成公共账号那份", [p["cId"] for p in out["products"]] == [7])
+    ck("★ 用户自己的余额没被公共账号的余额顶掉", out["balance"] == 55, out["balance"])
+    ck("来源标成 public", out["list_source"] == "public")
+    ck("public_ready=True", out["public_ready"] is True)
+    ck("有数据就把错误清掉", out["list_error"] is None)
+
+    # 公共账号没配 → 保持用户自己的那份
+    GL.save_cfg(phone="", password="", token="")
+    snap2 = {"products": [], "balance": 1, "list_error": None}
+    out2 = _apply_public_list(snap2)
+    ck("没配公共账号 → 来源是 self", out2["list_source"] == "self")
+    ck("没配公共账号 → public_ready=False", out2["public_ready"] is False)
+
+    # ---------------------------------------------------------- 线程生命周期
+    GL.save_cfg(phone="13800000000", password="pw-123456", enabled=True)
+    with mock.patch.object(DW, "login", side_effect=fake_login), \
+         mock.patch.object(DW, "DewuSession", FakeSession):
+        ok, msg = G.start()
+        ck("start() 起后台线程", ok is True, msg)
+        ck("start() 后 running=True", G.snapshot()["running"] is True)
+        G.stop()
+        ck("★ stop() 等线程真的退出去（否则紧接着 start() 会被挡）",
+           G.snapshot()["running"] is False)
+        ok, msg = G.start()
+        ck("★ 停了还能再起（开关不会假死）", G.snapshot()["running"] is True)
+        G.stop()
+        ck("最终停干净", G.snapshot()["running"] is False)
+
+    GL.save_cfg(phone="", password="", token="", enabled=False)
+    ck("没配公共账号 → start() 不硬起",
+       GL.GLOBAL.start()[0] is False, GL.GLOBAL.start())
+
+    put_setting("public_account", {})          # 收尾：不留测试配置
+
+
 def main():
+    # ★ 单测自己的数据目录：绝不能写生产的 webdata/dewu.db
+    os.environ.setdefault("DEWU_DATA_DIR", os.path.join(ROOT, "webdata", "_unittest"))
+
     from webapp import dewu_client as DW
     from webapp.curlparse import parse_curl, xat_of_curl
     from webapp.models import DEFAULT_SETTINGS, merge_defaults
@@ -466,8 +616,10 @@ def main():
             "/api/admin/login", "/api/admin/overview", "/api/admin/users",
             "/api/admin/codes", "/api/admin/codes/generate", "/api/admin/settings",
             "/api/admin/proxies", "/api/admin/proxies/import", "/api/admin/proxies/check",
-            "/api/admin/proxies/delete", "/api/admin/proxies/auto_assign",
-            "/api/admin/proxies/{pid}"]
+            "/api/admin/proxies/delete",             "/api/admin/proxies/auto_assign",
+            "/api/admin/proxies/{pid}",
+            "/api/admin/public-account", "/api/admin/public-account/test",
+            "/api/admin/public-account/refresh"]
     miss = [p for p in need if p not in paths]
     ck("所有关键路由都在", not miss, miss)
     ck("用户端与 /admin 共用同一个 SPA", "/admin" in paths)
@@ -478,6 +630,46 @@ def main():
     ck("字面量路由声明在 {pid} 之前",
        src_admin.index('"/proxies/auto_assign"') < src_admin.index('"/proxies/{pid}"')
        and src_admin.index('"/proxies/delete"') < src_admin.index('"/proxies/{pid}"'))
+
+    sec("⑰ 公共账号（拉商品用）接线守卫")
+    src_user = open(os.path.join(ROOT, "webapp", "api_user.py"), encoding="utf-8").read()
+    src_main = open(os.path.join(ROOT, "webapp", "main.py"), encoding="utf-8").read()
+    src_gl = open(os.path.join(ROOT, "webapp", "global_list.py"), encoding="utf-8").read()
+    src_js = open(os.path.join(ROOT, "webapp", "static", "app.js"), encoding="utf-8").read()
+
+    ck("★ 通用 /settings 不把公共账号带出去（明文密码）",
+       src_admin.count('!= "public_account"') >= 2, src_admin.count('!= "public_account"'))
+    ck("公共账号保存时不会用打码值覆盖真密码",
+       'set(pw) != {"*"}' in src_admin)
+    ck("公共账号密码只回打码值（public_view）",
+       "password_mask" in src_gl and '"password": pw' not in src_gl)
+
+    ck("★ 应用启动时会起公共账号刷新（不再每次手工点）",
+       "global_list.start()" in src_main)
+    ck("关停时会停掉后台线程", "global_list.stop()" in src_main)
+
+    ck("★ 用户端商品列表走公共账号那一份",
+       "GL.snapshot()" in src_user and 'snap["products"] = gp["products"]' in src_user)
+    ck("★ 余额不跟着公共账号走（那是用户自己的金币）",
+       'snap.get("balance")' in src_user and 'snap["balance"] = gp' not in src_user)
+    ck("用户端能看到列表来源 list_source", 'snap["list_source"]' in src_user)
+    ck("★ 用户端刷新列表优先刷公共账号那份",
+       "if GL.configured():" in src_user)
+    ck("/api/me 告诉前端列表来自谁", '"list_source"' in src_user)
+
+    ck("管理端有「公共账号」卡片", "公共账号（拉商品用）" in src_js)
+    ck("管理端卡片有手机号输入框", 'id="paPhone"' in src_js)
+    ck("管理端卡片有密码输入框", 'id="paPw"' in src_js)
+    ck("管理端能测试登录", "public-account/test" in src_js)
+    ck("管理端能手动刷新", "public-account/refresh" in src_js)
+    ck("loadSettings 会一起加载公共账号", "await loadPublicAccount()" in src_js)
+    ck("★ 前端保存公共账号时空密码不发（留空=不改）",
+       "if (pw) body.password = pw;" in src_js)
+    ck("APP 导出了公共账号相关函数",
+       all(k in src_js for k in ("savePublic", "testPublic", "refreshPublic")))
+    ck("用户端会提示「管理员统一提供」", "管理员统一提供" in src_js)
+
+    _test_public_account_logic()
 
     # ============================================================== 结果
     print("\n" + "=" * 68)

@@ -473,12 +473,81 @@ def update_proxy(pid: int, payload: dict, request: Request):
     return {"ok": True, "proxy": row}
 
 
+# ==================================================================== 公共账号
+# 专门拿来「拉商品列表」的那个号。用户端不登录也能看列表，靠的就是它。
+# ★ 密码绝不出这个接口（只回打码值），所以它不走进下面的通用 /settings。
+def _pa_status(snap):
+    """公共账号的运行状态（不含配置，配置走 config）。"""
+    return {"ok": snap["ok"], "count": snap["count"], "balance": snap["balance"],
+            "at": snap["at"], "err": snap["err"], "running": snap["running"],
+            "logs": snap["logs"]}
+
+
+@router.get("/public-account")
+def get_public_account(request: Request):
+    """读公共账号配置 + 当前状态。"""
+    from . import global_list as GL
+    current_admin(request)
+    snap = GL.snapshot()
+    return {"ok": True, "config": snap["config"], "status": _pa_status(snap)}
+
+
+@router.post("/public-account")
+def save_public_account(payload: dict, request: Request):
+    """保存公共账号。密码留空 = 不改（前端把打码值回显成 * 也不会覆盖）。"""
+    from . import global_list as GL
+    current_admin(request)
+    kw = {}
+    if "phone" in payload:
+        kw["phone"] = str(payload.get("phone") or "").strip()
+    if "password" in payload:
+        pw = str(payload.get("password") or "")
+        if pw and set(pw) != {"*"}:        # 全是星号 = 前端回显的打码值，别当真密码存
+            kw["password"] = pw
+    if "enabled" in payload:
+        kw["enabled"] = bool(payload.get("enabled"))
+    if "interval_sec" in payload:
+        kw["interval_sec"] = payload.get("interval_sec")
+    cfg = GL.save_cfg(**kw)
+    if not cfg.get("enabled"):
+        GL.stop()
+    elif GL.configured():
+        GL.start()
+    snap = GL.snapshot()
+    return {"ok": True, "msg": "已保存", "config": snap["config"],
+            "status": _pa_status(snap)}
+
+
+@router.post("/public-account/test")
+def test_public_account(request: Request):
+    """强制重新登录 + 拉一次列表 —— 验证手机号密码对不对。"""
+    from . import global_list as GL
+    current_admin(request)
+    ok, msg = GL.test_login()
+    snap = GL.snapshot()
+    return {"ok": ok, "msg": msg, "config": snap["config"],
+            "status": _pa_status(snap)}
+
+
+@router.post("/public-account/refresh")
+def refresh_public_account(request: Request):
+    """用现有登录态拉一次列表（不重新登录，省事）。"""
+    from . import global_list as GL
+    current_admin(request)
+    ok, msg = GL.refresh()
+    snap = GL.snapshot()
+    return {"ok": ok, "msg": msg, "config": snap["config"],
+            "status": _pa_status(snap)}
+
+
 # ==================================================================== 全局设置
 @router.get("/settings")
 def get_global(request: Request):
     current_admin(request)
     with db_session() as s:
-        out = {r.key: r.value for r in s.scalars(select(Setting))}
+        # ★ public_account 里有明文密码，绝不能被通用接口带出去
+        out = {r.key: r.value for r in s.scalars(select(Setting))
+               if r.key != "public_account"}
     return {"ok": True, "settings": out}
 
 
@@ -502,5 +571,6 @@ def save_global(payload: dict, request: Request):
                 v = str(v or "")
             put_setting(k, v)
     with db_session() as s:
-        out = {r.key: r.value for r in s.scalars(select(Setting))}
+        out = {r.key: r.value for r in s.scalars(select(Setting))
+               if r.key != "public_account"}      # 同上：别带明文密码
     return {"ok": True, "settings": out}

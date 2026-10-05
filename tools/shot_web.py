@@ -57,9 +57,15 @@ def main():
     pw_path = os.path.join(ROOT, "webdata", "ADMIN_PASSWORD.txt")
     if os.path.exists(pw_path):
         pw = open(pw_path, encoding="utf-8").read().strip()
-        if aw.post(BASE + "/api/admin/login",
-                   json={"username": "admin", "password": pw}).json().get("ok"):
-            admin_cookie = aw.cookies.get("dw_admin")
+        # 用户名可能被改过（默认 admin，本项目已改成 xiaole）
+        for uname in (os.environ.get("ADMIN_USER"), "admin", "xiaole"):
+            if not uname:
+                continue
+            if aw.post(BASE + "/api/admin/login",
+                       json={"username": uname, "password": pw}).json().get("ok"):
+                admin_cookie = aw.cookies.get("dw_admin")
+                print("管理员：", uname)
+                break
     print("管理员 cookie:", bool(admin_cookie))
 
     # 造一个「等待中」的任务，任务页/概览页才有东西可看；截完删掉。

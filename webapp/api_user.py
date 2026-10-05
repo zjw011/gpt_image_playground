@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
 
 from . import dewu_client as DW
+from . import global_list as GL
 from .auth import (clear_cookie, create_session, current_user, drop_session,
                    set_cookie)
 from .db import db_session, global_cfg
@@ -100,6 +101,7 @@ def logout(request: Request, response: Response):
 def me(request: Request):
     u = current_user(request)
     g = global_cfg()
+    pub = GL.public_view()
     return {
         "ok": True,
         "user": {"id": u.id, "phone": _mask(u.phone), "remark": u.remark or "",
@@ -111,7 +113,10 @@ def me(request: Request):
         "global": {"activity": g.get("dewu_activity"),
                    "require_code": g.get("require_code_for_task"),
                    "proxy_enabled": g.get("proxy_enabled"),
-                   "proxy_required": g.get("proxy_required")},
+                   "proxy_required": g.get("proxy_required"),
+                   # 管理员配了公共账号 → 商品列表由它统一提供
+                   "public_list": pub["configured"],
+                   "list_source": "public" if pub["configured"] else "self"},
     }
 
 
@@ -121,6 +126,7 @@ def state(request: Request, logs: int = 120):
     u = current_user(request)
     rt = runtime_for(u.id)
     snap = rt.snapshot()
+    _apply_public_list(snap)
     with db_session() as s:
         # 「已删除」只是逻辑删除（保留历史），不该再出现在用户的列表里
         tasks = [t.brief() for t in s.scalars(
@@ -133,12 +139,38 @@ def state(request: Request, logs: int = 120):
     return snap
 
 
+def _apply_public_list(snap):
+    """商品列表改走「公共账号」那份（管理员配了就共用，用户不登录也能看）。
+
+    ★ 余额不跟着换 —— 公共账号的余额跟用户没关系，用户的余额永远是他自己的。
+    ★ 管理员把公共账号清空后，缓存里那份就不再用了（否则会一直吃老数据）。
+    """
+    gp = GL.snapshot()
+    pub = gp["config"]
+    usable = bool(pub.get("configured"))
+    snap["public_ready"] = usable
+    if usable and gp["count"]:
+        snap["products"] = gp["products"]
+        snap["list_source"] = "public"
+        snap["list_at"] = gp["at"]
+        snap["list_error"] = None
+    else:
+        snap["list_source"] = "public" if usable else "self"
+        if usable and gp["err"]:
+            snap["list_error"] = "公共账号拉取失败：%s" % gp["err"]
+    return snap
+
+
 @router.post("/products/refresh")
 def refresh(request: Request):
+    """刷新商品列表。配了公共账号就刷那份（所有用户共用），否则刷自己的。"""
     u = current_user(request)
+    if GL.configured():
+        ok, msg = GL.refresh()
+        return {"ok": ok, "msg": msg, "source": "public"}
     rt = runtime_for(u.id)
     ok, msg = rt.refresh()
-    return {"ok": ok, "msg": msg}
+    return {"ok": ok, "msg": msg, "source": "self"}
 
 
 # ==================================================================== 兑换码
@@ -177,7 +209,7 @@ def create_task(payload: dict, request: Request):
     if g.get("require_code_for_task") and not code_text:
         return {"ok": False, "msg": "请输入兑换码（一个兑换码只能创建一个任务）"}
 
-    snap = rt.snapshot()
+    snap = _apply_public_list(rt.snapshot())
     prize = next((p for p in snap["products"] if p.get("cId") == cid), None)
     if prize is None:
         return {"ok": False, "msg": "商品不在当前列表里，请先刷新列表再选"}
@@ -362,11 +394,12 @@ def probe(request: Request):
     """不花金币地验证链路（挑买不起的商品去兑换，服务端会回余额不足）。"""
     u = current_user(request)
     rt = runtime_for(u.id)
-    snap = rt.snapshot()
+    snap = _apply_public_list(rt.snapshot())
     sess = rt.session()
     if sess is None:
         return {"ok": False, "msg": "登录态丢失，请重新登录"}
-    ok, msg = sess.probe_chain(snap["products"], snap["balance"])
+    # ★ 余额用用户自己的（公共账号的金币跟这个号没关系）
+    ok, msg = sess.probe_chain(snap["products"], snap.get("balance"))
     rt.log("[链路诊断] %s" % msg, "ok" if ok else "error")
     return {"ok": bool(ok), "msg": msg}
 

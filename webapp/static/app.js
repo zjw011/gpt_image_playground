@@ -351,7 +351,11 @@ const APP = (() => {
     const bal = st.balance;
 
     $('#ovBal').innerHTML = (bal == null ? '—' : esc(bal)) + '<em>金币</em>';
-    $('#ovBalTip').textContent = st.refreshed_at ? ('列表更新于 ' + st.refreshed_at) : '还没有拉到列表，点右边按钮刷新';
+    const at = st.list_at || st.refreshed_at;
+    $('#ovBalTip').textContent = [
+      at ? ('列表更新于 ' + at) : '还没有拉到列表，点右边按钮刷新',
+      st.list_source === 'public' ? '由管理员统一提供' : '',
+    ].filter(Boolean).join(' · ');
     $('#ovM1').textContent = ps.length;
     $('#ovM2').textContent = ps.filter((p) => !p.outOfStock).length;
     const running = ts.filter((t) => ['等待', '兑换中'].includes(t.status)).length;
@@ -504,9 +508,10 @@ const APP = (() => {
 
     const { list, total } = filteredProducts();
     $('#pCount').textContent = total;
-    $('#pSum').textContent = list.length === total
+    const srcTag = st.list_source === 'public' ? ' · 管理员统一提供' : '';
+    $('#pSum').textContent = (list.length === total
       ? '点任意商品即可创建定时兑换任务'
-      : '筛选出 ' + list.length + ' / ' + total + ' 个';
+      : '筛选出 ' + list.length + ' / ' + total + ' 个') + srcTag;
     const le = $('#listErr');
     if (le) { le.className = 'msg err' + (st.list_error ? ' show' : ''); le.textContent = st.list_error || ''; }
 
@@ -1598,6 +1603,35 @@ const APP = (() => {
   ADMIN_HTML.settings = () => `
     <div class="set-grid">
       <div class="card" style="margin:0">
+        <div class="sec-t"><span class="si">${ic('users')}</span>公共账号（拉商品用）</div>
+        <div class="card-b">
+          <div class="desc" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px;line-height:1.65">
+            填一个你自己的号，由它统一拉取商品列表，<b>所有用户共用这一份</b> —— 用户端
+            不用登录就能看到商品。它走直连，<b>不占代理 IP 额度</b>，也不需要跟谁的登录态一致。</div>
+          <label class="fld"><span>手机号</span>
+            <input id="paPhone" placeholder="13800138000" autocomplete="off"></label>
+          <label class="fld"><span>密码</span>
+            <input id="paPw" type="password" placeholder="留空 = 不改" autocomplete="new-password">
+            <div class="hint" id="paPwHint"></div></label>
+          <div class="grid2">
+            <label class="fld"><span>自动刷新间隔（秒）</span>
+              <input id="paInt" type="number" min="20" placeholder="60">
+              <div class="hint">最快 20 秒。别设太密，容易把列表接口拉崩。</div></label>
+            <label class="fld"><span>当前状态</span>
+              <div id="paStat" class="muted" style="padding-top:9px;font-size:12.5px;line-height:1.6">—</div></label>
+          </div>
+          <label class="chk"><input type="checkbox" id="paEn">
+            启用（后台按上面的间隔自动刷新商品列表）</label>
+          <div class="msg" id="paMsg"></div>
+          <div class="row" style="margin-top:14px">
+            <button class="btn btn-p btn-sm" onclick="APP.savePublic(this)">${ic('check')}保存</button>
+            <button class="btn btn-s btn-sm" onclick="APP.testPublic(this)">${ic('pulse')}测试登录并拉一次</button>
+            <button class="btn btn-g btn-sm" onclick="APP.refreshPublic(this)">${ic('refresh')}刷新商品</button>
+          </div>
+          <div id="paLogs" style="margin-top:12px"></div>
+        </div>
+      </div>
+      <div class="card" style="margin:0">
         <div class="sec-t"><span class="si">${ic('pulse')}</span>代理 IP 总开关</div>
         <div class="card-b">
           <div class="desc" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px;line-height:1.65">
@@ -1731,6 +1765,83 @@ const APP = (() => {
     if ($('#stCode')) $('#stCode').checked = !!s.require_code_for_task;
     if ($('#gxEn')) $('#gxEn').checked = !!s.proxy_enabled;
     if ($('#gxReq')) $('#gxReq').checked = !!s.proxy_required;
+    await loadPublicAccount();
+  }
+
+  /* ------------------------------------------------ 公共账号（拉商品用） */
+  async function loadPublicAccount() {
+    if (!$('#paPhone')) return;
+    let j;
+    try { j = await api('/api/admin/public-account'); }
+    catch (e) { if (e.status === 401) renderAdminLogin(); return; }
+    const c = j.config || {}, st = j.status || {};
+    const set = (id, v) => { const e = $(id); if (e) e.value = v == null ? '' : v; };
+    set('#paPhone', c.phone); set('#paInt', c.interval_sec);
+    if ($('#paEn')) $('#paEn').checked = !!c.enabled;
+    if ($('#paPw')) $('#paPw').value = '';
+    if ($('#paPwHint')) {
+      $('#paPwHint').textContent = c.has_password
+        ? ('已保存密码 ' + c.password_mask + '，留空就不改') : '还没设密码';
+    }
+    const el = $('#paStat');
+    if (el) {
+      const bits = [];
+      bits.push(!c.configured ? '未配置' : (c.enabled ? '已启用' : '已停用（不自动刷新）'));
+      bits.push('后台 ' + (st.running ? '运行中' : '未运行'));
+      if (st.count) bits.push('商品 ' + st.count + (st.at ? ' · ' + st.at : ''));
+      if (st.err) bits.push('最近失败：' + st.err);
+      el.textContent = bits.join(' · ');
+      el.style.color = st.err ? 'var(--red, #e6243f)' : '';
+    }
+    const lg = $('#paLogs');
+    if (lg) {
+      const rows = (st.logs || []).slice(-6).reverse();
+      lg.innerHTML = rows.length
+        ? rows.map((l) => `<div class="muted" style="font-size:12px;line-height:1.7">${esc(l)}</div>`).join('')
+        : '';
+    }
+  }
+
+  async function savePublic(btn) {
+    if (!$('#paPhone')) return;
+    busy(btn, true, '保存中…');
+    try {
+      const body = {
+        phone: $('#paPhone').value.trim(),
+        enabled: $('#paEn').checked,
+        interval_sec: +$('#paInt').value || 60,
+      };
+      const pw = $('#paPw').value;          // 空 = 不改密码
+      if (pw) body.password = pw;
+      const j = await api('/api/admin/public-account', body);
+      setMsg('#paMsg', j.ok ? '已保存' : (j.msg || '保存失败'), j.ok ? 'ok' : 'err');
+      if (j.ok && $('#paPw')) $('#paPw').value = '';
+      await loadPublicAccount();
+    } catch (e) { setMsg('#paMsg', e.message, 'err'); }
+    busy(btn, false);
+  }
+
+  async function testPublic(btn) {
+    if (!$('#paPhone')) return;
+    busy(btn, true, '登录中…');
+    try {
+      const j = await api('/api/admin/public-account/test', {});
+      setMsg('#paMsg', (j.ok ? '测试成功：' : '测试失败：') + (j.msg || ''), j.ok ? 'ok' : 'err');
+      toast(j.msg || (j.ok ? '成功' : '失败'), j.ok ? 'ok' : 'err');
+      await loadPublicAccount();
+    } catch (e) { setMsg('#paMsg', e.message, 'err'); }
+    busy(btn, false);
+  }
+
+  async function refreshPublic(btn) {
+    if (!$('#paPhone')) return;
+    busy(btn, true, '刷新中…');
+    try {
+      const j = await api('/api/admin/public-account/refresh', {});
+      toast(j.msg || (j.ok ? '已刷新' : '失败'), j.ok ? 'ok' : 'err');
+      await loadPublicAccount();
+    } catch (e) { toast(e.message, 'err'); }
+    busy(btn, false);
   }
 
   /* ------------------------------------------------ 代理 IP（管理端） */
@@ -1911,6 +2022,8 @@ const APP = (() => {
     adminGo, adminLogout, loadUsers, userStatus, userKick, userDel,
     loadCodes, genCodes, exportCodes, codeStatus, codeDel,
     saveGlobal, savePw, adminRefresh,
+    // 公共账号（拉商品用）
+    loadPublicAccount, savePublic, testPublic, refreshPublic,
     // 代理 IP（管理端）
     loadProxies, importProxies, checkProxies, checkOne, proxyToggle, proxyBind,
     proxyDel, autoAssign,

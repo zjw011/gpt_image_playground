@@ -66,8 +66,16 @@ def main():
     pw = open(pw_path, encoding="utf-8").read().strip()
 
     admin = requests.Session()
-    if not admin.post(BASE + "/api/admin/login",
-                      json={"username": "admin", "password": pw}).json().get("ok"):
+    # 用户名可能被改过（默认 admin，本项目已改成 xiaole）
+    admin_ok = False
+    for uname in (os.environ.get("ADMIN_USER"), "admin", "xiaole"):
+        if not uname:
+            continue
+        if admin.post(BASE + "/api/admin/login",
+                      json={"username": uname, "password": pw}).json().get("ok"):
+            admin_ok = True
+            break
+    if not admin_ok:
         print("管理员登录失败")
         return 1
     user = requests.Session()

@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import api_admin, api_user
+from . import api_admin, api_user, global_list
 from .db import init_db
 from .runtime import boot_all
 
@@ -26,7 +26,14 @@ async def lifespan(app: FastAPI):
     init_db()
     info = boot_all()
     logging.getLogger("dewu").info("启动完成：恢复 %(users)s 个用户 / %(tasks)s 个任务", info)
+    # 公共账号（拉商品列表用）：配了才起，没配就是 no-op
+    try:
+        ok, msg = global_list.start()
+        logging.getLogger("dewu").info("公共账号商品列表：%s", msg if ok else "未启用（%s）" % msg)
+    except Exception:                       # noqa: BLE001
+        logging.getLogger("dewu").exception("公共账号后台刷新启动失败")
     yield
+    global_list.stop()
 
 
 app = FastAPI(title="得物整点抢兑助手 · Web 版", docs_url=None, redoc_url=None,
