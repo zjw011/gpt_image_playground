@@ -179,6 +179,257 @@ def _test_public_account_logic():
     put_setting("public_account", {})          # 收尾：不留测试配置
 
 
+def _test_lazy_login_logic():
+    """懒登录：提交账号密码**只存不登**，开抢前 2 分钟提 IP 才登录。
+
+    全 mock，不联网、不碰生产库。要放在 main() 的 webapp import 之后调用。
+    """
+    import inspect
+    from unittest import mock
+
+    from sqlalchemy import select
+
+    from webapp import dewu_client as DW
+    from webapp import runtime as RT
+    from webapp import secret_store as SS
+    from webapp import tianqi as TQ
+    from webapp.db import db_session, init_db, put_setting
+    from webapp.models import User, merge_defaults
+
+    sec("⑲ 懒登录（密码只存不登 / 开抢前 2 分钟提 IP 登录）")
+    init_db()
+
+    # ------------------------------------------------------ 密码可逆加密
+    ck("cryptography 可用（存密码的前提）", SS.available() is True)
+    blob = SS.encrypt("my-pass-123")
+    ck("密文带版本前缀", blob.startswith("enc:v1:"))
+    ck("★ 能解回明文", SS.decrypt(blob) == "my-pass-123")
+    ck("★ 密文里看不到明文", "my-pass-123" not in blob)
+    ck("空串加密还是空串", SS.encrypt("") == "")
+    ck("认不出来的值当没存过（不炸）", SS.decrypt("whatever") == "")
+    ck("脏密文当没存过（不炸）", SS.decrypt("enc:v1:not-base64") == "")
+
+    # ------------------------------------------------------ 天启IP 配置
+    put_setting(TQ.KEY, {})
+    ck("天启没配时 configured=False", TQ.public_view()["configured"] is False)
+    ck("天启没配时 ready=False", TQ.public_view()["ready"] is False)
+    TQ.save_cfg(secret="sec-abcdef123456", sign="sign-9876543210",
+                key="key-1122334455", auth_pass="pa-556677", enabled=True)
+    ck("天启配置落库", TQ.cfg()["secret"] == "sec-abcdef123456")
+    ck("天启 configured=True", TQ.configured() is True)
+    ck("天启 ready=True（开关也开了）", TQ.ready() is True)
+    pv = TQ.public_view()
+    ck("★ secret 只回打码值", pv["secret"] != "sec-abcdef123456" and "*" in pv["secret"],
+       pv["secret"])
+    ck("★ sign / key / auth_pass 也只回打码值",
+       all("*" in pv[k] for k in ("sign", "key", "auth_pass")),
+       {k: pv[k] for k in ("sign", "key", "auth_pass")})
+    ck("★ 明文密钥不在 public_view 里", "sec-abcdef123456" not in repr(pv))
+    ck("has_secret 反映真实存在", pv["has_secret"] is True)
+    TQ.save_cfg(enabled=False)
+    ck("关掉开关 ready=False（configured 仍为 True）",
+       TQ.ready() is False and TQ.configured() is True)
+    ck("life 只认 3/5/10/15（7 → 兜回 3）", TQ.save_cfg(life=7)["life"] == 3)
+    ck("protocol 越界兜回 socks5", TQ.save_cfg(protocol=99)["protocol"] == 3)
+
+    put_setting(TQ.KEY, {})
+    ip, err = TQ.client()
+    ck("没配好 → client() 给人话而不是抛异常", ip is None and "缺" in err, err)
+
+    class FakeLease:
+        def as_proxy(self):
+            return {"url": "socks5h://1.2.3.4:1080", "ip": "1.2.3.4", "port": 1080,
+                    "where": "辽宁鞍山 · 电信", "expire_at": 0, "left": 170}
+
+    TQ.save_cfg(secret="s-1", sign="g-1", key="k-1", enabled=True)
+    with mock.patch("tianqiip.TianqiIP.extract_lease", return_value=(FakeLease(), "")):
+        d, err = TQ.one_proxy()
+    ck("one_proxy 返回能直接用的代理", bool(d) and d["url"].startswith("socks5h://") and not err, err)
+    ck("★ 提取成功记下归属地（界面要显示）", TQ.cfg()["last_where"] == "辽宁鞍山 · 电信")
+    with mock.patch("tianqiip.TianqiIP.extract_lease",
+                    return_value=(None, "套餐已过期")):
+        d, err = TQ.one_proxy()
+    ck("提取失败返回原因", d is None and "过期" in err, err)
+    ck("★ 失败原因落库（管理员看得到）", "过期" in TQ.cfg()["last_err"])
+    put_setting(TQ.KEY, {})
+
+    # ------------------------------------------------------ 登录支持指定出口
+    import dewu_login as DL
+    ck("★ dewu_login.login 支持 proxies（同一个 IP 登录 + 兑换）",
+       "proxies" in inspect.signature(DL.login).parameters)
+    ck("★ DW.login 也透传 proxies",
+       "proxies" in inspect.signature(DW.login).parameters)
+    ck("直连仍走 urllib（桌面版行为不变）",
+       "if not proxies:" in inspect.getsource(DL._send_login))
+
+    # ------------------------------------------------------ 前端的文案守卫
+    src_js = open(os.path.join(ROOT, "webapp", "static", "app.js"), encoding="utf-8").read()
+    src_user = open(os.path.join(ROOT, "webapp", "api_user.py"), encoding="utf-8").read()
+    ck("★ 登录页写清「开抢的前 2 分钟才会进行登录操作」",
+       "开抢的前 2 分钟" in src_js and "请确保账号密码正确" in src_js)
+    ck("登录按钮不再叫「登录」", "保存并进入" in src_js)
+    ck("★ 密码分支真的不登录（api_user 里没有 DW.login 调用）",
+       "DW.login(" not in src_user)
+    ck("顶部有「登录出口 IP 归属地」", 'id="pillIp"' in src_js)
+    ck("侧栏账号下面显示出口", "出口 ' + lg.where" in src_js)
+    ck("管理端有天启IP 卡片", "天启IP（开抢前自动换 IP）" in src_js)
+    ck("★ 提前登录是 2 分钟", RT.LEAD_LOGIN_SEC == 120, RT.LEAD_LOGIN_SEC)
+
+    # ------------------------------------------------------ do_login 真跑一遍（mock 网络）
+    with db_session() as s:
+        u = s.scalars(select(User).where(User.phone == "13900000001")).first()
+        if u is None:
+            u = User(phone="13900000001", settings=merge_defaults({}))
+            s.add(u)
+            s.flush()
+        uid = u.id
+    rt = RT.runtime_for(uid)
+
+    def _set_user(**kw):
+        with db_session() as s:
+            row = s.get(User, uid)
+            for k, v in kw.items():
+                setattr(row, k, v)
+
+    called = {}
+
+    def fake_login(phone, password, override=None, timeout=25, proxies=None):
+        called.update({"phone": phone, "pw": password, "proxies": proxies})
+        return {"ok": True, "token": "tok-lazy-1", "user_id": "u9"}
+
+    _set_user(pw_enc=SS.encrypt("pw-abc"), token="", login_ip="", login_where="")
+    proxy = {"url": "socks5h://1.2.3.4:1080", "ip": "1.2.3.4", "port": 1080,
+             "where": "辽宁鞍山 · 电信", "expire_at": 0, "left": 170}
+    with mock.patch.object(DW, "login", side_effect=fake_login), \
+         mock.patch.object(TQ, "ready", return_value=True), \
+         mock.patch.object(TQ, "one_proxy", return_value=(dict(proxy), "")), \
+         mock.patch.object(TQ, "proxies_map",
+                           return_value={"http": "socks5h://1.2.3.4:1080",
+                                         "https": "socks5h://1.2.3.4:1080"}):
+        ok, msg, info = rt.do_login(use_ip=True, why="#1")
+
+    ck("do_login 成功", ok is True, msg)
+    ck("★ 用的是存下来的密码（不是让用户再输一次）", called.get("pw") == "pw-abc")
+    ck("★ 登录走了刚提上来的那个 IP", bool(called.get("proxies")), called.get("proxies"))
+    ck("info 里带回归属地", info.get("where") == "辽宁鞍山 · 电信")
+    ck("info 里带回可复用的出口 url（兑换要用同一个）",
+       info.get("proxy_url") == "socks5h://1.2.3.4:1080")
+    li = rt.login_info()
+    ck("★ token 落库了", li["logged_in"] is True)
+    ck("★ 登录 IP 与归属地落库（账号后面要显示）",
+       li["ip"] == "1.2.3.4" and li["where"] == "辽宁鞍山 · 电信")
+    ck("登录时间有值", bool(li["at"]))
+
+    # 提不到 IP → 降级直连，别让 IP 商挂了任务就跑不了
+    called.clear()
+    with mock.patch.object(DW, "login", side_effect=fake_login), \
+         mock.patch.object(TQ, "ready", return_value=True), \
+         mock.patch.object(TQ, "one_proxy", return_value=(None, "暂无可用 IP")):
+        ok, msg, info = rt.do_login(use_ip=True)
+    ck("★ 提不到 IP 时降级直连登录（不抛错）",
+       ok is True and info.get("via_ip") is False and called.get("proxies") is None, msg)
+
+    # 没存密码 → 明确报错，别瞎登
+    _set_user(pw_enc="", token="")
+    ok, msg, _ = rt.do_login()
+    ck("★ 没存密码时给出可读原因", ok is False and "密码" in msg, msg)
+
+    # 已有 token → ensure_login 不重复登
+    _set_user(pw_enc=SS.encrypt("pw-abc"), token="tok-x")
+    n = {"c": 0}
+
+    def _count(*a, **k):
+        n["c"] += 1
+        return {"ok": True, "token": "t"}
+
+    with mock.patch.object(DW, "login", side_effect=_count):
+        ok, msg = rt.ensure_login()
+    ck("★ 已有 token → ensure_login 不再登录", n["c"] == 0 and ok is True, msg)
+
+    _set_user(pw_enc="", token="")
+    n["c"] = 0
+    with mock.patch.object(DW, "login", side_effect=_count):
+        ok, msg = rt.ensure_login()
+    ck("★ 没 token 又没密码 → 不瞎登，直接给人话",
+       n["c"] == 0 and ok is False and "密码" in msg, "%d / %s" % (n["c"], msg))
+
+    _set_user(pw_enc=SS.encrypt("pw-abc"), token="")
+    n["c"] = 0
+    with mock.patch.object(DW, "login", side_effect=_count):
+        ok, msg = rt.ensure_login()
+    ck("有密码没 token → ensure_login 登一次", n["c"] == 1 and ok is True, msg)
+
+    # ------------------------------------------------------ session 用指定出口
+    _set_user(token="tok-x")
+    sess = rt.session(proxy_url="socks5h://1.2.3.4:1080")
+    ck("★ session(proxy_url) 用的就是这个出口",
+       sess is not None and sess.proxy is not None
+       and sess.proxy.current_url == "socks5h://1.2.3.4:1080",
+       getattr(sess.proxy, "current_url", None) if sess else None)
+    ck("★ 指定出口时列表也走它（一个号从头到尾一个 IP）", sess.also_list is True)
+
+    # ------------------------------------------------------ 任务线程：先登录再开抢
+    import time as _t
+    from webapp.models import Task
+
+    events = []
+    _set_user(pw_enc=SS.encrypt("pw-abc"), token="", login_ip="", login_where="")
+    with db_session() as s:
+        task = Task(user_id=uid,
+                    prize={"cId": 1, "cName": "测试商品", "cost": 1},
+                    orig_prize={"cId": 1, "cName": "测试商品", "cost": 1},
+                    target_time="23:59:59", lead_ms=300, interval_ms=200,
+                    max_attempts=1, fallback_enabled=False,
+                    status=RT.ST_WAIT, detail="排队中")
+        s.add(task)
+        s.flush()
+        tid = task.id
+
+    def _fake_login(phone, password, override=None, timeout=25, proxies=None):
+        events.append(("login", (proxies or {}).get("https")))
+        return {"ok": True, "token": "tok-task", "user_id": "u"}
+
+    def _fake_run_task(self, prize, cfg, on_event=None, should_stop=None):
+        events.append(("run", None))
+        return {"ok": True, "detail": "抢到了", "attempts": 1, "prize": prize,
+                "balance": 10, "fell_back": False}
+
+    seen = {}
+
+    def _fake_session(self, proxy_url=None):
+        seen["px"] = proxy_url
+        return mock.MagicMock(run_task=lambda *a, **k: _fake_run_task(None, *a, **k))
+
+    with mock.patch.object(DW, "login", side_effect=_fake_login), \
+         mock.patch.object(TQ, "ready", return_value=True), \
+         mock.patch.object(TQ, "one_proxy", return_value=(dict(proxy), "")), \
+         mock.patch.object(TQ, "proxies_map",
+                           return_value={"http": proxy["url"], "https": proxy["url"]}), \
+         mock.patch.object(RT.UserRuntime, "session", _fake_session):
+        rt.schedule(tid, run_now=True)
+        for _ in range(80):
+            if not rt.task_threads.get(tid):
+                break
+            _t.sleep(0.1)
+
+    ck("★ 任务线程：先登录、再开抢（顺序对）",
+       [e[0] for e in events] == ["login", "run"], events)
+    ck("★ 登录走的是新提的那个 IP", events and events[0][1] == proxy["url"], str(events))
+    ck("★ 开抢会话用的还是同一个 IP（一个号一个出口）",
+       seen.get("px") == proxy["url"], seen.get("px"))
+
+    with db_session() as s:
+        row = s.get(Task, tid)
+        ck("任务落成「成功」", row is not None and row.status == RT.ST_OK,
+           row.status if row else None)
+        if row:
+            s.delete(row)
+
+    with db_session() as s:
+        row = s.get(User, uid)
+        s.delete(row)                      # 收尾：别把测试账号留在库里
+
+
 def main():
     # ★ 单测自己的数据目录：绝不能写生产的 webdata/dewu.db
     os.environ.setdefault("DEWU_DATA_DIR", os.path.join(ROOT, "webdata", "_unittest"))
@@ -638,7 +889,10 @@ def main():
     src_js = open(os.path.join(ROOT, "webapp", "static", "app.js"), encoding="utf-8").read()
 
     ck("★ 通用 /settings 不把公共账号带出去（明文密码）",
-       src_admin.count('!= "public_account"') >= 2, src_admin.count('!= "public_account"'))
+       "_SECRET_KEYS" in src_admin
+       and 'public_account' in src_admin.split("_SECRET_KEYS =")[1].split("\n")[0]
+       and src_admin.count("if r.key not in _SECRET_KEYS") >= 2,
+       src_admin.count("if r.key not in _SECRET_KEYS"))
     ck("公共账号保存时不会用打码值覆盖真密码",
        'set(pw) != {"*"}' in src_admin)
     ck("公共账号密码只回打码值（public_view）",
@@ -670,6 +924,7 @@ def main():
     ck("用户端会提示「管理员统一提供」", "管理员统一提供" in src_js)
 
     _test_public_account_logic()
+    _test_lazy_login_logic()
 
     # ============================================================== 结果
     print("\n" + "=" * 68)

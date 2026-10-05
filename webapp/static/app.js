@@ -16,7 +16,7 @@ const APP = (() => {
 
   const S = {
     view: 'overview',
-    me: null, cfg: null, global: null, state: null, proxy: null,
+    me: null, cfg: null, global: null, state: null, proxy: null, login: null,
     admin: null, adminTab: 'overview', adminData: {},
     sel: null, timer: null, tickTimer: null, lastPSig: '', lastTSig: '',
     filter: { q: '', stock: 'all', sort: 'default' },
@@ -145,21 +145,33 @@ const APP = (() => {
     <div class="login-wrap"><div class="login-card">
       <div class="brand">
         <div class="logo">${ic('zap')}</div>
-        <div><h1>得物整点抢兑助手</h1><p>Web 版 · 登录后即可创建定时兑换任务</p></div>
+        <div><h1>得物整点抢兑助手</h1>
+          <p>Web 版 · 填账号密码即可，<b>现在不用登录</b></p></div>
       </div>
       <div class="msg err ${msg ? 'show' : ''}" id="lgMsg">${esc(msg || '')}</div>
       <label class="fld"><span>得物手机号</span>
         <input id="phone" placeholder="11 位手机号" inputmode="numeric" autocomplete="username"></label>
-      <label class="fld"><span>登录密码</span>
-        <input id="pwd" type="password" placeholder="得物账号密码" autocomplete="current-password"></label>
-      <button class="btn btn-p btn-block" id="lgBtn">${ic('power')}登录</button>
+      <label class="fld"><span>得物账号密码</span>
+        <input id="pwd" type="password" placeholder="得物账号密码" autocomplete="current-password">
+        <div class="hint" style="line-height:1.7">
+          <b>请确保账号密码正确。</b>创建任务后、<b>开抢的前 2 分钟</b>才会进行登录操作 ——
+          到那时才提一个短效 IP，用同一个 IP 完成「登录 + 兑换」，一个号只用一个出口。
+        </div></label>
+      <button class="btn btn-p btn-block" id="lgBtn">${ic('shield')}保存并进入</button>
+
+      <div class="msg ok show" style="background:#f3f9f5;border-color:#d6ebdd;color:#1d7a45;
+        font-size:12.5px;line-height:1.7;margin-top:2px">
+        ${ic('shield')} 这样做是为了保护你的账号：密码只用于「开抢前自动登录」，
+        平时不登录、不占用登录设备，降低账号被盗与被风控的风险。
+      </div>
 
       <details class="adv">
-        <summary>登录被风控？改用「粘贴抓包 curl」</summary>
+        <summary>想用抓包 token（不存密码）？点这里</summary>
         <textarea id="curl" placeholder="在得物 App 进入「金币兑换」页，抓包复制带 x-auth-token 的那条 curl，粘贴到这里"></textarea>
         <button class="btn btn-s btn-block btn-sm" style="margin-top:8px" id="curlBtn">用这段 curl 登录</button>
         <div class="hint muted" style="margin-top:7px">
-          这种方式不经过密码接口，最稳；缺点是要先从手机上抓一次包。
+          这种方式不经过密码接口，最稳；但它是**即时登录**的，
+          不会在开抢前提 IP —— 缺点是要先从手机上抓一次包，token 过期也要重抓。
         </div>
       </details>
 
@@ -171,11 +183,15 @@ const APP = (() => {
 
     const doLogin = async (payload, btn) => {
       const m = $('#lgMsg'); m.className = 'msg err'; m.textContent = '';
-      busy(btn, true, '登录中…');
+      busy(btn, true, '处理中…');
       try {
         const j = await api('/api/login', payload);
         if (!j.ok) { m.className = 'msg err show'; m.textContent = j.msg || '登录失败'; busy(btn, false); return; }
-        toast('登录成功，正在拉取商品列表…', 'ok');
+        if (j.lazy) {
+          toast('账号密码已保存 · 开抢前 2 分钟才会自动登录', 'ok');
+        } else {
+          toast('登录成功，正在拉取商品列表…', 'ok');
+        }
         await boot();
       } catch (e) {
         m.className = 'msg err show'; m.textContent = e.message || '网络错误';
@@ -260,6 +276,8 @@ const APP = (() => {
           <div class="ttl"><h2 id="headT">概览</h2><p id="headS"></p></div>
           <div class="acts">
             <span class="pill coin" id="pillCoin" title="当前金币余额">${ic('coin')}<b>—</b></span>
+            <span class="pill off hide-sm" id="pillIp" title="抢兑时自动登录用的出口 IP 归属地">
+              ${ic('pulse')}<span id="ipTx">未登录</span></span>
             <span class="pill off" id="pillWatch" title="库存监听状态">
               <span class="dot"></span><span id="watchTx">监听 关</span></span>
             <span class="pill hide-sm" id="pillClock" title="本机时间">
@@ -352,9 +370,13 @@ const APP = (() => {
 
     $('#ovBal').innerHTML = (bal == null ? '—' : esc(bal)) + '<em>金币</em>';
     const at = st.list_at || st.refreshed_at;
+    const lg0 = S.login || {};
     $('#ovBalTip').textContent = [
       at ? ('列表更新于 ' + at) : '还没有拉到列表，点右边按钮刷新',
       st.list_source === 'public' ? '由管理员统一提供' : '',
+      (bal == null && lg0.lazy)
+        ? ('抢前 ' + Math.round((((S.global || {}).lead_login_sec) || 120) / 60) + ' 分钟自动登录后才有余额')
+        : '',
     ].filter(Boolean).join(' · ');
     $('#ovM1').textContent = ps.length;
     $('#ovM2').textContent = ps.filter((p) => !p.outOfStock).length;
@@ -892,7 +914,38 @@ const APP = (() => {
       const ph = S.me.phone || '—';
       const av = $('#sideAv'); if (av) av.textContent = String(ph).slice(0, 2);
       const sp = $('#sidePhone'); if (sp) sp.textContent = ph;
-      const ss = $('#sideSub'); if (ss) ss.textContent = '活动 ' + (S.me.activity || '—');
+      const ss = $('#sideSub');
+      if (ss) {
+        const lg = S.login || {};
+        if (lg.where) ss.textContent = '出口 ' + lg.where;
+        else if (lg.lazy) ss.textContent = '未登录 · 抢前自动登录';
+        else ss.textContent = '活动 ' + (S.me.activity || '—');
+      }
+    }
+    // 抢兑自动登录用的出口 IP 归属地（登录前显示「抢前 N 分钟自动登录」）
+    const pip = $('#pillIp');
+    if (pip && S.me) {
+      const lg = S.login || {};
+      const gg = S.global || {};
+      const mins = Math.round((gg.lead_login_sec || 120) / 60);
+      if (lg.where) {
+        pip.className = 'pill live hide-sm';
+        $('#ipTx').textContent = lg.where + (lg.at ? ' · ' + lg.at : '');
+        pip.title = '登录出口 IP ' + (lg.ip || '—') + '（' + lg.where + '）'
+          + (gg.auto_ip ? ' · 开抢前自动提 IP' : ' · 直连登录（天启IP 未配置）');
+      } else if (lg.lazy) {
+        pip.className = 'pill off hide-sm';
+        $('#ipTx').textContent = '抢前 ' + mins + ' 分钟自动登录';
+        pip.title = '还没登录（按设计）。创建任务后，开抢前 ' + mins + ' 分钟会自动提 IP 登录';
+      } else if (lg.logged_in) {
+        pip.className = 'pill hide-sm';
+        $('#ipTx').textContent = '抓包 token 模式';
+        pip.title = '用抓包 token 登录，不会自动提 IP';
+      } else {
+        pip.className = 'pill err hide-sm';
+        $('#ipTx').textContent = '无登录凭据';
+        pip.title = '还没有可用的登录凭据，请重新提交账号密码';
+      }
     }
   }
 
@@ -1632,6 +1685,57 @@ const APP = (() => {
         </div>
       </div>
       <div class="card" style="margin:0">
+        <div class="sec-t"><span class="si">${ic('pulse')}</span>天启IP（开抢前自动换 IP）</div>
+        <div class="card-b">
+          <div class="desc" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px;line-height:1.65">
+            配好之后，用户的任务会在 <b>开抢前 2 分钟</b> 自动提一个短效 IP，
+            用<b>同一个 IP</b> 完成「登录 + 兑换」—— 一个号只用一个出口，最像真人。
+            <b>没配就直连登录</b>（功能不受影响，只是出口 IP 是服务器本机）。</div>
+          <label class="chk"><input type="checkbox" id="tqEn"> 启用（开抢前自动提 IP 登录）</label>
+          <div class="grid2">
+            <label class="fld"><span>提取秘钥 secret</span>
+              <input id="tqSecret" placeholder="getip 提取接口用" autocomplete="off">
+              <div class="hint" id="tqSecretHint"></div></label>
+            <label class="fld"><span>用户签名 sign</span>
+              <input id="tqSign" placeholder="两个接口都要" autocomplete="off">
+              <div class="hint" id="tqSignHint"></div></label>
+          </div>
+          <div class="grid2">
+            <label class="fld"><span>用户账号 key</span>
+              <input id="tqKey" placeholder="白名单接口用" autocomplete="off">
+              <div class="hint" id="tqKeyHint"></div></label>
+            <label class="fld"><span>IP 寿命（分钟）</span>
+              <select id="tqLife">
+                <option value="3">3（默认，够用）</option><option value="5">5</option>
+                <option value="10">10</option><option value="15">15</option>
+              </select></label>
+          </div>
+          <div class="grid2">
+            <label class="fld"><span>协议</span>
+              <select id="tqProto">
+                <option value="3">socks5（推荐）</option>
+                <option value="2">https</option><option value="1">http</option>
+              </select></label>
+            <label class="fld"><span>指定地区（可空）</span>
+              <input id="tqRegion" placeholder="例如 辽宁"></label>
+          </div>
+          <div class="grid2">
+            <label class="fld"><span>代理用户名（免密套餐留空）</span>
+              <input id="tqUser" autocomplete="off"></label>
+            <label class="fld"><span>代理密码</span>
+              <input id="tqPass" type="password" placeholder="留空 = 不改" autocomplete="new-password">
+              <div class="hint" id="tqPassHint"></div></label>
+          </div>
+          <div class="msg" id="tqMsg"></div>
+          <div class="row" style="margin-top:14px">
+            <button class="btn btn-p btn-sm" onclick="APP.saveTianqi(this)">${ic('check')}保存</button>
+            <button class="btn btn-s btn-sm" onclick="APP.testTianqi(this)">${ic('pulse')}测试提取一个 IP</button>
+            <button class="btn btn-g btn-sm" onclick="APP.whiteTianqi(this)">${ic('shield')}本机 IP 加白名单</button>
+          </div>
+          <div class="muted" id="tqStat" style="margin-top:10px;font-size:12.5px;line-height:1.7">—</div>
+        </div>
+      </div>
+      <div class="card" style="margin:0">
         <div class="sec-t"><span class="si">${ic('pulse')}</span>代理 IP 总开关</div>
         <div class="card-b">
           <div class="desc" style="font-size:12.5px;color:var(--ink3);margin-bottom:14px;line-height:1.65">
@@ -1766,6 +1870,7 @@ const APP = (() => {
     if ($('#gxEn')) $('#gxEn').checked = !!s.proxy_enabled;
     if ($('#gxReq')) $('#gxReq').checked = !!s.proxy_required;
     await loadPublicAccount();
+    await loadTianqi();
   }
 
   /* ------------------------------------------------ 公共账号（拉商品用） */
@@ -1841,6 +1946,96 @@ const APP = (() => {
       toast(j.msg || (j.ok ? '已刷新' : '失败'), j.ok ? 'ok' : 'err');
       await loadPublicAccount();
     } catch (e) { toast(e.message, 'err'); }
+    busy(btn, false);
+  }
+
+  /* ------------------------------------------------ 天启IP（开抢前自动换 IP） */
+  function _tqPaint(j) {
+    const c = j.config || {}, st = j.status || {};
+    if ($('#tqSecretHint')) {
+      $('#tqSecretHint').textContent = c.has_secret
+        ? ('已保存 ' + c.secret + '，留空不改') : '还没填 —— 从「提取链接」里抄 secret= 后面那段';
+    }
+    if ($('#tqSignHint')) {
+      $('#tqSignHint').textContent = c.has_sign ? ('已保存 ' + c.sign) : '';
+    }
+    if ($('#tqKeyHint')) {
+      $('#tqKeyHint').textContent = c.has_key ? ('已保存 ' + c.key) : '免密 s5 靠白名单认人，要填 key';
+    }
+    if ($('#tqPassHint')) {
+      $('#tqPassHint').textContent = c.has_auth_pass ? ('已保存 ' + c.auth_pass) : '';
+    }
+    const el = $('#tqStat');
+    if (el) {
+      const bits = [c.enabled ? (c.ready ? '已启用 · 开抢前自动提 IP'
+        : '已勾启用但还没配全（缺 secret/sign）') : '已停用 · 开抢前直连登录'];
+      if (st.last_ok_at) bits.push('最近提取 ' + st.last_ok_at + (st.where ? '（' + st.where + '）' : ''));
+      if (st.last_err) bits.push('最近失败：' + st.last_err);
+      el.textContent = bits.join(' · ');
+      el.style.color = st.last_err ? 'var(--red, #e6243f)' : '';
+    }
+  }
+
+  async function loadTianqi() {
+    if (!$('#tqEn')) return;
+    let j;
+    try { j = await api('/api/admin/tianqi'); }
+    catch (e) { if (e.status === 401) renderAdminLogin(); return; }
+    const c = j.config || {};
+    if ($('#tqEn')) $('#tqEn').checked = !!c.enabled;
+    if ($('#tqLife')) $('#tqLife').value = String(c.life || 3);
+    if ($('#tqProto')) $('#tqProto').value = String(c.protocol || 3);
+    if ($('#tqRegion')) $('#tqRegion').value = c.region || '';
+    if ($('#tqUser')) $('#tqUser').value = c.auth_user || '';
+    ['#tqSecret', '#tqSign', '#tqKey', '#tqPass'].forEach((s) => { if ($(s)) $(s).value = ''; });
+    _tqPaint(j);
+  }
+
+  async function saveTianqi(btn) {
+    if (!$('#tqEn')) return;
+    busy(btn, true, '保存中…');
+    try {
+      const body = {
+        enabled: $('#tqEn').checked,
+        protocol: +$('#tqProto').value,
+        life: +$('#tqLife').value,
+        region: $('#tqRegion').value.trim(),
+        auth_user: $('#tqUser').value.trim(),
+      };
+      // ★ 空 = 不改；前端回显的打码值也不会覆盖真值（后端还会再挡一层）
+      [['secret', '#tqSecret'], ['sign', '#tqSign'], ['key', '#tqKey'],
+       ['auth_pass', '#tqPass']].forEach(([k, sel]) => {
+        const v = $(sel) ? $(sel).value.trim() : '';
+        if (v) body[k] = v;
+      });
+      const j = await api('/api/admin/tianqi', body);
+      setMsg('#tqMsg', j.ok ? '已保存' : (j.msg || '保存失败'), j.ok ? 'ok' : 'err');
+      if (j.ok) ['#tqSecret', '#tqSign', '#tqKey', '#tqPass'].forEach((s) => { if ($(s)) $(s).value = ''; });
+      _tqPaint(j);
+    } catch (e) { setMsg('#tqMsg', e.message, 'err'); }
+    busy(btn, false);
+  }
+
+  async function testTianqi(btn) {
+    if (!$('#tqEn')) return;
+    busy(btn, true, '提取中…');
+    try {
+      const j = await api('/api/admin/tianqi/test', {});
+      setMsg('#tqMsg', (j.ok ? '提取成功：' : '提取失败：') + (j.msg || ''), j.ok ? 'ok' : 'err');
+      toast(j.msg || (j.ok ? '成功' : '失败'), j.ok ? 'ok' : 'err');
+      _tqPaint(j);
+    } catch (e) { setMsg('#tqMsg', e.message, 'err'); }
+    busy(btn, false);
+  }
+
+  async function whiteTianqi(btn) {
+    if (!$('#tqEn')) return;
+    busy(btn, true, '提交中…');
+    try {
+      const j = await api('/api/admin/tianqi/white', {});
+      setMsg('#tqMsg', j.msg || (j.ok ? '已加入白名单' : '失败'), j.ok ? 'ok' : 'err');
+      _tqPaint(j);
+    } catch (e) { setMsg('#tqMsg', e.message, 'err'); }
     busy(btn, false);
   }
 
@@ -1982,6 +2177,7 @@ const APP = (() => {
       const m = await api('/api/me');
       S.me = m.user; S.cfg = m.settings; S.global = m.global;
       S.proxy = m.proxy || null;
+      S.login = m.login || null;        // ★ 登录状态（懒登录模式下长期是「未登录」）
     } catch (e) {
       if (e.status === 401) {
         if (location.pathname.startsWith('/admin')) renderAdminLogin(); else renderLogin();
@@ -2024,6 +2220,8 @@ const APP = (() => {
     saveGlobal, savePw, adminRefresh,
     // 公共账号（拉商品用）
     loadPublicAccount, savePublic, testPublic, refreshPublic,
+    // 天启IP（开抢前自动换 IP）
+    loadTianqi, saveTianqi, testTianqi, whiteTianqi,
     // 代理 IP（管理端）
     loadProxies, importProxies, checkProxies, checkOne, proxyToggle, proxyBind,
     proxyDel, autoAssign,

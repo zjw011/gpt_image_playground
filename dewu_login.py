@@ -189,9 +189,33 @@ def _jwt_user_id(token):
         return None
 
 
-def login(phone, password, activity=None, override=None, timeout=25):
+def _send_login(headers, data, timeout, proxies=None):
+    """发登录请求，返回 ``(status, headers, raw)``。
+
+    ``proxies is None`` 时走原来的 urllib 路径 —— **桌面版的行为一个字节都不变**。
+    给了 ``proxies``（``{"http": ..., "https": ...}``）才换成 requests：
+    urllib 自己不带 SOCKS，而短效 IP 基本都是 socks5h。
+    """
+    if not proxies:
+        req = urllib.request.Request(LOGIN_URL, data=data, headers=headers, method="POST")
+        ctx = ssl.create_default_context()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers), e.read()
+    import requests                                    # 懒加载：直连用不到它
+    r = requests.post(LOGIN_URL, data=data, headers=headers, timeout=timeout,
+                      proxies=proxies)
+    return r.status_code, dict(r.headers), r.content
+
+
+def login(phone, password, activity=None, override=None, timeout=25, proxies=None):
     """手机号 + 密码 登录，返回:
     {ok, token, user_id, activity, msg}
+
+    ``proxies`` 给了就走代理登录 —— 「开抢前 2 分钟提一个短效 IP、
+    用**同一个 IP** 登录再兑换」靠的就是它（一个号一个出口）。
     """
     phone = str(phone).strip()
     if not phone.isdigit() or len(phone) != 11:
@@ -220,13 +244,8 @@ def login(phone, password, activity=None, override=None, timeout=25):
     body.update(body_dev)
 
     data = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(LOGIN_URL, data=data, headers=headers, method="POST")
-    ctx = ssl.create_default_context()
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
-            status, hdrs, raw = r.status, dict(r.headers), r.read()
-    except urllib.error.HTTPError as e:
-        status, hdrs, raw = e.code, dict(e.headers), e.read()
+        status, hdrs, raw = _send_login(headers, data, timeout, proxies)
     except Exception as e:
         return {"ok": False, "msg": "网络错误：%r" % e}
 

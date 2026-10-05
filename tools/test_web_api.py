@@ -127,6 +127,46 @@ def main():
                    json={"phone": "", "password": "", "enabled": False})
     ck("★ 清空手机号后 configured=false", r.json().get("config", {}).get("configured") is False)
 
+    # ---------------------------------------------------- 天启IP（开抢前换 IP）
+    sec("②c 天启IP：配置读写 / 密钥不回明文")
+    r = admin.get(BASE + "/api/admin/tianqi")
+    j = r.json()
+    ck("GET /tianqi 可用", j.get("ok") is True, r.text[:150])
+    ck("返回 config + 提前登录秒数", isinstance(j.get("config"), dict)
+       and j.get("lead_login_sec") == 120, j.get("lead_login_sec"))
+    ck("返回寿命可选值", j.get("lives") == [3, 5, 10, 15], j.get("lives"))
+
+    r = admin.post(BASE + "/api/admin/tianqi",
+                   json={"secret": "sec-abcdef123456", "sign": "sign-98765432",
+                         "key": "key-11223344", "enabled": True, "life": 3,
+                         "protocol": 3})
+    j = r.json()
+    ck("保存天启配置成功", j.get("ok") is True, r.text[:150])
+    c = j.get("config", {})
+    ck("★ secret 回的是打码值", c.get("secret") and c["secret"] != "sec-abcdef123456"
+       and "*" in c["secret"], c.get("secret"))
+    ck("★ 明文密钥不出现在响应里", "sec-abcdef123456" not in r.text)
+    ck("has_secret=True", c.get("has_secret") is True)
+    ck("configured=True", c.get("configured") is True)
+    ck("ready=True（开关也开了）", c.get("ready") is True)
+
+    r = admin.post(BASE + "/api/admin/tianqi",
+                   json={"secret": "sec-************", "enabled": True})
+    ck("★ 打码值发回来不会覆盖真密钥",
+       r.json().get("config", {}).get("secret") == c.get("secret"),
+       str(r.json().get("config", {}).get("secret")))
+
+    r = admin.post(BASE + "/api/admin/tianqi/test", json={})
+    j = r.json()
+    ck("测试提取返回 ok=false + 可读原因（填的是假密钥）",
+       j.get("ok") is False and bool(j.get("msg")), r.text[:180])
+
+    r = admin.get(BASE + "/api/admin/settings")
+    ck("★ 通用设置接口也不带天启密钥",
+       "tianqi" not in r.json().get("settings", {}))
+
+    admin.post(BASE + "/api/admin/tianqi", json={"enabled": False})
+
     # ---------------------------------------------------------------- 用户登录
     sec("③ 用户登录（粘贴 curl 兜底通道）")
     accs = json.load(open(os.path.join(ROOT, "dist", "accounts.json"), encoding="utf-8"))
@@ -144,6 +184,52 @@ def main():
     ck("/api/me 返回用户信息", j.get("ok") and "phone" in j.get("user", {}))
     ck("/api/me 带 settings", isinstance(j.get("settings"), dict))
     ck("/api/me 带 global.require_code", "require_code" in j.get("global", {}))
+
+    # ---------------------------------------------------------------- 懒登录
+    sec("③b 懒登录：提交账号密码只存不登，开抢前 2 分钟才登录")
+    lazy = requests.Session()
+    r = lazy.post(BASE + "/api/login", json={"phone": "abc", "password": "x"})
+    ck("手机号格式不对被拒", r.json().get("ok") is False, r.text[:120])
+    r = lazy.post(BASE + "/api/login", json={"phone": "13900000009", "password": ""})
+    ck("空密码被拒", r.json().get("ok") is False, r.text[:120])
+
+    r = lazy.post(BASE + "/api/login",
+                  json={"phone": "13900000009", "password": "dewu-pass-123"})
+    j = r.json()
+    ck("★ 提交账号密码就进去了（后台不登录）", j.get("ok") is True, r.text[:200])
+    ck("★ 明确标了 lazy=true", j.get("lazy") is True, str(j))
+    ck("★ 返回的提示就是那句「开抢前才会自动登录」",
+       "开抢前" in (j.get("msg") or "") and "自动登录" in (j.get("msg") or ""),
+       j.get("msg"))
+
+    m = lazy.get(BASE + "/api/me").json()
+    lg = m.get("login") or {}
+    ck("★ /api/me 说这个人还没登录", lg.get("logged_in") is False, str(lg))
+    ck("★ 但记下了「有密码」→ 会懒登录", lg.get("has_password") is True, str(lg))
+    ck("懒登录模式 lazy=true", lg.get("lazy") is True)
+    ck("提前登录秒数是 120", lg.get("lead_sec") == 120, lg.get("lead_sec"))
+    ck("★ 这时没有出口 IP（还没登录过）",
+       lg.get("ip") == "" and lg.get("where") == "", str(lg))
+    ck("/api/me 里 global 带了 lead_login_sec",
+       (m.get("global") or {}).get("lead_login_sec") == 120,
+       (m.get("global") or {}).get("lead_login_sec"))
+
+    # 需要 token 的功能会「按需登一次」——用的是假密码，所以这里必须是
+    # 「登录失败 + 可读原因」，而不是 500、也不是「登录态丢失」这种含糊话。
+    r = lazy.post(BASE + "/api/probe", json={})
+    j = r.json()
+    ck("★ 链路诊断在没登录时会去真登录，失败给可读原因",
+       j.get("ok") is False and bool(j.get("msg")) and "登录态丢失" not in (j.get("msg") or ""),
+       r.text[:200])
+
+    lazy.post(BASE + "/api/logout", json={})
+
+    # 切回 curl 模式要能覆盖掉存的密码（否则会一直走懒登录）
+    r = s.post(BASE + "/api/login", json={"curl": curl})
+    ck("老用户重新用 curl 登录仍然成功", r.json().get("ok") is True, r.text[:160])
+    m = s.get(BASE + "/api/me").json()
+    ck("★ curl 模式不标 lazy", (m.get("login") or {}).get("lazy") is False,
+       str(m.get("login")))
 
     # ---------------------------------------------------------------- 商品
     sec("④ 商品列表（图片/价格/库存/金币四个字段必须齐全）")

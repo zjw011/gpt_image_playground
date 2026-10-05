@@ -11,7 +11,7 @@ from .auth import (clear_cookie, create_session, current_user, drop_session,
                    set_cookie)
 from .db import db_session, global_cfg
 from .models import Log, RedeemCode, Task, User, merge_defaults
-from .runtime import ST_DELETED, ST_WAIT, runtime_for
+from .runtime import ST_DELETED, ST_WAIT, LEAD_LOGIN_SEC, runtime_for
 from .security import COOKIE_USER
 
 import dewu_push as PUSH
@@ -32,9 +32,15 @@ def _mask(phone):
 @router.post("/login")
 def login(payload: dict, request: Request, response: Response):
     """两种登录方式：
-      · {phone, password}  → 走 dewu_login 的客户端加密（推荐）
-      · {curl}             → 粘贴自己的抓包 curl（登录被风控时的兜底）
+
+      · ``{phone, password}``  → ★ **懒登录**：只把账号密码存下来，**后台不登录**。
+        真登录发生在「创建了任务、开抢前 2 分钟」：那时才提一个 3 分钟的短效 IP，
+        用**同一个 IP** 完成登录和兑换 —— 一个号只用一个出口，最不容易被风控。
+      · ``{curl}``             → 粘贴自己的抓包 curl，直接拿 token（登录被风控时的兜底）。
+        这条是即时的，不走懒登录。
     """
+    from . import secret_store as SE
+
     phone = str(payload.get("phone") or "").strip()
     password = str(payload.get("password") or "")
     curl = str(payload.get("curl") or "").strip()
@@ -42,6 +48,7 @@ def login(payload: dict, request: Request, response: Response):
 
     activity = ""
     dewu_uid = None
+    lazy = False
     if curl:
         token = DW.token_from_curl(curl)
         if not token:
@@ -51,13 +58,15 @@ def login(payload: dict, request: Request, response: Response):
         if not phone:
             phone = "curl-" + str(abs(hash(token)) % 10 ** 10)
     else:
+        if not phone.isdigit() or len(phone) != 11:
+            return {"ok": False, "msg": "请输入 11 位手机号"}
         if not password:
             return {"ok": False, "msg": "请输入密码"}
-        r = DW.login(phone, password)
-        if not r.get("ok"):
-            return {"ok": False, "msg": r.get("msg") or "登录失败"}
-        token = r["token"]
-        dewu_uid = r.get("user_id")
+        if not SE.available():
+            return {"ok": False, "msg": "服务器缺少 cryptography 库，存不了密码（"
+                                        "pip install cryptography），请让管理员处理"}
+        lazy = True
+        token = ""                       # ★ 关键：不登录，token 留空
         activity = g.get("dewu_activity") or ""
 
     with db_session() as s:
@@ -74,7 +83,17 @@ def login(payload: dict, request: Request, response: Response):
             s.flush()
         if u.status != "active":
             return {"ok": False, "msg": "该账号已被管理员禁用"}
-        u.token = token
+        if lazy:
+            # 密码存密文；清掉旧 token，免得拿一个「不是这套凭据换来的」登录态去兑换
+            u.pw_enc = SE.encrypt(password)
+            u.token = ""
+            u.login_ip = ""
+            u.login_where = ""
+            u.login_at = None
+        else:
+            u.token = token
+            u.pw_enc = ""                # 改用 curl 模式 → 不再自动登录
+            u.login_where = ""
         u.dewu_user_id = str(dewu_uid or u.dewu_user_id or "")
         if activity:
             u.activity = activity
@@ -85,9 +104,19 @@ def login(payload: dict, request: Request, response: Response):
     tok = create_session("user", request=request, user_id=uid)
     set_cookie(response, "user", tok)
     rt = runtime_for(uid)
-    rt.log("登录成功（%s）" % _mask(phone_show))
-    rt.refresh()
-    return {"ok": True, "user": {"id": uid, "phone": _mask(phone_show)}}
+    if lazy:
+        rt.log("已保存账号密码（%s）—— 按设计**不登录**，开抢前 %d 秒才自动登录"
+               % (_mask(phone_show), LEAD_LOGIN_SEC))
+    else:
+        rt.log("登录成功（%s · 抓包 token 模式）" % _mask(phone_show))
+    if GL.configured():
+        GL.ensure_fresh()            # 商品列表由公共账号提供，顺手刷一下
+    else:
+        rt.refresh()
+    return {"ok": True, "lazy": lazy,
+            "user": {"id": uid, "phone": _mask(phone_show)},
+            "msg": "账号密码已保存，创建任务后、开抢前 %d 秒才会自动登录"
+                   % LEAD_LOGIN_SEC if lazy else "登录成功"}
 
 
 @router.post("/logout")
@@ -99,9 +128,12 @@ def logout(request: Request, response: Response):
 
 @router.get("/me")
 def me(request: Request):
+    from . import tianqi as TQ
     u = current_user(request)
     g = global_cfg()
     pub = GL.public_view()
+    rt = runtime_for(u.id)
+    li = rt.login_info()
     return {
         "ok": True,
         "user": {"id": u.id, "phone": _mask(u.phone), "remark": u.remark or "",
@@ -109,14 +141,20 @@ def me(request: Request):
                  "dewu_user_id": u.dewu_user_id or "",
                  "created_at": u.created_at.strftime("%Y-%m-%d %H:%M") if u.created_at else ""},
         "settings": u.st(),
-        "proxy": runtime_for(u.id).proxy_info(),
+        "proxy": rt.proxy_info(),
+        # ★ 登录状态：懒登录模式下这里长期是「未登录」，开抢前 2 分钟才会变成已登录
+        "login": dict(li, lazy=bool(li.get("has_password")),
+                      lead_sec=LEAD_LOGIN_SEC),
         "global": {"activity": g.get("dewu_activity"),
                    "require_code": g.get("require_code_for_task"),
                    "proxy_enabled": g.get("proxy_enabled"),
                    "proxy_required": g.get("proxy_required"),
                    # 管理员配了公共账号 → 商品列表由它统一提供
                    "public_list": pub["configured"],
-                   "list_source": "public" if pub["configured"] else "self"},
+                   "list_source": "public" if pub["configured"] else "self",
+                   # 天启IP 配好了才会在开抢前提 IP 登录，否则直连登录
+                   "auto_ip": TQ.ready(),
+                   "lead_login_sec": LEAD_LOGIN_SEC},
     }
 
 
@@ -303,6 +341,10 @@ def clear_done(request: Request):
 def watch_start(payload: dict, request: Request):
     u = current_user(request)
     rt = runtime_for(u.id)
+    # 监听要一直拉用户的列表 → 必须有登录态。懒登录模式下这里按需登一次（直连）。
+    ok, msg = rt.ensure_login()
+    if not ok:
+        return {"ok": False, "msg": msg}
     ok, msg = rt.watch_start(interval_sec=(payload or {}).get("interval_sec"))
     return {"ok": ok, "msg": msg}
 
@@ -394,10 +436,14 @@ def probe(request: Request):
     """不花金币地验证链路（挑买不起的商品去兑换，服务端会回余额不足）。"""
     u = current_user(request)
     rt = runtime_for(u.id)
+    # 懒登录模式下用户可能还没登录 → 这里按需登一次（直连，快）
+    ok0, msg0 = rt.ensure_login()
+    if not ok0:
+        return {"ok": False, "msg": msg0}
     snap = _apply_public_list(rt.snapshot())
     sess = rt.session()
     if sess is None:
-        return {"ok": False, "msg": "登录态丢失，请重新登录"}
+        return {"ok": False, "msg": "登录态丢失，请重新提交账号密码"}
     # ★ 余额用用户自己的（公共账号的金币跟这个号没关系）
     ok, msg = sess.probe_chain(snap["products"], snap.get("balance"))
     rt.log("[链路诊断] %s" % msg, "ok" if ok else "error")
@@ -408,9 +454,13 @@ def probe(request: Request):
 @router.get("/answer/today")
 def answer_today(request: Request):
     u = current_user(request)
-    sess = runtime_for(u.id).session()
+    rt = runtime_for(u.id)
+    ok0, msg0 = rt.ensure_login()          # 答题要真登录 → 按需登一次
+    if not ok0:
+        return {"ok": False, "msg": msg0}
+    sess = rt.session()
     if sess is None:
-        return {"ok": False, "msg": "登录态丢失，请重新登录"}
+        return {"ok": False, "msg": "登录态丢失，请重新提交账号密码"}
     a = (u.st().get("answer") or {})
     info, err = sess.answer_today(biz=a.get("biz_activity") or 2)
     if err:
@@ -422,9 +472,12 @@ def answer_today(request: Request):
 def answer_submit(payload: dict, request: Request):
     u = current_user(request)
     rt = runtime_for(u.id)
+    ok0, msg0 = rt.ensure_login()
+    if not ok0:
+        return {"ok": False, "msg": msg0}
     sess = rt.session()
     if sess is None:
-        return {"ok": False, "msg": "登录态丢失，请重新登录"}
+        return {"ok": False, "msg": "登录态丢失，请重新提交账号密码"}
     a = (u.st().get("answer") or {})
     ans = str(payload.get("answer") or "").strip()
     if not ans:

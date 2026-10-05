@@ -62,8 +62,40 @@ def put_setting(key, value):
             row.value = value
 
 
+def _add_missing_columns():
+    """给**已有的**表补新列。
+
+    ``Base.metadata.create_all()`` 对已存在的表什么都不做 —— 老库升级上来的话
+    新加的列不会自己出现，然后所有查询都炸「no such column」。
+    这里做一次幂等补齐（SQLite / PostgreSQL 的 ADD COLUMN 语法一样）。
+    """
+    from sqlalchemy import inspect, text
+
+    want = {
+        "users": {
+            "pw_enc": "TEXT",
+            "login_ip": "VARCHAR(64)",
+            "login_where": "VARCHAR(60)",
+            "login_at": "TIMESTAMP",
+        },
+    }
+    insp = inspect(engine)
+    existing = set(insp.get_table_names())
+    with engine.begin() as conn:
+        for table, cols in want.items():
+            if table not in existing:
+                continue
+            have = {c["name"] for c in insp.get_columns(table)}
+            for name, ddl in cols.items():
+                if name in have:
+                    continue
+                conn.execute(text("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, ddl)))
+                log.warning("已给 %s 补列 %s", table, name)
+
+
 def init_db():
     Base.metadata.create_all(engine)
+    _add_missing_columns()
 
     # 管理员：不存在才建（密码取环境变量，没有就随机生成一份写文件）
     with db_session() as s:

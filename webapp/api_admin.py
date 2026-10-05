@@ -19,6 +19,10 @@ from .security import COOKIE_ADMIN, hash_pw, verify_pw
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
+# ★ 这些 Setting 里有明文密钥/密码，通用 /settings 接口必须把它们过滤掉：
+#   public_account = 公共账号的得物密码；tianqi = 天启IP 的 secret/sign/key
+_SECRET_KEYS = ("public_account", "tianqi")
+
 # 去掉了容易看错的 0/O/1/I/L
 _ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
@@ -473,6 +477,78 @@ def update_proxy(pid: int, payload: dict, request: Request):
     return {"ok": True, "proxy": row}
 
 
+# ==================================================================== 天启IP
+# 抢兑前 2 分钟要「提一个短效 IP → 用同一个 IP 登录 → 到点兑换」，靠的就是它。
+def _tq_status():
+    from . import tianqi as TQ
+    c = TQ.cfg()
+    return {"last_ok_at": c["last_ok_at"], "last_err": c["last_err"],
+            "where": c["last_where"]}
+
+
+@router.get("/tianqi")
+def get_tianqi(request: Request):
+    from . import tianqi as TQ
+    current_admin(request)
+    return {"ok": True, "config": TQ.public_view(), "status": _tq_status(),
+            "lead_login_sec": TQ.LEAD_LOGIN_SEC,
+            "lives": list(__import__("tianqiip").LIVES)}
+
+
+@router.post("/tianqi")
+def save_tianqi(payload: dict, request: Request):
+    """保存天启配置。★ 密钥字段回显的是打码值 —— 原样发回来不会覆盖真值。"""
+    from . import tianqi as TQ
+    current_admin(request)
+    kw = {}
+    for k in TQ.FIELDS:
+        if k not in payload:
+            continue
+        v = payload.get(k)
+        if k in TQ.MASK_FIELDS:
+            s = str(v or "")
+            if not s or set(s) == {"*"} or "*" in s:   # 打码回显 → 不动真值
+                continue
+            kw[k] = s
+        elif k == "enabled":
+            kw[k] = bool(v)
+        elif k in ("protocol", "life"):
+            kw[k] = v
+        else:
+            kw[k] = v
+    TQ.save_cfg(**kw)
+    return {"ok": True, "msg": "已保存", "config": TQ.public_view(),
+            "status": _tq_status()}
+
+
+@router.post("/tianqi/test")
+def test_tianqi(request: Request):
+    """真提一个 IP 看看 —— 验证 secret/sign 对不对、白名单通不通。"""
+    from . import tianqi as TQ
+    current_admin(request)
+    d, err = TQ.one_proxy()
+    if err:
+        TQ.save_cfg(last_err=str(err)[:200])
+        return {"ok": False, "msg": err, "config": TQ.public_view(),
+                "status": _tq_status()}
+    return {"ok": True, "msg": "提取成功：%s（%s）" % (d.get("url"), d.get("where")),
+            "proxy": d, "config": TQ.public_view(), "status": _tq_status()}
+
+
+@router.post("/tianqi/white")
+def sync_tianqi_white(request: Request):
+    """把本机公网 IP 加进天启白名单（免密的 s5 全靠它认人）。"""
+    from . import tianqi as TQ
+    current_admin(request)
+    ip, err = TQ.client()
+    if ip is None:
+        return {"ok": False, "msg": err, "config": TQ.public_view(),
+                "status": _tq_status()}
+    ok, msg = ip.ensure_white()
+    return {"ok": bool(ok), "msg": msg, "config": TQ.public_view(),
+            "status": _tq_status()}
+
+
 # ==================================================================== 公共账号
 # 专门拿来「拉商品列表」的那个号。用户端不登录也能看列表，靠的就是它。
 # ★ 密码绝不出这个接口（只回打码值），所以它不走进下面的通用 /settings。
@@ -547,7 +623,7 @@ def get_global(request: Request):
     with db_session() as s:
         # ★ public_account 里有明文密码，绝不能被通用接口带出去
         out = {r.key: r.value for r in s.scalars(select(Setting))
-               if r.key != "public_account"}
+               if r.key not in _SECRET_KEYS}
     return {"ok": True, "settings": out}
 
 
@@ -572,5 +648,5 @@ def save_global(payload: dict, request: Request):
             put_setting(k, v)
     with db_session() as s:
         out = {r.key: r.value for r in s.scalars(select(Setting))
-               if r.key != "public_account"}      # 同上：别带明文密码
+               if r.key not in _SECRET_KEYS}      # 同上：别带明文密钥
     return {"ok": True, "settings": out}

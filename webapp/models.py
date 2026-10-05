@@ -65,6 +65,10 @@ class User(Base):
     dewu_user_id = Column(String(40))
     remark = Column(String(60), default="")
     token = Column(Text)                       # 得物 x-auth-token（含 Bearer 前缀）
+    pw_enc = Column(Text, default="")          # ★ 得物密码（可逆加密，见 secret_store.py）
+    login_ip = Column(String(64), default="")  # ★ 最后一次登录用的出口 IP
+    login_where = Column(String(60), default="")   # ★ 那个 IP 的归属地，如「辽宁鞍山 · 电信」
+    login_at = Column(DateTime)                # ★ 最后一次（自动）登录的时间
     activity = Column(String(24))              # 该用户当前活动 id
     device = Column(JSON, default=dict)        # 设备指纹覆盖（一般不用）
     settings = Column(JSON, default=dict)

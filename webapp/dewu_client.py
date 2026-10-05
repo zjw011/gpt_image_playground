@@ -106,12 +106,15 @@ def list_url(activity, sign=None):
 
 
 # ------------------------------------------------------------------ 登录
-def login(phone, password, override=None, timeout=25):
+def login(phone, password, override=None, timeout=25, proxies=None):
     """手机号 + 密码登录得物（复用 dewu_login 的两个客户端加密 + 设备指纹）。
+
+    ``proxies`` 给了就走代理登录（抢兑前的懒登录要「同一个 IP 登录 + 兑换」）。
 
     返回 {ok, token, user_id, msg}。
     """
-    return LOGIN.login(phone, password, override=override, timeout=timeout)
+    return LOGIN.login(phone, password, override=override, timeout=timeout,
+                       proxies=proxies)
 
 
 def token_from_curl(curl_text):
