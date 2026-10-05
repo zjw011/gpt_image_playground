@@ -332,6 +332,10 @@ class UserRuntime:
                         return
                     if task.status in (ST_OK, ST_FAIL) and not task.repeat_daily:
                         return
+                    # 只允许「活着的」状态被写回等待。已删除/已取消是终态，
+                    # 后台线程不许覆盖它们 —— 否则用户刚删掉的任务会从列表里冒出来。
+                    if task.status not in (ST_WAIT, ST_RUN, ST_OK, ST_FAIL):
+                        return
                     tstr = task.target_time
                     lead = int(task.lead_ms or 300)
                     repeat = bool(task.repeat_daily)
@@ -365,8 +369,8 @@ class UserRuntime:
                     return
                 with db_session() as s:
                     task = s.get(Task, task_id)
-                    if task is None:
-                        return
+                    if task is None or task.status == ST_DELETED:
+                        return          # 用户在这次抢兑期间把它删了 → 结果不落库
                     task.status = ST_RUN
                     task.last_run_at = datetime.datetime.now()
                     task.attempts = 0
@@ -390,8 +394,8 @@ class UserRuntime:
                 # 抢到的商品可能被降级换过 → 落库
                 with db_session() as s:
                     task = s.get(Task, task_id)
-                    if task is None:
-                        return
+                    if task is None or task.status == ST_DELETED:
+                        return          # 同上：删了就别写回来了
                     old_name = (task.prize or {}).get("cName")
                     task.prize = res["prize"]
                     task.status = ST_OK if res["ok"] else ST_FAIL
@@ -429,13 +433,20 @@ class UserRuntime:
         return cb
 
     def _finish(self, task_id, status, detail):
+        """落终态。
+
+        已经「已删除」的任务不再改动 —— 删任务是「stop_task() 先置停止位、再写已删除」，
+        线程被叫醒后会走到这里的「已手动停止」分支；如果这里不设防，它就会把
+        用户刚删掉的任务又写回「已取消」，任务列表里当场冒出一张卡。
+        """
         from .models import Task
         with db_session() as s:
             t = s.get(Task, task_id)
-            if t:
-                t.status = status
-                t.detail = detail
-                t.finished_at = datetime.datetime.now()
+            if t is None or t.status == ST_DELETED:
+                return
+            t.status = status
+            t.detail = detail
+            t.finished_at = datetime.datetime.now()
 
     # ------------------------------------------------------------------ 设置
     def _save_settings(self, st):

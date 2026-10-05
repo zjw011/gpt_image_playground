@@ -10,6 +10,7 @@
 import json
 import os
 import sys
+import time
 
 import requests
 
@@ -160,6 +161,15 @@ def main():
     ck("删除任务接口可用", r.json().get("ok") is True)
     st = s.get(BASE + "/api/state").json()
     ck("删除后任务不再出现", not any(x["id"] == task_id for x in st.get("tasks", [])))
+
+    # 回归：删任务是「先置停止位、再写已删除」，后台线程被叫醒之后会走
+    # 「已手动停止」分支。如果那里不设防，它会把删掉的任务又写回「已取消」，
+    # 列表里就冒出一张卡。等几秒让线程真的醒过来再看一次。
+    time.sleep(3.5)
+    st = s.get(BASE + "/api/state").json()
+    ck("等 3.5 秒后任务仍然不出现（后台线程没把它复活）",
+       not any(x["id"] == task_id for x in st.get("tasks", [])),
+       str([(x["id"], x["status"]) for x in st.get("tasks", [])]))
 
     # ---------------------------------------------------------------- 隔离
     sec("⑦ 多用户隔离（换个浏览器 = 换个用户，不能串）")
