@@ -191,6 +191,7 @@ tools/test_proxy_desktop.py  桌面版代理测试（单测 + 真机 A/B，59 �
 tools/mini_proxy.py          本机迷你正向代理 / 迷你接口（两个真机测试共用）
 tools/shot_web.py            无头浏览器截图
 tools/shot_proxy.py          桌面版「代理 IP」弹窗截图
+tools/verify_proxy_exe.py    ★ 打包后 exe 真机验证（静态核对 + 真机 GUI + 真机导入落库）
 ```
 
 ### 代理 IP 为什么放在根目录
@@ -240,9 +241,18 @@ python tools/shot_web.py               # 无头浏览器截图到 dist/
 python tools/test_proxy_desktop.py     # 桌面版代理 59 项（单测 + 真机 A/B）
 python tools/test_gone.py              # 商品失效 / 降级 / 推送
 python tools/shot_proxy.py             # 「代理 IP」弹窗截图到 dist/
+
+# —— 打包产物（打完包再跑，验的是 exe 本身）——
+python tools/verify_proxy_exe.py       # 静态核对 exe 里的代理代码 + 真机点开弹窗并导入
 ```
 
 **代理那两个真机测试是真的在验链路，不是 mock**：测试脚本在本机起一个极小的
 HTTP 正向代理（`tools/mini_proxy.py`），把它当「你买的 IP」导进池子，然后
 断言「开着代理时，代理侧确实看到了这次请求的转发；关掉之后，代理侧一条都没收到」。
 这样「请求真的穿过代理了」才有证据。
+
+**`verify_proxy_exe.py` 同理，但它验的是打包后的 exe**：先把 exe 里的字节码掏出来
+查代理代码和 PySocks 有没有真的打进去（PySide6 打包最容易出现的失败是「源码有、
+exe 里没有」），再启动 exe 用剪贴板真粘两行代理、点「导入」，最后**去读 exe 自己写的
+`dist/config.json`** 断言两条都落库了 —— 不看截图找特征，看数据。跑完会把
+`dist/config.json` 还原。

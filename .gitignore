@@ -6,12 +6,21 @@ dist/
 dist_new/
 *.apk
 *.exe
+#
+# spec 例外：build_exe.py 是「读」spec 而不是生成 spec 的，
+# 仓库里没有它就跑不了打包；而且 hiddenimports=['dewu_proxies','socks']
+# 就在里面 —— 少了这行，打出来的 exe 一开 socks 代理就报
+# "Missing dependencies for SOCKS support"。所以这个文件必须入库。
 *.spec
+!得物整点抢兑助手.spec
 *.png
 *.jpg
 *.jpeg
 *.gif
 *.ico
+# app.ico 同样要入库：spec 里 datas=[(app.ico,'.')] + icon=['app.ico'] 都指着它，
+# 缺了它就打不了包（或打出来任务栏是系统默认图标）。161KB，值。
+!app.ico
 icon_src/
 
 # ---------------- 运行期数据（含账号 token，绝不入库） ----------------
