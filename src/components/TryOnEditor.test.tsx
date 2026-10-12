@@ -59,6 +59,25 @@ describe('人物换装编辑器', () => {
     vi.unstubAllGlobals()
   })
 
+  it('粘贴图片按所在区域分别放入人物和商品，普通文字不拦截', async () => {
+    await render()
+    for (const [label, result] of [['人物图', person], ['商品图', product]] as const) {
+      state.upload.mockResolvedValueOnce(result)
+      const target = el.querySelector(`[aria-label="${label}粘贴区域"]`)!
+      const event = new Event('paste', { bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'clipboardData', { value: { files: [new File(['image'], `${label}.png`, { type: 'image/png' })], items: [] } })
+      await act(async () => target.dispatchEvent(event))
+      expect(event.defaultPrevented).toBe(true)
+    }
+    expect(state.upload).toHaveBeenCalledTimes(2)
+    expect(el.querySelector('[alt="人物参考图"]')).not.toBeNull()
+    expect(el.querySelector('[alt="商品参考图"]')).not.toBeNull()
+    const event = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'clipboardData', { value: { files: [], items: [] } })
+    await act(async () => el.querySelector('textarea')!.dispatchEvent(event))
+    expect(event.defaultPrevented).toBe(false)
+  })
+
   it('必须上传两种参考图，不会把其他创作台的图片默认为人物或商品', async () => {
     await render()
     expect(el.querySelector<HTMLButtonElement>('[aria-label="生成种草图"]')?.disabled).toBe(true)

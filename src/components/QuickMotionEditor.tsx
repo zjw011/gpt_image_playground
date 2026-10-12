@@ -7,6 +7,8 @@ import { createInputImageFromFile, submitQuickMotionTask, useStore } from '../st
 import { IconSparkle, IconUpload } from '../pages/icons'
 import QuickMotionPlayer from './QuickMotionPlayer'
 import ProfessionalStep from './ProfessionalStep'
+import ImagePasteButton from './ImagePasteButton'
+import { pasteImages } from '../lib/imagePaste'
 
 const EFFECTS: Array<{ key: QuickMotionOptions['effect'], label: string, description: string }> = [
   { key: 'zoom', label: '轻微缩放', description: '缓慢推近，再轻轻回到原位' },
@@ -88,7 +90,7 @@ export default function QuickMotionEditor() {
   }
 
   return (
-    <section className="professional-editor">
+    <section className="professional-editor" onPaste={(event) => pasteImages(event, async (files) => { await upload(files[0]) })}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div><h2 className="text-2xl font-bold text-[#292650]">快速运镜</h2><p className="mt-2 text-sm leading-6 text-[#817b9f]">让原图轻轻动一下。无需 AI 重绘，人物、商品与细节保持原样。</p></div>
         <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-600">本地制作 · 0 积分</span>
@@ -107,6 +109,7 @@ export default function QuickMotionEditor() {
           </div>
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs text-[#918cae]">实时预览 · {options.duration} 秒 · 30 fps 导出</p>
+            <ImagePasteButton disabled={uploading || saving} upload={async (files) => { await upload(files[0]) }} />
             {image && <button type="button" disabled={uploading || saving} onClick={() => fileRef.current?.click()} className="min-h-11 rounded-xl border border-[#e5e1f3] bg-white px-4 py-2.5 text-xs font-semibold text-[#6b5ce7] hover:bg-[#f7f5ff] disabled:opacity-50">{uploading ? '读取中…' : '更换图片'}</button>}
           </div>
           <input id="quick-motion-upload" aria-label="上传运镜图片" ref={fileRef} type="file" accept="image/*" hidden onChange={(event) => { void upload(event.target.files?.[0]); event.target.value = '' }} />

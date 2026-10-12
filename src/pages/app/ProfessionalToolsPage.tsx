@@ -5,12 +5,14 @@ import { assetUrl } from '../../lib/assetUrl'
 import { IMAGE_RATIO_PRESETS as RATIOS } from '../../lib/size'
 import { useCreditsStore } from '../../lib/creditsStore'
 import type { ProfessionalPresetKey } from '../../lib/professionalTools'
-import { addImageFromFile, submitTask, useStore } from '../../store'
+import { createInputImageFromFile, submitTask, useStore } from '../../store'
 import { IconArrowLeft, IconArrowRight, IconMinus, IconPlus, IconSparkle, IconUpload, IconLayers, IconUser, IconImage, IconToolbox, IconCheck } from '../icons'
 import AppShell from './AppShell'
 import QuickMotionEditor from '../../components/QuickMotionEditor'
 import TryOnEditor from '../../components/TryOnEditor'
 import ProfessionalStep from '../../components/ProfessionalStep'
+import ImagePasteButton from '../../components/ImagePasteButton'
+import { pasteImages } from '../../lib/imagePaste'
 import './professionalTools.css'
 
 type ToolKey = 'ecommerce' | 'product-suite' | 'live' | 'try-on'
@@ -66,6 +68,8 @@ function ProductImageEditor({ tool }: { tool: 'ecommerce' | 'product-suite' }) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputImages = useStore((s) => s.inputImages)
   const clearInputImages = useStore((s) => s.clearInputImages)
+  const setInputImages = useStore((s) => s.setInputImages)
+  const uploadBusy = useRef(false)
   const setPrompt = useStore((s) => s.setPrompt)
   const params = useStore((s) => s.params)
   const setParams = useStore((s) => s.setParams)
@@ -80,11 +84,19 @@ function ProductImageEditor({ tool }: { tool: 'ecommerce' | 'product-suite' }) {
   const currentRatio = RATIOS.find((ratio) => ratio.size === params.size)?.label
   const cost = credits ? credits.costPerImage * count : 0
 
-  const upload = async (files: FileList | null) => {
+  const upload = async (files: FileList | File[] | null) => {
     const file = files?.[0]
-    if (!file) return
-    clearInputImages()
-    await addImageFromFile(file)
+    if (!file || uploadBusy.current || submitting) return
+    uploadBusy.current = true
+    try {
+      const image = await createInputImageFromFile(file)
+      if (image) setInputImages([image])
+    } catch (err) {
+      console.warn('商品图片读取失败', err)
+      showToast('图片读取失败，请重新复制图片或选择本地文件', 'error')
+    } finally {
+      uploadBusy.current = false
+    }
   }
 
   const generate = async () => {
@@ -108,7 +120,7 @@ function ProductImageEditor({ tool }: { tool: 'ecommerce' | 'product-suite' }) {
 
   const selected = options.find((item) => item.key === scene)!
   return (
-    <section>
+    <section onPaste={(event) => pasteImages(event, upload)}>
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3 px-1">
         <div><h2 className="text-xl font-bold tracking-tight text-[#292650] sm:text-2xl">{title}</h2><p className="mt-1.5 text-xs leading-6 text-[#9187ac] sm:text-sm">{subtitle}</p></div>
         <span className="rounded-full border border-[#e9e2f7] bg-white px-3 py-1.5 text-xs text-[#817695]">{credits ? `预计 ${cost} 积分` : '按当前渠道计费'}</span>
@@ -117,9 +129,10 @@ function ProductImageEditor({ tool }: { tool: 'ecommerce' | 'product-suite' }) {
         <div className="professional-panel min-w-0 space-y-7 p-4 sm:p-6">
           <div>
             <ProfessionalStep step={1}>上传商品图</ProfessionalStep>
+            <div className="mt-3 flex flex-wrap items-center gap-2"><ImagePasteButton upload={upload} disabled={submitting} /><span className="text-xs text-[#918cae]">也可 Ctrl+V / ⌘V 粘贴图片</span></div>
             <div className="mt-4 grid grid-cols-2 gap-3">
               <button type="button" aria-label="上传商品图片" onClick={() => fileInputRef.current?.click()} className="group relative flex aspect-[4/3] min-w-0 flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl border-2 border-dashed border-[#dcd2f6] bg-[#faf8ff] px-2 text-[#8d86aa] transition hover:border-[#aa8ff8] hover:bg-[#f3eeff]">
-                {inputImages[0] ? <img src={inputImages[0].dataUrl} alt="商品原图" className="h-full w-full object-contain p-2" /> : <><span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#eee7ff] text-[#8c6cf5]"><IconUpload className="h-5 w-5" /></span><span className="text-xs font-semibold">上传商品图片</span></>}
+                {inputImages[0]?.dataUrl ? <img src={inputImages[0].dataUrl} alt="商品原图" className="h-full w-full object-contain p-2" /> : <><span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#eee7ff] text-[#8c6cf5]"><IconUpload className="h-5 w-5" /></span><span className="text-xs font-semibold">上传商品图片</span></>}
               </button>
               <div className="flex min-w-0 flex-col justify-center rounded-2xl border border-[#f0eafa] bg-gradient-to-br from-[#fcfaff] to-[#f5f0ff] p-3 sm:p-4">
                 <span className="text-xs font-bold text-[#74658f]">好素材，才有好设计</span>
@@ -175,7 +188,8 @@ function AiLiveEditor() {
   const navigate = useNavigate()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputImages = useStore((s) => s.inputImages)
-  const clearInputImages = useStore((s) => s.clearInputImages)
+  const setInputImages = useStore((s) => s.setInputImages)
+  const uploadBusy = useRef(false)
   const setPrompt = useStore((s) => s.setPrompt)
   const params = useStore((s) => s.params)
   const setParams = useStore((s) => s.setParams)
@@ -195,11 +209,19 @@ function AiLiveEditor() {
   const currentRatio = RATIOS.find((ratio) => ratio.size === params.size)?.label
   const cost = credits ? credits.costPerImage * frameCount : 0
 
-  const upload = async (files: FileList | null) => {
+  const upload = async (files: FileList | File[] | null) => {
     const file = files?.[0]
-    if (!file) return
-    clearInputImages()
-    await addImageFromFile(file)
+    if (!file || uploadBusy.current || submitting) return
+    uploadBusy.current = true
+    try {
+      const image = await createInputImageFromFile(file)
+      if (image) setInputImages([image])
+    } catch (err) {
+      console.warn('Live 图片读取失败', err)
+      showToast('图片读取失败，请重新复制图片或选择本地文件', 'error')
+    } finally {
+      uploadBusy.current = false
+    }
   }
 
   const generate = async () => {
@@ -219,14 +241,15 @@ function AiLiveEditor() {
   }
 
   return (
-    <section className="professional-editor">
+    <section className="professional-editor" onPaste={(event) => pasteImages(event, upload)}>
       <div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="text-2xl font-bold text-[#292650]">Live 实况图</h2><p className="mt-2 text-sm text-[#817b9f]">AI 逐帧生成 6–8 张连续画面，每张完成后作为下一帧参考，结果页自动补帧播放并可下载短视频。</p></div><span className="rounded-full bg-[#fff6e5] px-3 py-1.5 text-xs font-semibold text-[#b67922]">串行连续帧 · {frameCount} 张</span></div>
       <div className="mt-6 grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <button type="button" onClick={() => fileInputRef.current?.click()} className="professional-panel relative flex min-h-[260px] min-w-0 items-center justify-center overflow-hidden border-2 border-dashed border-[#d9d4ef] bg-[#faf8ff] lg:order-2 sm:min-h-[480px]">
-          {inputImages[0] ? <img src={inputImages[0].dataUrl} alt="Live 参考图" className="h-full min-h-[260px] w-full object-contain sm:min-h-[480px]" /> : <span className="flex flex-col items-center gap-3 px-3 text-[#8d86aa]"><span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-[#6b5ce7] shadow-sm"><IconUpload className="h-7 w-7" /></span><span className="text-sm font-semibold">上传一张图片开始制作</span><span className="text-xs text-[#aaa5bf]">人物、宠物或轻微环境动态效果更自然</span></span>}
+          {inputImages[0]?.dataUrl ? <img src={inputImages[0].dataUrl} alt="Live 参考图" className="h-full min-h-[260px] w-full object-contain sm:min-h-[480px]" /> : <span className="flex flex-col items-center gap-3 px-3 text-[#8d86aa]"><span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-[#6b5ce7] shadow-sm"><IconUpload className="h-7 w-7" /></span><span className="text-sm font-semibold">上传一张图片开始制作</span><span className="text-xs text-[#aaa5bf]">人物、宠物或轻微环境动态效果更自然</span></span>}
           {inputImages[0] && <span className="absolute bottom-4 right-4 rounded-full bg-black/55 px-3 py-1.5 text-xs font-medium text-white backdrop-blur">点击更换图片</span>}
         </button>
         <div className="professional-panel flex min-w-0 flex-col p-4 lg:order-1 sm:p-6">
+          <div className="mb-4 flex flex-wrap items-center gap-2"><ImagePasteButton upload={upload} disabled={submitting} /><span className="text-xs text-[#918cae]">也可 Ctrl+V / ⌘V 粘贴图片</span></div>
           <ProfessionalStep step={1}>轻微动态</ProfessionalStep><div className="mt-4 space-y-2">{motions.map((item) => <button key={item.key} type="button" aria-pressed={motion === item.key} onClick={() => setMotion(item.key)} className={`w-full rounded-2xl border-2 p-4 text-left transition ${motion === item.key ? 'border-[#b29cf7] bg-gradient-to-r from-[#f3edff] to-[#fcfaff]' : 'border-[#ebe8f4] bg-[#fcfaff] hover:border-[#c6bff5]'}`}><span className={`text-sm font-bold ${motion === item.key ? 'text-[#6b5ce7]' : 'text-[#423d63]'}`}>{item.label}</span><span className="mt-1 block text-[11px] text-[#918cae]">{item.description}</span></button>)}</div>
           <div className="mt-6"><ProfessionalStep step={2}>AI 关键帧</ProfessionalStep></div><div className="mt-3 grid grid-cols-2 gap-2">{frameOptions.map((count) => <button key={count} type="button" aria-pressed={frameCount === count} onClick={() => setFrameCount(count)} className={`min-h-11 rounded-xl py-2.5 text-xs font-semibold transition ${frameCount === count ? 'bg-gradient-to-r from-[#8c6cf5] to-[#a681f5] text-white' : 'bg-[#f5f3fb] text-[#77718f] hover:bg-[#ece9fc]'}`}>{count} 张{count === 8 ? ' · 更自然' : ' · 更省积分'}</button>)}</div>
           <div className="mt-6"><ProfessionalStep step={3}>画面比例</ProfessionalStep></div><div className="mt-3 flex flex-wrap gap-2">{RATIOS.map((ratio) => <button key={ratio.label} type="button" aria-pressed={currentRatio === ratio.label} onClick={() => setParams({ size: ratio.size })} className={`min-h-11 rounded-xl border px-3 py-2 text-xs font-semibold transition ${currentRatio === ratio.label ? 'border-[#baa4f7] bg-[#efe8ff] text-[#7755df]' : 'border-[#eee8f7] bg-[#f8f5fc] text-[#9687a9] hover:bg-[#eee7fa]'}`}>{ratio.label}</button>)}</div>

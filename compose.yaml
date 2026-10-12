@@ -47,6 +47,8 @@ services:
     build:
       context: .
       dockerfile: deploy/watermark/Dockerfile
+      args:
+        PIP_INDEX_URL: '${GIP_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}'
     restart: unless-stopped
     init: true
     read_only: true

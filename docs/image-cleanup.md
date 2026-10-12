@@ -11,6 +11,8 @@
 
 ## 上游与许可
 
+- 水印镜像构建默认使用阿里云 HTTPS PyPI 镜像，读取超时设为 120 秒、连接重试 5 次，整个安装失败最多重跑 3 次；仅接受二进制 wheel，避免服务器临时编译 OpenCV。仍启用 TLS 证书校验，不使用 `trusted-host`，依赖版本保持固定。可在 `.env` 设置 `GIP_PIP_INDEX_URL` 覆盖下载源；不要把带账号口令的私有源 URL 写入构建参数。慢网下载超时不是主站编译失败，不要通过清空数据卷或删除依赖解决。
+
 - 上游：[wiltodelta/remove-ai-watermarks](https://github.com/wiltodelta/remove-ai-watermarks)，固定 `remove-ai-watermarks[visible]==0.44.0`；代码许可为 [Apache-2.0](https://github.com/wiltodelta/remove-ai-watermarks/blob/main/LICENSE)。安装分发包自带上游许可，镜像保留其安装目录内的声明。没有复制上游代码或安装其 Agent Skill。
 - 调用 `remove_visible_detailed` 数组 API，显式 `backend='cv2'`、`sensitivity='strict'`、`strip_metadata=False`。不调用 `remove_all`、隐形水印扩散流程或元数据清理函数。模板支持与限制由上游版本决定，不保证识别所有渠道标记，也不保证无修补痕迹。
 - CPU OpenCV 会对识别区域修补，可能影响水印下的纹理，需人工检查。只交付 `cleaned` 修补结果；`partial` / `unvalidated` / `no_watermark` 均保留原图并明确提示。

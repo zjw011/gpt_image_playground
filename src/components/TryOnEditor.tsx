@@ -9,6 +9,8 @@ import { normalizeTryOnOptions, validateTryOnImageData } from '../lib/tryOn'
 import { createInputImageFromFile, submitTryOnTask, useStore } from '../store'
 import { IconArrowRight, IconCheck, IconMinus, IconPlus, IconSparkle, IconTrash, IconUpload } from '../pages/icons'
 import ProfessionalStep from './ProfessionalStep'
+import ImagePasteButton from './ImagePasteButton'
+import { pasteImages } from '../lib/imagePaste'
 
 const MODES = [
   { key: 'wear', label: '上身穿搭', note: '穿衣 · 穿鞋 · 搭配包饰' },
@@ -175,7 +177,7 @@ export default function TryOnEditor() {
         <div className="professional-panel min-w-0 p-4 sm:p-6">
           <div className="grid grid-cols-2 gap-3 sm:gap-4">
             {([{ role: 'person', label: '人物图', hint: '保留这个人：面部清晰，半身或全身照更好', ref: personRef }, { role: 'product', label: secondLabel, hint: referenceMode ? '参考这张图：可以是穿搭照，不会借用对方的脸' : '使用这件商品：单品或上身照，细节清晰', ref: productRef }] as const).map((item) => (
-              <div key={item.role} className="min-w-0">
+              <div key={item.role} tabIndex={0} aria-label={`${item.label}粘贴区域`} className="min-w-0 rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8c7cf7]" onPaste={(event) => pasteImages(event, async (files) => { await upload(item.role, files[0]) })}>
                 <div className="mb-3"><ProfessionalStep step={item.role === 'person' ? 1 : 2}>{item.label}</ProfessionalStep></div>
                 <button type="button" aria-label={`选择${item.label}`} disabled={busy || uploading[item.role]} onClick={() => item.ref.current?.click()} className="group relative flex aspect-[3/4] w-full flex-col items-center justify-center gap-3 overflow-hidden rounded-2xl border-2 border-dashed border-[#d6cff0] bg-white transition hover:border-[#8c7cf7] hover:bg-[#faf8ff] disabled:opacity-60">
                   {images[item.role]
@@ -183,6 +185,8 @@ export default function TryOnEditor() {
                     : <><span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#efedfd] text-[#6b5ce7]"><IconUpload className="h-5 w-5" /></span><span className="px-2 text-center text-xs font-semibold text-[#746e91]">{restoring ? '恢复参考图…' : uploading[item.role] ? '正在读取…' : `上传${item.label}`}</span></>}
                 </button>
                 <p className="mt-2 min-h-10 text-[11px] leading-5 text-[#918cae]">{item.hint}</p>
+                <ImagePasteButton disabled={busy || uploading[item.role]} label={`粘贴${item.label}`} upload={async (files) => { await upload(item.role, files[0]) }} />
+                <p className="my-2 text-[11px] text-[#918cae]">选中此上传区域后 Ctrl+V / ⌘V</p>
                 {images[item.role] && <button type="button" aria-label={`移除${item.label}`} disabled={busy || uploading[item.role]} onClick={() => setImages((current) => ({ ...current, [item.role]: null }))} className="flex min-h-11 w-full items-center justify-center gap-1.5 rounded-xl border border-[#e5def2] bg-white text-xs text-[#817695] transition hover:border-[#c6b8ed] hover:text-[#6b5ce7] disabled:opacity-50"><IconTrash className="h-3.5 w-3.5" />移除图片</button>}
                 <input ref={item.ref} id={`try-on-${item.role}`} aria-label={`上传${item.role === 'person' ? '人物' : referenceMode ? '爆款参考' : '商品'}图片`} type="file" accept="image/*" hidden onChange={(event) => { void upload(item.role, event.target.files?.[0]); event.target.value = '' }} />
               </div>

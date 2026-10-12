@@ -6,6 +6,8 @@ import { useStore } from '../../store'
 import type { TaskRecord } from '../../types'
 import { fetchCredits, getBackendUser, getCreditsConfig, getInviteInfo, submitFrontLogout, submitUserProfile, type BackendLedgerType } from '../../lib/backend'
 import { copyTextToClipboard } from '../../lib/clipboard'
+import { pasteImages } from '../../lib/imagePaste'
+import ImagePasteButton from '../../components/ImagePasteButton'
 import { useCreditsStore } from '../../lib/creditsStore'
 import { prepareProfileAvatar } from '../../lib/profileImage'
 import { useCloseOnEscape } from '../../hooks/useCloseOnEscape'
@@ -150,9 +152,9 @@ export default function MePage() {
     setProfileOpen(true)
   }
 
-  const selectAvatar = async (files: FileList | null) => {
+  const selectAvatar = async (files: FileList | File[] | null) => {
     const file = files?.[0]
-    if (!file) return
+    if (!file || uploadingAvatar || savingProfile) return
     setUploadingAvatar(true)
     try {
       setProfileAvatar(await prepareProfileAvatar(file))
@@ -469,13 +471,14 @@ export default function MePage() {
               <button type="button" disabled={savingProfile} onClick={() => setProfileOpen(false)} className="flex h-8 w-8 items-center justify-center rounded-full text-xl text-[#a5a1c4] hover:bg-[#f6f4fc]">×</button>
             </div>
             <div className="p-6">
-              <div className="flex flex-col items-center">
+              <div className="flex flex-col items-center" onPaste={(event) => pasteImages(event, selectAvatar)}>
                 <button type="button" disabled={uploadingAvatar} onClick={() => avatarInputRef.current?.click()} className="group relative h-24 w-24 overflow-hidden rounded-full bg-gradient-to-br from-[#7c6cf6] to-[#a78bfa] text-3xl font-bold text-white ring-4 ring-[#efedfd]">
                   {profileAvatar ? <img src={profileAvatar} alt="头像预览" className="h-full w-full object-cover" /> : profileName.trim().slice(0, 1) || user.username.slice(0, 1)}
                   <span className="absolute inset-0 flex items-center justify-center bg-black/45 text-xs font-semibold opacity-0 transition group-hover:opacity-100"><IconUpload className="mr-1 h-4 w-4" />更换</span>
                 </button>
                 <div className="mt-3 flex items-center gap-3 text-xs">
                   <button type="button" disabled={uploadingAvatar} onClick={() => avatarInputRef.current?.click()} className="font-semibold text-[#6b5ce7]">{uploadingAvatar ? '处理中…' : '上传头像'}</button>
+                  <ImagePasteButton upload={selectAvatar} disabled={uploadingAvatar || savingProfile} label="粘贴头像" />
                   {profileAvatar && <button type="button" onClick={() => setProfileAvatar('')} className="flex items-center gap-1 text-red-400 hover:text-red-500"><IconTrash className="h-3.5 w-3.5" />移除</button>}
                 </div>
                 <input ref={avatarInputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => { void selectAvatar(event.target.files); event.target.value = '' }} />

@@ -7,6 +7,8 @@ import { assetUrl } from '../../lib/assetUrl'
 import { IMAGE_RATIO_PRESETS as RATIOS } from '../../lib/size'
 import { STYLE_PRESETS, type StylePresetKey } from '../../lib/stylePresets'
 import AppShell from './AppShell'
+import ImagePasteButton from '../../components/ImagePasteButton'
+import { pasteImages } from '../../lib/imagePaste'
 import { useThumbnail } from './useTaskImage'
 import { IconImage, IconSparkle, IconUpload, IconBrush, IconArrowRight, IconPlus, IconMinus, IconEdit } from '../icons'
 
@@ -71,9 +73,14 @@ export default function StudioPage() {
   const currentRatio = RATIOS.find((ratio) => ratio.size === params.size)?.label
   const recentTasks = tasks.filter((task) => task.status === 'done' && task.outputImages.length > 0).slice(0, 6)
 
-  const pickFiles = async (files: FileList | null) => {
+  const pickFiles = async (files: FileList | File[] | null) => {
     if (!files) return
-    for (const file of Array.from(files)) await addImageFromFile(file)
+    try {
+      for (const file of Array.from(files)) await addImageFromFile(file)
+    } catch (err) {
+      console.warn('参考图读取失败', err)
+      showToast('图片读取失败，请重新复制图片或选择本地文件', 'error')
+    }
   }
 
   const generate = async () => {
@@ -94,7 +101,7 @@ export default function StudioPage() {
 
   return (
     <AppShell title="AI 绘画" wide>
-      <div className="relative overflow-hidden rounded-[28px] border border-[#e8e5f7] bg-gradient-to-br from-white via-[#fbfaff] to-[#f0efff] p-4 shadow-sm sm:p-6">
+      <div onPaste={(event) => pasteImages(event, pickFiles)} className="relative overflow-hidden rounded-[28px] border border-[#e8e5f7] bg-gradient-to-br from-white via-[#fbfaff] to-[#f0efff] p-4 shadow-sm sm:p-6">
         <div className="pointer-events-none absolute -right-24 top-10 h-72 w-72 rounded-full bg-[#c4bcff]/20 blur-3xl" />
         <div className="relative">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -148,6 +155,8 @@ export default function StudioPage() {
               <button type="button" onClick={() => fileInputRef.current?.click()} className="flex items-center gap-1.5 rounded-lg bg-[#f7f6fc] px-3 py-2 text-xs font-medium text-[#615c7f] transition hover:bg-[#efedfd] hover:text-[#6b5ce7]">
                 <IconUpload className="h-4 w-4" />参考图{tab === 'text' ? '（可选）' : ''}
               </button>
+              <ImagePasteButton upload={pickFiles} label="粘贴参考图" />
+              <span className="text-[11px] text-[#918cae]">也可直接 Ctrl+V / ⌘V 粘贴图片</span>
               <button type="button" onClick={() => setPrompt(RANDOM_PROMPTS[Math.floor(Math.random() * RANDOM_PROMPTS.length)])} className="flex items-center gap-1.5 rounded-lg bg-[#fff8ed] px-3 py-2 text-xs font-medium text-[#b67a2c] transition hover:bg-[#ffefd5]">
                 <IconSparkle className="h-4 w-4" />随机灵感
               </button>
@@ -164,7 +173,7 @@ export default function StudioPage() {
             <div className="mt-3 flex flex-wrap items-center gap-2.5 rounded-2xl border border-[#e8e5f5] bg-white/80 p-3">
               {inputImages.map((img, idx) => (
                 <div key={img.id} className="group relative h-16 w-16 overflow-hidden rounded-xl border border-[#e4e1f2]">
-                  <img src={img.dataUrl} alt="" className="h-full w-full object-cover" />
+                  {img.dataUrl && <img src={img.dataUrl} alt="" className="h-full w-full object-cover" />}
                   <div className="absolute inset-0 flex items-center justify-center gap-1 bg-black/45 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
                     {tab === 'inpaint' && <button type="button" onClick={() => setMaskEditorImageId(img.id)} title="涂抹遮罩" className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/90 text-[#6b5ce7]"><IconEdit className="h-3.5 w-3.5" /></button>}
                     <button type="button" onClick={() => removeInputImage(idx)} title="移除" className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/90 text-red-500"><IconMinus className="h-3.5 w-3.5" /></button>
