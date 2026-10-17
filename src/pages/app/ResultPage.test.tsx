@@ -12,7 +12,7 @@ import ResultPage from './ResultPage'
 const state = vi.hoisted(() => ({
   tasks: [] as TaskRecord[],
   backend: false,
-  user: null as { id: string } | null,
+  user: null as { id: string; role?: 'admin' | 'user' } | null,
   fullSrc: null as string | null,
   fullSources: {} as Record<string, string>,
   getImage: vi.fn(),
@@ -119,7 +119,7 @@ describe('ResultPage', () => {
     expect(regenerate).toBeTruthy()
     vi.mocked(submitTask).mockResolvedValueOnce(false)
     await act(async () => regenerate.click())
-    expect(reuseConfig).toHaveBeenCalledWith(state.tasks[0])
+    expect(reuseConfig).toHaveBeenCalledWith(state.tasks[0], undefined)
     expect(submitTask).toHaveBeenCalledOnce()
     expect(container.querySelector('output')?.textContent).toBe('/result?task=partial-task')
   })
@@ -134,7 +134,8 @@ describe('ResultPage', () => {
     const details = container.querySelector('details')!
     expect(details).toBeTruthy()
     expect(details.open).toBe(false)
-    expect(details.textContent).toContain('后续图片未能完成')
+    expect(details.textContent).toContain('查看处理建议')
+    expect(details.textContent).toContain('暂时未能完成生成')
     expect(container.textContent).not.toContain('这次没有生成成功')
     expect(container.textContent).not.toContain('仍未生成图片')
     expect(container.textContent).not.toContain('本次失败不会扣除积分')
@@ -153,6 +154,82 @@ describe('ResultPage', () => {
     expect(submitTask).not.toHaveBeenCalled()
     expect(reuseConfig).not.toHaveBeenCalled()
     expect(state.publishWork).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { patch: {}, path: '/studio?mode=image' },
+    { patch: { maskImageId: 'mask' }, path: '/studio?mode=inpaint' },
+    { patch: { professionalPreset: 'ecommerce-luxury' }, path: '/tools?tool=ecommerce&task=partial-task' },
+    { patch: { professionalPreset: 'product-suite-social' }, path: '/tools?tool=product-suite&task=partial-task' },
+    { patch: { professionalPreset: 'live-breeze', liveFrameCount: 8 }, path: '/tools?tool=live&liveMode=ai&task=partial-task' },
+  ])('旧记录参考图过大时给出中文说明，返回 $path 调整而非直接重试扣费', async ({ patch, path }) => {
+    state.backend = true
+    state.user = { id: 'u-1', role: 'user' }
+    const error = '已尝试 2 个渠道，全部失败：\n1. 内部渠道名称ABC：HTTP 400: {"error":{"message":"invalid request: file too large"}}'
+    state.tasks = [task({ ...patch, inputImageIds: ['original-reference'], status: 'error', outputImages: [], error })]
+    await act(async () => root.render(<MemoryRouter initialEntries={['/result?task=partial-task']}><ResultPage /><Location /></MemoryRouter>))
+    expect(container.textContent).toContain('参考图片过大，请调整后再试')
+    expect(container.textContent).toContain('请缩小或压缩图片，也可减少参考图数量后重试')
+    expect(container.textContent).toContain('本次失败不会扣除积分')
+    expect(container.textContent).not.toContain('内部渠道名称ABC')
+    expect(container.textContent).not.toContain('HTTP 400')
+    expect(container.textContent).not.toContain('标准 1:1')
+    expect(container.querySelector('details')).toBeNull()
+    expect(state.tasks[0].error).toBe(error)
+    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '返回调整参考图')?.click())
+    expect(reuseConfig).toHaveBeenCalledWith(state.tasks[0], { editOnly: true })
+    expect(submitTask).not.toHaveBeenCalled()
+    expect(container.querySelector('output')?.textContent).toBe(path)
+  })
+
+  it('换装图片过大时恢复专用任务编辑器，不提交新的任务', async () => {
+    state.backend = true
+    state.user = { id: 'u-1' }
+    state.tasks = [task({ status: 'error', outputImages: [], error: 'HTTP 413', professionalPreset: 'try-on', tryOn: { mode: 'wear', category: 'clothing', scene: 'street', pose: 'natural' } })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /><Location /></MemoryRouter>))
+    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '调整参考图')?.click())
+    expect(container.querySelector('output')?.textContent).toBe('/tools?tool=try-on&task=partial-task')
+    expect(reuseConfig).not.toHaveBeenCalled()
+    expect(submitTask).not.toHaveBeenCalled()
+  })
+
+  it('管理员仍可查看原始错误，提示不会把文件大小误识别为输出尺寸', async () => {
+    state.backend = true
+    state.user = { id: 'admin-1', role: 'admin' }
+    state.tasks = [task({ status: 'error', outputImages: [], error: 'HTTP 400: file size exceeds limit' })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    expect(container.textContent).toContain('参考图片过大')
+    expect(container.textContent).not.toContain('标准 1:1')
+    expect(container.querySelector('details')?.textContent).toContain('HTTP 400: file size exceeds limit')
+  })
+
+  it('部分完成的大小错误保留已有图片，不承诺整单不扣分且不暴露原始渠道诊断', async () => {
+    state.backend = true
+    state.user = { id: 'u-1' }
+    state.fullSrc = 'data:image/png;base64,retained'
+    state.tasks = [task({ status: 'error', error: '内部渠道ABC：file too large' })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('已保留 1')
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('参考图片过大')
+    expect(container.textContent).not.toContain('内部渠道ABC')
+    expect(container.textContent).not.toContain('本次失败不会扣除积分')
+    expect(container.querySelector('img[alt="部分生成的画面"]')?.getAttribute('src')).toBe(state.fullSrc)
+    expect(submitTask).not.toHaveBeenCalled()
+  })
+
+  it('done 状态的后续帧超限也返回编辑，保留部分作品且不直接重新生成', async () => {
+    state.backend = true
+    state.user = { id: 'u-1' }
+    state.fullSrc = 'data:image/png;base64,retained'
+    state.tasks = [task({ professionalPreset: 'live-breeze', liveFrameCount: 6, outputErrors: [{ requestIndex: 1, error: 'HTTP 400: file too large' }] })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /><Location /></MemoryRouter>))
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('参考图片过大')
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('已保留 1')
+    expect(container.textContent).not.toContain('本次失败不会扣除积分')
+    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '调整参考图')?.click())
+    expect(reuseConfig).toHaveBeenCalledWith(state.tasks[0], { editOnly: true })
+    expect(submitTask).not.toHaveBeenCalled()
+    expect(container.querySelector('output')?.textContent).toBe('/tools?tool=live&liveMode=ai&task=partial-task')
   })
 
   it('失败 Live 只保存一帧时下载静态图片，不展示不可用的实况播放或导出', async () => {

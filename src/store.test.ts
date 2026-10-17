@@ -160,6 +160,13 @@ describe('error toast messages', () => {
   it('uses a generic message for long raw errors without a title', () => {
     expect(getErrorToastMessage(`invalid request ${'x'.repeat(90)}`)).toBe('操作失败，请查看详情')
   })
+
+  it('超限错误优先给出处理办法，不被失败标题吞掉或泄露原始诊断', () => {
+    expect(getErrorToastMessage('加入参考图失败：HTTP 400: file too large')).toContain('请缩小或压缩图片')
+    expect(getErrorToastMessage('HTTP 413: 内部渠道 ABC')).not.toContain('内部渠道')
+    const local = '参考图片过大（60.0 MB），单张上传上限为 50 MB。请压缩或缩小图片后重新上传。'
+    expect(getErrorToastMessage(local)).toBe(local)
+  })
 })
 
 function agentConversation(overrides: Partial<AgentConversation> = {}): AgentConversation {
@@ -5972,6 +5979,17 @@ describe('reused task API profile', () => {
       cancelText: '放弃提交',
     }))
     expect(state.showSettings).toBe(false)
+  })
+
+  it('仅返回编辑时不弹出缺失渠道的立即提交确认，也不残留旧渠道', async () => {
+    await reuseConfig(task({ apiProvider: 'fal', apiProfileId: 'missing-profile', prompt: '缩小图片后再生成' }), { editOnly: true })
+
+    const state = useStore.getState()
+    expect(state.prompt).toBe('缩小图片后再生成')
+    expect(state.reusedTaskApiProfileId).toBeNull()
+    expect(state.reusedTaskApiProfileMissing).toBe(false)
+    expect(state.setConfirmDialog).not.toHaveBeenCalled()
+    expect(state.tasks).toEqual([])
   })
 })
 

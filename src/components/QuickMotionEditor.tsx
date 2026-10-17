@@ -113,6 +113,7 @@ export default function QuickMotionEditor() {
             {image && <button type="button" disabled={uploading || saving} onClick={() => fileRef.current?.click()} className="min-h-11 rounded-xl border border-[#e5e1f3] bg-white px-4 py-2.5 text-xs font-semibold text-[#6b5ce7] hover:bg-[#f7f5ff] disabled:opacity-50">{uploading ? '读取中…' : '更换图片'}</button>}
           </div>
           <input id="quick-motion-upload" aria-label="上传运镜图片" ref={fileRef} type="file" accept="image/*" hidden onChange={(event) => { void upload(event.target.files?.[0]); event.target.value = '' }} />
+          <p className="mt-2 text-[11px] leading-5 text-[#918cae]">单张 ≤50 MB · 本地运镜保留原图</p>
         </div>
         <div className="professional-panel min-w-0 p-4 lg:order-1 sm:p-6">
           <ProfessionalStep step={1}>运镜效果</ProfessionalStep>

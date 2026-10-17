@@ -1,7 +1,7 @@
 {
   "name": "gpt-image-playground",
   "private": true,
-  "version": "0.8.19",
+  "version": "0.8.20",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -20,7 +20,8 @@
     "audit:quick-motion": "node scripts/audit-quick-motion.mjs",
     "audit:try-on": "node scripts/audit-try-on.mjs",
     "audit:image-cleanup": "node scripts/audit-image-cleanup.mjs",
-    "audit:image-paste": "node scripts/audit-image-paste.mjs"
+    "audit:image-paste": "node scripts/audit-image-paste.mjs",
+    "audit:image-size": "node scripts/audit-image-size.mjs"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.0",

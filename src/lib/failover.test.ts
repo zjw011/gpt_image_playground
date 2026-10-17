@@ -38,11 +38,16 @@ describe('isFailoverableError', () => {
     expect(isFailoverableError(new Error('图像输入有效负载总大小过大：600.0 MiB，上限为 512.0 MiB'))).toBe(false)
     expect(isFailoverableError(new Error('输入图片已不存在'))).toBe(false)
     expect(isFailoverableError(new Error('找不到此任务所使用的 API 配置。'))).toBe(false)
+    expect(isFailoverableError(new Error('参考图片过大，自动压缩后仍无法提交。请缩小图片后重新上传。'))).toBe(false)
+    expect(isFailoverableError(new Error('图片加载失败'))).toBe(false)
+    expect(isFailoverableError(new Error('图片导出失败'))).toBe(false)
+    expect(isFailoverableError(new Error('当前浏览器无法压缩参考图片，请手动缩小图片后重新上传'))).toBe(false)
   })
 
   it('上游报错与网络错误可以换渠道重试', () => {
     expect(isFailoverableError(new Error('HTTP 429: rate limit exceeded'))).toBe(true)
     expect(isFailoverableError(new Error('Failed to fetch'))).toBe(true)
+    expect(isFailoverableError(new Error('HTTP 400: file too large'))).toBe(true)
   })
 })
 

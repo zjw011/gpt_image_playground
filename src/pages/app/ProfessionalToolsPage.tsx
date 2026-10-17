@@ -5,6 +5,7 @@ import { assetUrl } from '../../lib/assetUrl'
 import { IMAGE_RATIO_PRESETS as RATIOS } from '../../lib/size'
 import { useCreditsStore } from '../../lib/creditsStore'
 import type { ProfessionalPresetKey } from '../../lib/professionalTools'
+import type { TaskRecord } from '../../types'
 import { createInputImageFromFile, submitTask, useStore } from '../../store'
 import { IconArrowLeft, IconArrowRight, IconMinus, IconPlus, IconSparkle, IconUpload, IconLayers, IconUser, IconImage, IconToolbox, IconCheck } from '../icons'
 import AppShell from './AppShell'
@@ -63,7 +64,7 @@ function ToolLanding() {
   )
 }
 
-function ProductImageEditor({ tool }: { tool: 'ecommerce' | 'product-suite' }) {
+function ProductImageEditor({ tool, saved }: { tool: 'ecommerce' | 'product-suite'; saved?: TaskRecord }) {
   const navigate = useNavigate()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputImages = useStore((s) => s.inputImages)
@@ -77,9 +78,9 @@ function ProductImageEditor({ tool }: { tool: 'ecommerce' | 'product-suite' }) {
   const credits = getCreditsConfig()
   const view = useCreditsStore((s) => s.view)
   const options = tool === 'ecommerce' ? ECOMMERCE_SCENES : SUITE_SCENES
-  const [scene, setScene] = useState<ProfessionalPresetKey>(options[0].key)
-  const [description, setDescription] = useState('')
-  const [count, setCount] = useState(tool === 'ecommerce' ? 1 : 4)
+  const [scene, setScene] = useState<ProfessionalPresetKey>(options.find((item) => item.key === saved?.professionalPreset)?.key ?? options[0].key)
+  const [description, setDescription] = useState(saved?.prompt ?? '')
+  const [count, setCount] = useState(saved ? Math.max(1, Math.min(4, saved.params.n)) : tool === 'ecommerce' ? 1 : 4)
   const [submitting, setSubmitting] = useState(false)
   const currentRatio = RATIOS.find((ratio) => ratio.size === params.size)?.label
   const cost = credits ? credits.costPerImage * count : 0
@@ -93,7 +94,7 @@ function ProductImageEditor({ tool }: { tool: 'ecommerce' | 'product-suite' }) {
       if (image) setInputImages([image])
     } catch (err) {
       console.warn('商品图片读取失败', err)
-      showToast('图片读取失败，请重新复制图片或选择本地文件', 'error')
+      showToast(err instanceof Error ? err.message : '图片读取失败，请重新复制图片或选择本地文件', 'error')
     } finally {
       uploadBusy.current = false
     }
@@ -130,6 +131,7 @@ function ProductImageEditor({ tool }: { tool: 'ecommerce' | 'product-suite' }) {
           <div>
             <ProfessionalStep step={1}>上传商品图</ProfessionalStep>
             <div className="mt-3 flex flex-wrap items-center gap-2"><ImagePasteButton upload={upload} disabled={submitting} /><span className="text-xs text-[#918cae]">也可 Ctrl+V / ⌘V 粘贴图片</span></div>
+            <p className="mt-2 text-[11px] leading-5 text-[#918cae]">单张 ≤50 MB · 大图提交时优化副本，原图保留</p>
             <div className="mt-4 grid grid-cols-2 gap-3">
               <button type="button" aria-label="上传商品图片" onClick={() => fileInputRef.current?.click()} className="group relative flex aspect-[4/3] min-w-0 flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl border-2 border-dashed border-[#dcd2f6] bg-[#faf8ff] px-2 text-[#8d86aa] transition hover:border-[#aa8ff8] hover:bg-[#f3eeff]">
                 {inputImages[0]?.dataUrl ? <img src={inputImages[0].dataUrl} alt="商品原图" className="h-full w-full object-contain p-2" /> : <><span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#eee7ff] text-[#8c6cf5]"><IconUpload className="h-5 w-5" /></span><span className="text-xs font-semibold">上传商品图片</span></>}
@@ -184,7 +186,7 @@ function ProductImageEditor({ tool }: { tool: 'ecommerce' | 'product-suite' }) {
   )
 }
 
-function AiLiveEditor() {
+function AiLiveEditor({ saved }: { saved?: TaskRecord }) {
   const navigate = useNavigate()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputImages = useStore((s) => s.inputImages)
@@ -197,9 +199,9 @@ function AiLiveEditor() {
   const credits = getCreditsConfig()
   const view = useCreditsStore((s) => s.view)
   const frameOptions = [6, 8]
-  const [motion, setMotion] = useState<ProfessionalPresetKey>('live-blink')
-  const [frameCount, setFrameCount] = useState(frameOptions[frameOptions.length - 1])
-  const [description, setDescription] = useState('')
+  const [motion, setMotion] = useState<ProfessionalPresetKey>(saved?.professionalPreset === 'live-breeze' || saved?.professionalPreset === 'live-breath' ? saved.professionalPreset : 'live-blink')
+  const [frameCount, setFrameCount] = useState(saved?.liveFrameCount === 6 ? 6 : 8)
+  const [description, setDescription] = useState(saved?.prompt ?? '')
   const [submitting, setSubmitting] = useState(false)
   const motions: Array<{ key: ProfessionalPresetKey, label: string, description: string }> = [
     { key: 'live-blink', label: '自然眨眼', description: '眼神和眼睑发生极轻微变化' },
@@ -218,7 +220,7 @@ function AiLiveEditor() {
       if (image) setInputImages([image])
     } catch (err) {
       console.warn('Live 图片读取失败', err)
-      showToast('图片读取失败，请重新复制图片或选择本地文件', 'error')
+      showToast(err instanceof Error ? err.message : '图片读取失败，请重新复制图片或选择本地文件', 'error')
     } finally {
       uploadBusy.current = false
     }
@@ -250,6 +252,7 @@ function AiLiveEditor() {
         </button>
         <div className="professional-panel flex min-w-0 flex-col p-4 lg:order-1 sm:p-6">
           <div className="mb-4 flex flex-wrap items-center gap-2"><ImagePasteButton upload={upload} disabled={submitting} /><span className="text-xs text-[#918cae]">也可 Ctrl+V / ⌘V 粘贴图片</span></div>
+          <p className="mb-4 text-[11px] leading-5 text-[#918cae]">单张 ≤50 MB · 大图提交时优化副本，原图保留</p>
           <ProfessionalStep step={1}>轻微动态</ProfessionalStep><div className="mt-4 space-y-2">{motions.map((item) => <button key={item.key} type="button" aria-pressed={motion === item.key} onClick={() => setMotion(item.key)} className={`w-full rounded-2xl border-2 p-4 text-left transition ${motion === item.key ? 'border-[#b29cf7] bg-gradient-to-r from-[#f3edff] to-[#fcfaff]' : 'border-[#ebe8f4] bg-[#fcfaff] hover:border-[#c6bff5]'}`}><span className={`text-sm font-bold ${motion === item.key ? 'text-[#6b5ce7]' : 'text-[#423d63]'}`}>{item.label}</span><span className="mt-1 block text-[11px] text-[#918cae]">{item.description}</span></button>)}</div>
           <div className="mt-6"><ProfessionalStep step={2}>AI 关键帧</ProfessionalStep></div><div className="mt-3 grid grid-cols-2 gap-2">{frameOptions.map((count) => <button key={count} type="button" aria-pressed={frameCount === count} onClick={() => setFrameCount(count)} className={`min-h-11 rounded-xl py-2.5 text-xs font-semibold transition ${frameCount === count ? 'bg-gradient-to-r from-[#8c6cf5] to-[#a681f5] text-white' : 'bg-[#f5f3fb] text-[#77718f] hover:bg-[#ece9fc]'}`}>{count} 张{count === 8 ? ' · 更自然' : ' · 更省积分'}</button>)}</div>
           <div className="mt-6"><ProfessionalStep step={3}>画面比例</ProfessionalStep></div><div className="mt-3 flex flex-wrap gap-2">{RATIOS.map((ratio) => <button key={ratio.label} type="button" aria-pressed={currentRatio === ratio.label} onClick={() => setParams({ size: ratio.size })} className={`min-h-11 rounded-xl border px-3 py-2 text-xs font-semibold transition ${currentRatio === ratio.label ? 'border-[#baa4f7] bg-[#efe8ff] text-[#7755df]' : 'border-[#eee8f7] bg-[#f8f5fc] text-[#9687a9] hover:bg-[#eee7fa]'}`}>{ratio.label}</button>)}</div>
@@ -264,7 +267,7 @@ function AiLiveEditor() {
   )
 }
 
-function LiveEditor() {
+function LiveEditor({ saved }: { saved?: TaskRecord }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const ai = searchParams.get('liveMode') === 'ai'
 
@@ -284,7 +287,7 @@ function LiveEditor() {
         ))}
       </div>
       <div role="tabpanel" id={`live-panel-${ai ? 'ai' : 'quick'}`} aria-labelledby={`live-tab-${ai ? 'ai' : 'quick'}`}>
-        {ai ? <AiLiveEditor /> : <QuickMotionEditor />}
+        {ai ? <AiLiveEditor key={saved?.id ?? 'new'} saved={saved} /> : <QuickMotionEditor />}
       </div>
     </div>
   )
@@ -294,6 +297,7 @@ export default function ProfessionalToolsPage() {
   const [searchParams] = useSearchParams()
   const requestedTool = searchParams.get('tool')
   const tool = TOOLS.some((item) => item.key === requestedTool) ? requestedTool as ToolKey : null
+  const saved = useStore((s) => s.tasks.find((task) => task.id === searchParams.get('task') && task.professionalPreset?.startsWith(`${tool}-`)))
 
   return (
     <AppShell title="专业工具" wide>
@@ -316,9 +320,9 @@ export default function ProfessionalToolsPage() {
           </nav>
         </div>}
         {!tool && <ToolLanding />}
-        {tool === 'ecommerce' && <ProductImageEditor key={tool} tool={tool} />}
-        {tool === 'product-suite' && <ProductImageEditor key={tool} tool={tool} />}
-        {tool === 'live' && <LiveEditor />}
+        {tool === 'ecommerce' && <ProductImageEditor key={`${tool}-${saved?.id ?? 'new'}`} tool={tool} saved={saved} />}
+        {tool === 'product-suite' && <ProductImageEditor key={`${tool}-${saved?.id ?? 'new'}`} tool={tool} saved={saved} />}
+        {tool === 'live' && <LiveEditor saved={saved} />}
         {tool === 'try-on' && <TryOnEditor />}
       </div>
     </AppShell>

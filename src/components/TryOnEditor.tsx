@@ -186,7 +186,7 @@ export default function TryOnEditor() {
                 </button>
                 <p className="mt-2 min-h-10 text-[11px] leading-5 text-[#918cae]">{item.hint}</p>
                 <ImagePasteButton disabled={busy || uploading[item.role]} label={`粘贴${item.label}`} upload={async (files) => { await upload(item.role, files[0]) }} />
-                <p className="my-2 text-[11px] text-[#918cae]">选中此上传区域后 Ctrl+V / ⌘V</p>
+                <p className="my-2 text-[11px] leading-5 text-[#918cae]">选中此上传区域后 Ctrl+V / ⌘V<br />单张 ≤50 MB · 大图提交时优化副本</p>
                 {images[item.role] && <button type="button" aria-label={`移除${item.label}`} disabled={busy || uploading[item.role]} onClick={() => setImages((current) => ({ ...current, [item.role]: null }))} className="flex min-h-11 w-full items-center justify-center gap-1.5 rounded-xl border border-[#e5def2] bg-white text-xs text-[#817695] transition hover:border-[#c6b8ed] hover:text-[#6b5ce7] disabled:opacity-50"><IconTrash className="h-3.5 w-3.5" />移除图片</button>}
                 <input ref={item.ref} id={`try-on-${item.role}`} aria-label={`上传${item.role === 'person' ? '人物' : referenceMode ? '爆款参考' : '商品'}图片`} type="file" accept="image/*" hidden onChange={(event) => { void upload(item.role, event.target.files?.[0]); event.target.value = '' }} />
               </div>

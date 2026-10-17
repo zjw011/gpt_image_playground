@@ -142,6 +142,26 @@ describe('专业工具快速运镜', () => {
     expect(Array.from(el.querySelectorAll('a')).find((link) => link.textContent?.includes('创作记录'))?.getAttribute('href')).toBe('/me?tab=works')
   })
 
+  it.each([
+    { tool: 'ecommerce', preset: 'ecommerce-luxury', label: '高级质感', count: 2 },
+    { tool: 'product-suite', preset: 'product-suite-social', label: '种草套装', count: 3 },
+  ] as const)('超限后返回 $tool 保留原描述、方案和数量', async ({ tool, preset, label, count }) => {
+    state.tasks = [{ id: 'failed', prompt: '保留包装文字与暖色光线', params: { ...DEFAULT_PARAMS, n: count }, inputImageIds: [], outputImages: [], status: 'error', error: 'file too large', createdAt: 1, finishedAt: 2, elapsed: 1, professionalPreset: preset }]
+    await render(`/tools?tool=${tool}&task=failed`)
+    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe(state.tasks[0].prompt)
+    expect(el.querySelector('[aria-label="生成数量"]')?.textContent).toBe(String(count))
+    expect(Array.from(el.querySelectorAll('button[aria-pressed="true"]')).some((button) => button.textContent?.includes(label))).toBe(true)
+  })
+
+  it('超限后返回 AI Live 保留原动作、描述和帧数', async () => {
+    state.tasks = [{ id: 'failed', prompt: '发梢稍微摆动', params: DEFAULT_PARAMS, inputImageIds: [], outputImages: [], status: 'error', error: 'file too large', createdAt: 1, finishedAt: 2, elapsed: 1, professionalPreset: 'live-breeze', liveFrameCount: 6 }]
+    await render('/tools?tool=live&liveMode=ai&task=failed')
+    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe(state.tasks[0].prompt)
+    const selected = Array.from(el.querySelectorAll('button[aria-pressed="true"]')).map((button) => button.textContent).join(' ')
+    expect(selected).toContain('微风轻动')
+    expect(selected).toContain('6 张')
+  })
+
   it('方案示意明确标注且补充描述没有字数限制', async () => {
     await render('/tools?tool=ecommerce')
     expect(el.querySelector('img[alt="设计方案示意，非生成结果"]')).not.toBeNull()

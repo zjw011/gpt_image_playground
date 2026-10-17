@@ -1,6 +1,7 @@
 import type { AppSettings, ResponsesOutputItem, TaskParams } from '../types'
 import { blobToDataUrl } from './dataUrl'
 import { useCreditsStore } from './creditsStore'
+import { isImageSizeError } from './taskFailure'
 
 export const MIME_MAP: Record<string, string> = {
   png: 'image/png',
@@ -126,6 +127,7 @@ export function maybeAppendTransparentBackgroundHint(message: string): string {
 
 /** 排除明确与流式无关的状态码后追加提示 */
 export function maybeAppendStreamingHint(message: string, status: number, streamImages?: boolean): string {
+  if (status === 413 || isImageSizeError(message)) return message
   const transparentMessage = maybeAppendTransparentBackgroundHint(message)
   if (transparentMessage !== message) return transparentMessage
   if (!streamImages) return message
@@ -214,7 +216,8 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
     useCreditsStore.getState().openRedeem(Math.max(0, required - available))
   }
 
-  return errorMsg
+  // 网关的 413 正文不一定提及大小，保留状态码供结果页和历史记录识别。
+  return response.status === 413 ? `HTTP 413: ${errorMsg}` : errorMsg
 }
 
 export function pickActualParams(source: unknown): Partial<TaskParams> {

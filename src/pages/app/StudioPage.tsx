@@ -79,7 +79,7 @@ export default function StudioPage() {
       for (const file of Array.from(files)) await addImageFromFile(file)
     } catch (err) {
       console.warn('参考图读取失败', err)
-      showToast('图片读取失败，请重新复制图片或选择本地文件', 'error')
+      showToast(err instanceof Error ? err.message : '图片读取失败，请重新复制图片或选择本地文件', 'error')
     }
   }
 
@@ -157,6 +157,7 @@ export default function StudioPage() {
               </button>
               <ImagePasteButton upload={pickFiles} label="粘贴参考图" />
               <span className="text-[11px] text-[#918cae]">也可直接 Ctrl+V / ⌘V 粘贴图片</span>
+              <span className="text-[11px] text-[#918cae]">单张 ≤50 MB · 大图提交时优化副本，原图保留（局部重绘除外）</span>
               <button type="button" onClick={() => setPrompt(RANDOM_PROMPTS[Math.floor(Math.random() * RANDOM_PROMPTS.length)])} className="flex items-center gap-1.5 rounded-lg bg-[#fff8ed] px-3 py-2 text-xs font-medium text-[#b67a2c] transition hover:bg-[#ffefd5]">
                 <IconSparkle className="h-4 w-4" />随机灵感
               </button>

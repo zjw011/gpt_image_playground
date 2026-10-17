@@ -183,7 +183,8 @@ export default function Lightbox() {
       setLightboxImageId(image.id, nextList)
       showToast('参考图已替换', 'success')
     } catch (err) {
-      showToast(`参考图替换失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+      console.warn('参考图替换失败', err)
+      showToast(err instanceof Error ? err.message : '参考图替换失败，请重新上传', 'error')
     }
   }, [lightboxImageList, replaceInputImage, setLightboxImageId, showToast])
 

@@ -61,6 +61,8 @@ import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
 import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
+import { assertReferenceFileSize } from './lib/referenceImages'
+import { IMAGE_SIZE_ERROR_MESSAGE, isImageSizeError } from './lib/taskFailure'
 import { cacheImage, cacheThumbnail, clearImageCaches, deleteCachedImage, deleteImageCacheEntry, ensureImageCached, scheduleThumbnailBackfill } from './lib/imageCache'
 import { hasActiveDataOperations } from './lib/dataOperations'
 import { formatExportFileTime } from './lib/exportFileName'
@@ -102,6 +104,7 @@ type AgentDeletionResult = 'deleted' | 'deleted-with-warning' | 'running' | 'not
 export function getErrorToastMessage(message: string): string {
   const text = message.trim()
   if (!text) return '操作失败'
+  if (isImageSizeError(text) && !text.startsWith('参考图片过大')) return IMAGE_SIZE_ERROR_MESSAGE
 
   const firstLine = text.split(/\r?\n/)[0]?.trim() ?? ''
   const separatorIndex = firstLine.search(/[：:]/)
@@ -4062,7 +4065,7 @@ export async function retryTask(task: TaskRecord) {
 }
 
 /** 复用配置 */
-export async function reuseConfig(task: TaskRecord) {
+export async function reuseConfig(task: TaskRecord, opts?: { editOnly?: boolean }) {
   const { settings, setPrompt, setParams, setInputImages, setMaskDraft, clearMaskDraft, showToast, setConfirmDialog, setReusedTaskApiProfile } = useStore.getState()
   if (isTryOnTask(task)) {
     showToast('换装配置和双图已保留，请在 AI 换装工具中编辑此作品', 'info')
@@ -4086,10 +4089,11 @@ export async function reuseConfig(task: TaskRecord) {
   }
   const normalizedSettings = normalizeSettings(settings)
   const currentProfile = getActiveApiProfile(settings)
-  const taskProfile = normalizedSettings.reuseTaskApiProfileTemporarily ? getTaskApiProfile(normalizedSettings, task) : null
+  const reuseProfile = normalizedSettings.reuseTaskApiProfileTemporarily && !opts?.editOnly
+  const taskProfile = reuseProfile ? getTaskApiProfile(normalizedSettings, task) : null
   const matchedProfile = taskProfile && (!isPresetConfigOnlyEnabled() || isPresetProfile(taskProfile.id)) ? taskProfile : null
   const shouldTemporarilyReuseProfile = Boolean(matchedProfile && matchedProfile.id !== currentProfile.id)
-  const missingReusedProfile = normalizedSettings.reuseTaskApiProfileTemporarily && !matchedProfile
+  const missingReusedProfile = reuseProfile && !matchedProfile
   const taskProfileName = matchedProfile?.name ?? getTaskApiProfileName(task)
   const paramsSettings = shouldTemporarilyReuseProfile && matchedProfile ? createSettingsForApiProfile(normalizedSettings, matchedProfile) : normalizedSettings
 
@@ -4777,6 +4781,7 @@ export async function addImageFromFile(file: File): Promise<void> {
 
 export async function createInputImageFromFile(file: File): Promise<InputImage | null> {
   if (!file.type.startsWith('image/')) return null
+  assertReferenceFileSize(file.size)
   pendingInputImageUploads += 1
   try {
     const dataUrl = await fileToDataUrl(file)
@@ -4795,6 +4800,7 @@ export async function addImageFromUrl(src: string): Promise<void> {
   const res = await fetch(src)
   const blob = await res.blob()
   if (!blob.type.startsWith('image/')) throw new Error('不是有效的图片')
+  assertReferenceFileSize(blob.size)
   const dataUrl = await blobToDataUrl(blob)
   const id = await storeImage(dataUrl, 'upload')
   cacheImage(id, dataUrl)

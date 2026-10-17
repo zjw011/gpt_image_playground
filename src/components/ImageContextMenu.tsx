@@ -194,7 +194,7 @@ export default function ImageContextMenu() {
       showToast('已加入参考图', 'success')
     } catch (err) {
       console.error(err)
-      showToast(`加入参考图失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+      showToast(err instanceof Error ? err.message : '加入参考图失败，请重新上传', 'error')
     }
   }
 
