@@ -36,6 +36,10 @@ docker compose up -d --build
 
 首次构建要在服务器上跑 `npm ci` + `npm run build`，大约 2-5 分钟，内存建议 ≥ 1GB（512MB 容易在 Vite 构建阶段 OOM）。
 
+构建依赖默认走 `https://registry.npmmirror.com/`，npm 会把锁文件中 npm 官方源的下载地址映射到该镜像，仍使用锁定版本和完整性校验。下载超时设为 120 秒，网络请求最多重试 4 次、并发连接最多 8 个；BuildKit 缓存保留已下载的包供下次构建复用。关闭安装阶段的 audit/fund 附加请求，不关闭 HTTPS 证书或包完整性校验，安装失败仍停止构建。该源只用于构建，不是绘图渠道。行为依据 [npm 配置说明](https://docs.npmjs.com/cli/v11/using-npm/config/#replace-registry-host)。
+
+如需覆盖，可在现有 `.env` 设置 `GIP_NPM_REGISTRY`（HTTPS 地址，不要带账号口令）；不设置也会使用默认镜像。纯静态镜像使用同名构建参数 `NPM_REGISTRY`。遇到 `npm ci` 的 `ETIMEDOUT` 是下载问题，不要删除锁文件、升级全部依赖、关闭证书验证或清空数据卷。需要启用 BuildKit（当前 Docker Compose 默认构建方式）。
+
 更省事的办法是用 git：服务器上 `git clone` 你的仓库，`node_modules` 和 `dist` 本来就在 `.gitignore` 里，不用操心打包。
 
 看日志确认起来了：

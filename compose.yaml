@@ -10,6 +10,8 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.server
+      args:
+        NPM_REGISTRY: '${GIP_NPM_REGISTRY:-https://registry.npmmirror.com/}'
     image: gpt-image-playground-server
     container_name: gpt-image-playground
     restart: unless-stopped

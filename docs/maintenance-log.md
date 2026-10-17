@@ -1,5 +1,24 @@
 # 项目维护记录
 
+## 2026-10-17 · 修复主站 Docker 的 npm 下载超时
+
+### 变化
+
+- 用户部署截图定位为主站 `RUN npm ci` 下载官方源 `zwitch-2.0.4.tgz` 时 `ETIMEDOUT`，尚未进入 TypeScript / Vite 编译；水印镜像已构建成功。不是图片上传大小问题，也不是需要升级 npm 的提示导致失败。
+- 主站和纯静态镜像的构建阶段默认使用 HTTPS npm 国内镜像，显式设置 `replace-registry-host=npmjs`，只映射锁文件里的 npm 官方下载源，保留全部锁定版本和 integrity；没有改动依赖清单或锁文件。依据 [npm 官方配置说明](https://docs.npmjs.com/cli/v11/using-npm/config/#replace-registry-host)。
+- 下载超时 120 秒，网络请求最多重试 4 次、重试间隔 10–30 秒、连接并发最多 8 个；BuildKit 缓存保留已下载包供重建复用，安装阶段关闭 audit/fund 附加请求。不关闭 TLS 或包校验、不忽略安装脚本和安装失败。
+- Compose 默认传入镜像源，支持 `.env` 的 `GIP_NPM_REGISTRY` 覆盖，现有部署不需要手动添加变量；补充示例和部署说明。只修改构建配置，运行时用户、积分、作品、密钥和数据卷保持不变。
+
+### 验证
+
+- 真实 HTTPS 下载 `https://registry.npmmirror.com/zwitch/-/zwitch-2.0.4.tgz` 返回 200、4529 字节，SHA-512 与仓库锁文件的 integrity 完全一致。锁文件全部 590 个 resolved 地址均为 npm 官方域名，因此适用该映射策略；未声称逐一下载全部包。
+- TypeScript / Vite 构建通过；Vitest 83 个文件、1242 项测试通过。新增 5 项检查两个 Dockerfile 的源、锁文件、重试、缓存、Compose 覆盖，以及实际 shell 命令的成功/失败退出码和参数传递。最初测试未兼容 Windows CRLF，修正读取归一化后全量重跑通过。
+- 本机没有 Docker，无法执行完整 Linux 镜像构建，也不能代替用户服务器网络验收。当前缺 npm 命令，使用项目本地 Node 构建和测试入口。既有 Browserslist、大 chunk 和 TLS IP 提醒保留；无页面逻辑变更，未重复菜单审计，未调用绘图服务、未操作线上数据。
+
+### 经验
+
+- 构建失败先区分下载超时、锁文件不一致和编译失败；下载问题不应通过删除锁文件、批量升级依赖或清空数据卷解决。换源应核对锁文件 URL 的映射方式和真实包完整性，保留失败退出与可覆盖配置。
+
 ## 2026-10-17 · 参考图体积优化与超限提示
 
 ### 变化

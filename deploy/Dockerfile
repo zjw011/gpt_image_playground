@@ -13,7 +13,12 @@ ENV VITE_LOCK_PRESET_CONFIG_PARAMS=__VITE_LOCK_PRESET_CONFIG_PARAMS_PLACEHOLDER_
 ENV VITE_PREVENT_PRESET_CONFIG_DELETION=__VITE_PREVENT_PRESET_CONFIG_DELETION_PLACEHOLDER__
 
 COPY package.json package-lock.json ./
-RUN npm ci
+# 与托管镜像保持相同下载策略，不改写仓库里的锁文件。
+ARG NPM_REGISTRY=https://registry.npmmirror.com/
+RUN --mount=type=cache,target=/root/.npm npm ci \
+    --registry="$NPM_REGISTRY" --replace-registry-host=npmjs \
+    --fetch-retries=4 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=30000 \
+    --fetch-timeout=120000 --maxsockets=8 --prefer-offline --no-audit --no-fund
 
 COPY . .
 RUN npm run build

@@ -7,7 +7,12 @@ FROM --platform=$BUILDPLATFORM node:24-alpine AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci
+# 国内服务器默认使用 HTTPS 镜像；锁文件版本和 integrity 校验不变。
+ARG NPM_REGISTRY=https://registry.npmmirror.com/
+RUN --mount=type=cache,target=/root/.npm npm ci \
+    --registry="$NPM_REGISTRY" --replace-registry-host=npmjs \
+    --fetch-retries=4 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=30000 \
+    --fetch-timeout=120000 --maxsockets=8 --prefer-offline --no-audit --no-fund
 
 COPY . .
 RUN npm run build
