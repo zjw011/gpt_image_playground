@@ -481,7 +481,6 @@ export const useStore = create<AppState>()(
 
         const state = get()
         const settings = normalizeSettings(state.settings)
-        const activeProfile = getActiveApiProfile(settings)
         const agentValidationError = getAgentProfileValidationError(settings)
 
         // 后端托管模式下 Agent 归管理员开关。这里独立判断，不依赖配置校验——
@@ -506,47 +505,13 @@ export const useStore = create<AppState>()(
           return
         }
 
-        // 后端托管模式下用户无处可配，让他去"设置"只会白跑一趟——直接说明该找谁。
-        if (isBackendManagedMode()) {
-          state.showToast('管理员配置的 Agent 渠道当前不可用，请联系管理员。', 'error')
-          return
-        }
-
-        if (settings.agentApiConfigMode === 'off' && activeProfile.provider === 'openai' && activeProfile.apiMode !== 'responses') {
-          state.setConfirmDialog({
-            title: '需要 Responses API 配置',
-            message: `当前配置「${activeProfile.name}」使用的是 Images API，仅支持生成图片，无 Agent 模式需要的对话能力。\n\n请前往 API 配置页，将当前配置调整为 Responses API，或切换/新建一个支持 Responses API 的配置。`,
-            confirmText: '去设置',
-            cancelText: '取消',
-            action: () => {
-              useStore.getState().setShowSettings(true, 'api')
-            },
-          })
-          return
-        }
-
-        if (settings.agentApiConfigMode !== 'off') {
-          state.setConfirmDialog({
-            title: 'Agent API 配置不完整',
-            message: `${agentValidationError.message}\n\n请前往 Agent 配置页，选择或新建可用配置。`,
-            confirmText: '去设置',
-            cancelText: '取消',
-            action: () => {
-              useStore.getState().setShowSettings(true, 'agent')
-            },
-          })
-          return
-        }
-
-        state.setConfirmDialog({
-          title: '配置不支持 Agent 模式',
-          message: `当前配置「${activeProfile.name}」所属的服务商暂不支持 Agent 模式。Agent 模式需要使用支持 Responses API 的 OpenAI 配置。\n\n请前往 API 配置页，切换或新建一个支持 Responses API 的配置。`,
-          confirmText: '去设置',
-          cancelText: '取消',
-          action: () => {
-            useStore.getState().setShowSettings(true, 'api')
-          },
-        })
+        // 用户侧已无设置弹窗；Agent 渠道一律后台维护，缺配置只提示找管理员。
+        state.showToast(
+          isBackendManagedMode()
+            ? '管理员配置的 Agent 渠道当前不可用，请联系管理员。'
+            : `${agentValidationError.message} 请联系管理员在后台配置可用的 Agent 渠道。`,
+          'error',
+        )
       },
 
       // Settings
@@ -1691,15 +1656,13 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   }
 
   if (validateApiProfile(activeProfile)) {
-    // 托管模式下地址和密钥都在服务端，用户眼前根本没有可填的地方——
-    // 再提示「缺少 API Key」只会让人对着设置页发呆，直接说清该找谁。
+    // 绘想产品化后用户侧不再提供 API 设置弹窗；渠道一律后台维护。
     showToast(
       isBackendManagedMode()
         ? '本站暂无可用的绘图渠道，请联系管理员配置后再试。'
-        : `请先完善请求 API 配置：${validateApiProfile(activeProfile)}`,
+        : '当前没有可用的绘图渠道，请先在管理后台配置渠道。',
       'error',
     )
-    useStore.getState().setShowSettings(true)
     return false
   }
   if (options.tryOn) {
@@ -2402,12 +2365,12 @@ export async function submitAgentMessage() {
 
   const agentValidationError = getAgentProfileValidationError(normalizedSettings)
   if (agentValidationError) {
-    if (isBackendManagedMode()) {
-      showToast('管理员配置的 Agent 渠道当前不可用，请联系管理员。', 'error')
-      return
-    }
-    showToast(`请先完善 Agent API 配置：${agentValidationError.message}`, 'error')
-    state.setShowSettings(true, normalizedSettings.agentApiConfigMode === 'off' ? 'api' : 'agent')
+    showToast(
+      isBackendManagedMode()
+        ? '管理员配置的 Agent 渠道当前不可用，请联系管理员。'
+        : 'Agent 渠道不可用，请先在管理后台配置。',
+      'error',
+    )
     return
   }
 
@@ -2556,12 +2519,12 @@ export async function regenerateAgentAssistantMessage(conversationId: string, ro
 
   const agentValidationError = getAgentProfileValidationError(normalizedSettings)
   if (agentValidationError) {
-    if (isBackendManagedMode()) {
-      showToast('管理员配置的 Agent 渠道当前不可用，请联系管理员。', 'error')
-      return
-    }
-    showToast(`请先完善 Agent API 配置：${agentValidationError.message}`, 'error')
-    state.setShowSettings(true, normalizedSettings.agentApiConfigMode === 'off' ? 'api' : 'agent')
+    showToast(
+      isBackendManagedMode()
+        ? '管理员配置的 Agent 渠道当前不可用，请联系管理员。'
+        : 'Agent 渠道不可用，请先在管理后台配置。',
+      'error',
+    )
     return
   }
 

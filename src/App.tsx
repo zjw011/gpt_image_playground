@@ -10,7 +10,6 @@ import { syncWorkspaceId } from './lib/workspace'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
 import type { AppSettings } from './types'
 import Lightbox from './components/Lightbox'
-import SettingsModal from './components/SettingsModal'
 import ConfirmDialog from './components/ConfirmDialog'
 import Toast from './components/Toast'
 import MaskEditorModal from './components/MaskEditorModal'
@@ -222,7 +221,6 @@ export default function App() {
     <>
       <Outlet />
       <Lightbox />
-      <SettingsModal />
       <ConfirmDialog />
       <RedeemCardModal />
       <FavoriteCollectionPickerModal />

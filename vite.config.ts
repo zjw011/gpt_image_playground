@@ -46,9 +46,66 @@ export default defineConfig(async ({ command, mode }) => {
   const defaultApiUrl = await embedDefaultConfig(process.env.VITE_DEFAULT_API_URL ?? env.VITE_DEFAULT_API_URL ?? '')
   if (defaultApiUrl.startsWith('embedded-config:')) process.env.VITE_DEFAULT_API_URL = defaultApiUrl
   const devProxyConfig = command === 'serve' ? loadDevProxyConfig() : null
+  const toolsAssetBase = (process.env.VITE_TOOLS_GALLERY_ASSET_BASE || env.VITE_TOOLS_GALLERY_ASSET_BASE || 'https://ai-pose-gallery.anhao.app').replace(/\/$/, '')
+
+  const proxy: Record<string, object> = {
+    '/tools-assets': {
+      target: toolsAssetBase,
+      changeOrigin: true,
+      secure: true,
+      rewrite: (path: string) => path.replace(/^\/tools-assets/, ''),
+    },
+  }
+  if (devProxyConfig?.enabled) {
+    proxy[devProxyConfig.prefix] = {
+      target: devProxyConfig.target,
+      changeOrigin: devProxyConfig.changeOrigin,
+      secure: devProxyConfig.secure,
+      rewrite: (path: string) =>
+        path.replace(
+          new RegExp(`^${devProxyConfig.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+          '',
+        ),
+    }
+  }
 
   return {
-    plugins: [react()],
+    plugins: [
+      react(),
+      {
+        name: 'tools-fetch-proxy',
+        configureServer(server) {
+          server.middlewares.use(async (req, res, next) => {
+            if (!req.url?.startsWith('/api/tools-fetch')) return next()
+            try {
+              const u = new URL(req.url, 'http://localhost')
+              const target = u.searchParams.get('url')
+              if (!target) {
+                res.statusCode = 400
+                res.end('missing url')
+                return
+              }
+              const allowed = /^(https?:\/\/)?([\w.-]+\.)?(anhao\.app|pages\.dev|githubusercontent\.com|github\.com)\b/i.test(target)
+                || /^https?:\/\/(ai-pose-gallery\.anhao\.app|charadb-2fi\.pages\.dev|ai-costume[^/]*\.pages\.dev|ai-portrait[^/]*\.pages\.dev)\//i.test(target)
+              if (!allowed) {
+                res.statusCode = 403
+                res.end('host not allowed')
+                return
+              }
+              const upstream = await fetch(target, { redirect: 'follow' })
+              res.statusCode = upstream.status
+              const ct = upstream.headers.get('content-type')
+              if (ct) res.setHeader('Content-Type', ct)
+              res.setHeader('Cache-Control', 'public, max-age=86400')
+              res.end(Buffer.from(await upstream.arrayBuffer()))
+            } catch (err) {
+              res.statusCode = 502
+              res.end(err instanceof Error ? err.message : 'proxy failed')
+            }
+          })
+        },
+      },
+    ],
     base: './',
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
@@ -60,21 +117,7 @@ export default defineConfig(async ({ command, mode }) => {
     },
     server: {
       host: true,
-      proxy:
-        devProxyConfig?.enabled
-          ? {
-              [devProxyConfig.prefix]: {
-                target: devProxyConfig.target,
-                changeOrigin: devProxyConfig.changeOrigin,
-                secure: devProxyConfig.secure,
-                rewrite: (path) =>
-                  path.replace(
-                    new RegExp(`^${devProxyConfig.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
-                    '',
-                  ),
-              },
-            }
-          : undefined,
+      proxy,
     },
   }
 })

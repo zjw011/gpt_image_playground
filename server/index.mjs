@@ -55,6 +55,7 @@ import {
   verifyPassword,
 } from './lib/store.mjs'
 import { flushUsage, initUsage } from './lib/usage.mjs'
+import { handleToolsAssets, handleToolsFetch } from './lib/toolsAssets.mjs'
 
 const serverDir = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(serverDir, '..')
@@ -615,6 +616,14 @@ const server = createServer(async (req, res) => {
         },
         onUserInvalidated: (userId) => destroySessionsByUser(userId),
       })
+    }
+
+    if (path === '/api/tools-fetch') {
+      return await handleToolsFetch(req, res, url.search)
+    }
+
+    if (path.startsWith('/tools-assets/') || path === '/tools-assets') {
+      return await handleToolsAssets(req, res, path)
     }
 
     if (path.startsWith('/api/')) {

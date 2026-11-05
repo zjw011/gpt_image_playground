@@ -118,6 +118,17 @@ export const IconCopy = ({ className }: IconProps) => (
   </Base>
 )
 
+export const IconDice = ({ className }: IconProps) => (
+  <Base className={className}>
+    <rect x="3.5" y="3.5" width="17" height="17" rx="3.5" />
+    <circle cx="8.2" cy="8.2" r="1.15" fill="currentColor" stroke="none" />
+    <circle cx="15.8" cy="8.2" r="1.15" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="12" r="1.15" fill="currentColor" stroke="none" />
+    <circle cx="8.2" cy="15.8" r="1.15" fill="currentColor" stroke="none" />
+    <circle cx="15.8" cy="15.8" r="1.15" fill="currentColor" stroke="none" />
+  </Base>
+)
+
 export const IconLogout = ({ className }: IconProps) => (
   <Base className={className}>
     <path d="M14 4H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7" />
@@ -234,6 +245,19 @@ export const IconToolbox = ({ className }: IconProps) => (
     <path d="M8.5 7V5.5A2.5 2.5 0 0 1 11 3h2a2.5 2.5 0 0 1 2.5 2.5V7" />
     <rect x="3" y="7" width="18" height="13" rx="2.5" />
     <path d="M3 12h6M15 12h6M9 10.5h6v3H9z" />
+  </Base>
+)
+
+export const IconShirt = ({ className }: IconProps) => (
+  <Base className={className}>
+    <path d="M8 5l-4 3v3l3-1v9h10v-9l3 1V8l-4-3-2 2h-2L8 5z" />
+  </Base>
+)
+
+export const IconPose = ({ className }: IconProps) => (
+  <Base className={className}>
+    <circle cx="12" cy="5" r="2.2" />
+    <path d="M12 7.5v5.5M9 21l3-8 3 8M7.5 12.5L12 10l4.5 2.5" />
   </Base>
 )
 
