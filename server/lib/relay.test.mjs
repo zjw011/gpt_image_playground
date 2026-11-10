@@ -319,6 +319,119 @@ describe('渠道故障转移', () => {
     expect(getBalance(USER_ID)).toBe(100)
   })
 
+  it.each([
+    [403, { error: { code: 'content_policy_violation', message: 'Rejected' } }, 403, '内容安全审核未通过'],
+    [500, { error: { message: 'Rejected by safety system' } }, 500, '内容安全审核未通过'],
+    [200, { error: { code: 'content_policy_violation', message: 'Rejected' }, data: [{ url: 'https://example.com/not-an-image' }] }, 400, '内容安全审核未通过'],
+    [200, { status: 'failed', error: { code: 'content_policy_violation' }, output: [{ type: 'image_generation_call', result: 'AAAA' }] }, 400, '内容安全审核未通过'],
+    [200, { status: 'cancelled', task_id: 'task-cancelled', data: [{ url: 'https://example.com/not-an-image' }] }, 409, '上游生成任务已取消'],
+    [502, { error: { message: 'request canceled' } }, 502, '上游生成任务已取消'],
+  ])('HTTP %s 的审核拒绝或取消不会换渠道、扣分或污染健康度', async (upstreamStatus, payload, status, message) => {
+    let secondCalled = false
+    const first = await startUpstream((req, res) => res.writeHead(upstreamStatus, { 'Content-Type': 'application/json' }).end(JSON.stringify(payload)))
+    const second = await startUpstream((req, res) => {
+      secondCalled = true
+      res.writeHead(200).end(IMAGE_RESPONSE)
+    })
+    upstreams = [first, second]
+    await setup([
+      { name: '主渠道', baseUrl: `${first.url}/v1`, apiKey: 'k1' },
+      { name: '备用渠道', baseUrl: `${second.url}/v1`, apiKey: 'k2' },
+    ])
+
+    const response = await relay('ch-1/images/generations')
+    expect(response.status).toBe(status)
+    const body = await response.text()
+    expect(body).toContain(message)
+    expect(body).not.toContain('所有渠道均失败')
+    expect(secondCalled).toBe(false)
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(0)
+    expect(usageSummary().events).toHaveLength(1)
+    expect(usageSummary().events[0]).toMatchObject({ ok: false, fault: false })
+    expect(usageSummary().channels[0]).toMatchObject({ state: 'healthy', consecutiveFailures: 0 })
+  })
+
+  it('已开始保活后仍保留审核原因，不把 200 当作出图成功', async () => {
+    const first = await startUpstream((req, res) => {
+      setTimeout(() => res.writeHead(403, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: { code: 'content_policy_violation', message: 'Rejected' } })), 80)
+    })
+    upstreams = [first]
+    await setup([{ name: '主渠道', baseUrl: `${first.url}/v1`, apiKey: 'k1' }])
+
+    const response = await relay('ch-1/images/generations', { headers: { 'X-GIP-Keepalive': '1' } })
+    expect(response.headers.get('x-gip-heartbeat')).toBe('1')
+    expect((await response.json()).error.message).toContain('内容安全审核未通过')
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(0)
+    expect(usageSummary().events[0]).toMatchObject({ ok: false, fault: false })
+  })
+
+  it('SSE 在图片开始前拒绝内容时不扣积分，也不切换渠道', async () => {
+    let secondCalled = false
+    const first = await startUpstream((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      res.write('data: {"type":"response.created","response":{"status":"in_progress"}}\n\n')
+      setTimeout(() => res.end('data: {"type":"response.failed","response":{"error":{"code":"content_policy_violation","message":"Rejected"}}}\n\n'), 10)
+    })
+    const second = await startUpstream((req, res) => {
+      secondCalled = true
+      res.writeHead(200).end(IMAGE_RESPONSE)
+    })
+    upstreams = [first, second]
+    await setup([
+      { name: '主渠道', baseUrl: `${first.url}/v1`, apiKey: 'k1' },
+      { name: '备用渠道', baseUrl: `${second.url}/v1`, apiKey: 'k2' },
+    ])
+    const response = await relay('ch-1/responses', { body: JSON.stringify({ model: 'gpt-image-2', stream: true, tools: [{ type: 'image_generation' }], input: 'cat' }) })
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain('内容安全审核未通过')
+    expect(secondCalled).toBe(false)
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(0)
+    expect(usageSummary().events[0]).toMatchObject({ ok: false, fault: false })
+  })
+
+  it.each([
+    ['responses', { output: [{ type: 'image_generation_call', status: 'completed', result: 'AAAA' }, { type: 'image_generation_call', status: 'failed', error: { code: 'content_policy_violation' } }] }],
+    ['images/generations', { data: [{ b64_json: 'AAAA' }, { error: { code: 'content_policy_violation' } }] }],
+  ])('%s 局部审核失败时保留已经成功的图片，不重复换渠道', async (endpoint, payload) => {
+    let secondCalled = false
+    const first = await startUpstream((req, res) => res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(payload)))
+    const second = await startUpstream((req, res) => {
+      secondCalled = true
+      res.writeHead(200).end(IMAGE_RESPONSE)
+    })
+    upstreams = [first, second]
+    await setup([
+      { name: '主渠道', baseUrl: `${first.url}/v1`, apiKey: 'k1' },
+      { name: '备用渠道', baseUrl: `${second.url}/v1`, apiKey: 'k2' },
+    ])
+    const response = await relay(`ch-1/${endpoint}`, { body: JSON.stringify({ model: 'gpt-image-2', tools: [{ type: 'image_generation' }], prompt: 'cat' }) })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(payload)
+    expect(secondCalled).toBe(false)
+    expect(getReserved(USER_ID)).toBe(0)
+    expect(usageSummary().events[0]).toMatchObject({ ok: true, fault: false })
+  })
+
+  it.each([false, true])('同一 SSE 数据块按事件顺序处理图片与失败（错误在前：%s）', async (errorFirst) => {
+    const image = 'data: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"AAAA"}}\n\n'
+    const error = 'data: {"type":"response.failed","response":{"error":{"code":"content_policy_violation"}}}\n\n'
+    const body = errorFirst ? error + image : image + error
+    const first = await startUpstream((req, res) => res.writeHead(200, { 'Content-Type': 'text/event-stream' }).end(body))
+    upstreams = [first]
+    await setup([{ name: '主渠道', baseUrl: `${first.url}/v1`, apiKey: 'k1' }])
+    const response = await relay('ch-1/responses', { body: JSON.stringify({ model: 'gpt-image-2', stream: true, tools: [{ type: 'image_generation' }], input: 'cat' }) })
+    expect(response.status).toBe(errorFirst ? 400 : 200)
+    const actual = await response.text()
+    if (errorFirst) expect(actual).toContain('内容安全审核未通过')
+    else expect(actual).toBe(body)
+    expect(getBalance(USER_ID)).toBe(errorFirst ? 100 : 99)
+    expect(getReserved(USER_ID)).toBe(0)
+    expect(usageSummary().events[0]).toMatchObject({ ok: !errorFirst, fault: false })
+  })
+
   it('管理员关掉故障转移时只试第一条', async () => {
     let secondCalled = false
     const bad = await startUpstream((req, res) => res.writeHead(503).end('down'))

@@ -5,6 +5,7 @@
 // 欠费的账号照样能列模型。余额不足只在真正扣费的那一刻才报出来。
 
 import { buildUpstreamUrl } from './upstream.mjs'
+import { classifyGenerationError, formatGenerationError } from '../../src/lib/generationError.mjs'
 
 // 自检最长等这么久。真出图比 /models 慢得多，但也不能让后台一直转。
 const AUDIT_TIMEOUT_MS = 120_000
@@ -119,6 +120,9 @@ function readUpstreamError(bodyText) {
  */
 export function classifyAuditFailure(status, code, message) {
   const text = `${code} ${message}`
+  const kind = classifyGenerationError(text)
+  if (kind === 'content_policy') return 'content-policy'
+  if (kind === 'cancelled') return 'cancelled'
 
   for (const [verdict, codes] of Object.entries(ERROR_CODES)) {
     if (code && codes.has(code)) return verdict
@@ -225,8 +229,13 @@ export async function auditChannel(channel, customProviders = []) {
     let result = await postJson(url, channel.apiKey, target.body, controller.signal)
 
     // size / quality 是省钱用的，网关不认就去掉重来一次，别让参数问题冒充成渠道故障。
-    if (result.status === 400 && /size|quality|不支持的?参数|unknown (parameter|field)/i.test(result.bodyText)) {
+    if (result.status === 400 && !classifyGenerationError(result.bodyText) && /size|quality|不支持的?参数|unknown (parameter|field)/i.test(result.bodyText)) {
       result = await postJson(url, channel.apiKey, { model: channel.model, prompt: AUDIT_PROMPT, n: 1 }, controller.signal)
+    }
+
+    const kind = classifyGenerationError(result.bodyText)
+    if (kind === 'content_policy' || kind === 'cancelled') {
+      return { ...result, verdict: kind === 'content_policy' ? 'content-policy' : 'cancelled', message: formatGenerationError(result.bodyText) }
     }
 
     if (result.status >= 200 && result.status < 300) {

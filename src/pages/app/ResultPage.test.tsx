@@ -203,6 +203,83 @@ describe('ResultPage', () => {
     expect(container.querySelector('details')?.textContent).toContain('HTTP 400: file size exceeds limit')
   })
 
+  it.each([
+    { patch: {}, path: '/studio?mode=text' },
+    { patch: { inputImageIds: ['reference'] }, path: '/studio?mode=image' },
+    { patch: { inputImageIds: ['reference'], maskImageId: 'mask' }, path: '/studio?mode=inpaint' },
+    { patch: { professionalPreset: 'live-breeze', liveFrameCount: 6 }, path: '/tools?tool=live&liveMode=ai&task=partial-task' },
+  ])('内容审核拒绝返回 $path 修改描述或参考图，不直接提交', async ({ patch, path }) => {
+    state.backend = true
+    state.user = { id: 'u-1', role: 'user' }
+    state.tasks = [task({ ...patch, status: 'error', outputImages: [], error: '私有渠道ABC：HTTP 403: content_policy_violation' })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /><Location /></MemoryRouter>))
+    expect(container.textContent).toContain('内容未通过安全审核')
+    expect(container.textContent).toContain('请修改描述或更换参考图')
+    expect(container.textContent).not.toContain('私有渠道ABC')
+    expect(container.textContent).not.toContain('本次失败不会扣除积分')
+    expect(container.textContent).not.toContain('重新生成')
+    expect(container.querySelector('details')).toBeNull()
+    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '返回修改内容')?.click())
+    expect(reuseConfig).toHaveBeenCalledWith(state.tasks[0], { editOnly: true })
+    expect(submitTask).not.toHaveBeenCalled()
+    expect(container.querySelector('output')?.textContent).toBe(path)
+  })
+
+  it('后续输出被审核拦截时保留已完成图片，修改内容前不会提交收费任务', async () => {
+    state.backend = true
+    state.user = { id: 'u-1' }
+    state.fullSrc = 'data:image/png;base64,retained'
+    state.tasks = [task({ outputErrors: [{ requestIndex: 1, error: 'HTTP 500: safety rejected' }] })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /><Location /></MemoryRouter>))
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('已保留 1')
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('安全审核')
+    expect(container.querySelector('img[alt="部分生成的画面"]')?.getAttribute('src')).toBe(state.fullSrc)
+    expect(container.textContent).not.toContain('本次失败不会扣除积分')
+    expect(container.textContent).not.toContain('HTTP 500')
+    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '修改内容')?.click())
+    expect(reuseConfig).toHaveBeenCalledWith(state.tasks[0], { editOnly: true })
+    expect(submitTask).not.toHaveBeenCalled()
+  })
+
+  it('旧任务保留的原始响应含审核码时恢复处理建议，不修改存储记录', async () => {
+    state.backend = true
+    state.user = { id: 'u-1' }
+    state.tasks = [task({ status: 'error', outputImages: [], error: '接口未返回图片数据', rawResponsePayload: '{"error":{"code":"content_policy_violation","message":"Request rejected"}}' })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    expect(container.textContent).toContain('内容未通过安全审核')
+    expect(container.textContent).toContain('返回修改内容')
+    expect(state.tasks[0].error).toBe('接口未返回图片数据')
+    expect(submitTask).not.toHaveBeenCalled()
+  })
+
+  it('旧响应只有提示词提及受限内容时不能判定审核拒绝', async () => {
+    state.backend = true
+    state.user = { id: 'u-1' }
+    state.tasks = [task({ status: 'error', outputImages: [], error: '接口未返回图片数据', rawResponsePayload: '{"prompt":"content_policy_violation","data":[]}' })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    expect(container.textContent).not.toContain('内容未通过安全审核')
+    expect(container.textContent).toContain('这次没有生成成功')
+  })
+
+  it.each([
+    { error: 'upstream request cancelled', title: '本次生成已取消', hint: '未提供明确原因' },
+    { error: 'HTTP 504: upstream timeout', title: '等待生成结果超时', hint: '避免连续重复提交' },
+    { error: '图片已生成，但因服务商未允许跨域，图片链接下载失败。', title: '暂未取回生成结果', hint: '无法确认生成结果' },
+  ])('取消、超时与取图失败分别提示，不推断违规或承诺免扣：$title', async ({ error, title, hint }) => {
+    state.backend = true
+    state.user = { id: 'u-1' }
+    state.tasks = [task({ status: 'error', outputImages: [], error })]
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    expect(container.textContent).toContain(title)
+    expect(container.textContent).toContain(hint)
+    expect(container.textContent).toContain('积分结算请以「我的积分」记录为准')
+    expect(container.textContent).not.toContain('成人')
+    expect(container.textContent).not.toContain('内容未通过安全审核')
+    expect(container.textContent).not.toContain('本次失败不会扣除积分')
+    expect(container.querySelector('details')).toBeNull()
+    expect(submitTask).not.toHaveBeenCalled()
+  })
+
   it('部分完成的大小错误保留已有图片，不承诺整单不扣分且不暴露原始渠道诊断', async () => {
     state.backend = true
     state.user = { id: 'u-1' }

@@ -132,8 +132,9 @@ export default function ChannelsPage() {
     setBusy(true); setError(null)
     try {
       const { results } = await auditChannels()
-      const down = results.filter((r) => (r as { verdict?: string }).verdict !== 'ok')
-      if (down.length === 0) toast('自检完成：全部渠道都能出图')
+      const down = results.filter((r) => ['no-balance', 'auth', 'model', 'unreachable', 'error'].includes(String(r.verdict)))
+      const unconfirmed = results.filter((r) => r.verdict !== 'ok').length - down.length
+      if (down.length === 0) toast(unconfirmed ? `自检完成：${unconfirmed} 条因审核、取消、限流或跳过而未确认出图，已排除在停用范围外` : '自检完成：全部渠道都能出图')
       else {
         const ids = down.map((r) => r.id as string)
         if (window.confirm(`有 ${down.length} 条渠道疑似异常，是否一键停用？`)) {

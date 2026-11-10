@@ -6,6 +6,11 @@ import { describe, expect, it } from 'vitest'
 import { classifyAuditFailure } from './channelAudit.mjs'
 
 describe('classifyAuditFailure', () => {
+  it('内容拒绝和取消不归入可停用的渠道故障', () => {
+    expect(classifyAuditFailure(403, 'content_policy_violation', 'Rejected')).toBe('content-policy')
+    expect(classifyAuditFailure(500, '', 'Rejected by safety system')).toBe('content-policy')
+    expect(classifyAuditFailure(502, '', 'request cancelled')).toBe('cancelled')
+  })
   it('错误码优先于状态码：OpenAI 的欠费也是 429，只有 code 能区分', () => {
     expect(classifyAuditFailure(429, 'insufficient_quota', 'You exceeded your current quota')).toBe('no-balance')
     expect(classifyAuditFailure(429, 'rate_limit_exceeded', 'Rate limit reached')).toBe('rate-limit')

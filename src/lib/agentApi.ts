@@ -1,5 +1,6 @@
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
+import { classifyGenerationError, formatGenerationError, getGenerationResponseError } from './generationError.mjs'
 import { appendStreamingFormatHint, getApiErrorMessage, getResponsesImageResultBase64, maybeAppendStreamingHint, MIME_MAP, normalizeBase64Image, pickActualParams, PROMPT_REWRITE_GUARD_PREFIX } from './imageApiShared'
 import { normalizeResponsesOutputItems } from './responsesOutputState'
 import { isEventStreamResponse, readJsonServerSentEvents, throwIfAborted } from './serverSentEvents'
@@ -297,38 +298,31 @@ function applyUrlCitations(text: string, annotations: ResponseTextAnnotation[] |
 
 function getStreamEventErrorMessage(event: Record<string, unknown>): string | null {
   const error = event.error
-  if (isRecordValue(error)) {
-    const message = getStringValue(error, 'message')
-    if (message) return message
-  }
-  if (typeof error === 'string' && error.trim()) return error
+  if (error) return formatGenerationError(error, 'Agent 流式请求失败')
 
   const type = getStringValue(event, 'type')
-  if (type?.endsWith('.failed')) return getStringValue(event, 'message') ?? 'Agent 流式请求失败'
+  if (type && /(?:^|\.)(?:error|failed|cancelled|canceled)$/.test(type)) return getGenerationResponseError(event) ?? 'Agent 流式请求失败'
   return null
 }
 
 function getErrorMessageFromValue(value: unknown): string | null {
-  if (typeof value === 'string' && value.trim()) return value.trim()
-  if (!isRecordValue(value)) return null
-
-  return getStringValue(value, 'message')
-    ?? getStringValue(value, 'code')
-    ?? null
+  return formatGenerationError(value) || null
 }
 
 function getImageToolFailureFromOutputItem(event: Record<string, unknown>, item?: ResponsesOutputItem): AgentApiImageToolFailure | null {
-  if (item?.type !== 'image_generation_call' || item.status !== 'failed') return null
+  if (item?.type !== 'image_generation_call' || !['failed', 'cancelled', 'canceled'].includes(item.status ?? '')) return null
 
   const toolCallId = (typeof item?.id === 'string' && item.id)
     || getStringValue(event, 'item_id')
   if (!toolCallId) return null
 
   const itemRecord = item as Record<string, unknown> | undefined
-  const error = getErrorMessageFromValue(itemRecord?.error)
-    ?? getErrorMessageFromValue(event.error)
-    ?? getStringValue(event, 'message')
-    ?? '内置 image_generation 工具调用失败'
+  const error = classifyGenerationError(itemRecord)
+    ? formatGenerationError(itemRecord)
+    : getErrorMessageFromValue(itemRecord?.error)
+      ?? getErrorMessageFromValue(event.error)
+      ?? getStringValue(event, 'message')
+      ?? '内置 image_generation 工具调用失败'
 
   return {
     toolCallId,
@@ -645,6 +639,7 @@ export async function callAgentResponsesApi(opts: {
     const payload = normalizeResponsePayload(rawPayload)
     if (!payload) throw new Error('Agent 接口返回格式无效')
     throwIfAborted(controller.signal, signal)
+    if ('error' in payload && payload.error) throw new Error(formatGenerationError(payload.error, 'Agent 请求失败'))
     return {
       responseId: payload.id,
       text: extractText(payload),
@@ -819,6 +814,7 @@ export async function callBatchImageSingle(opts: {
       await onImageToolStarted?.()
       let completedImage: AgentApiResultImage | null = null
       let rawPayload: string | undefined
+      let failure: string | null = null
 
       await readJsonServerSentEvents(response, async (event) => {
         const type = getStringValue(event, 'type')
@@ -838,6 +834,7 @@ export async function callBatchImageSingle(opts: {
           const payload = getStreamResponsePayload(event)
           const item = payload?.output?.[0]
           if (item) {
+            failure = getGenerationResponseError(item) ?? failure
             const img = extractImageFromOutputItem(item, mime)
             if (img) {
               completedImage = img
@@ -849,7 +846,10 @@ export async function callBatchImageSingle(opts: {
 
         if (type === 'response.completed' || isRecordValue(event.response)) {
           const payload = getStreamResponsePayload(event)
-          if (payload) rawPayload = JSON.stringify(payload, null, 2)
+          if (payload) {
+            rawPayload = JSON.stringify(payload, null, 2)
+            failure = getGenerationResponseError(payload) ?? failure
+          }
           if (!completedImage && payload) {
             const images = extractImages(payload, mime)
             if (images.length > 0) {
@@ -867,7 +867,7 @@ export async function callBatchImageSingle(opts: {
       return {
         batchItemId,
         image: completedImage,
-        error: completedImage ? null : '流式响应未返回图片',
+        error: completedImage ? null : failure ?? '流式响应未返回图片',
         rawResponsePayload: rawPayload,
       }
     }
@@ -881,13 +881,12 @@ export async function callBatchImageSingle(opts: {
     return {
       batchItemId,
       image,
-      error: image ? null : '接口未返回图片数据',
+      error: image ? null : getGenerationResponseError(payload) ?? '接口未返回图片数据',
       rawResponsePayload: JSON.stringify(payload, null, 2),
     }
   } catch (err) {
-    if (controller.signal.aborted || signal?.aborted) {
-      return { batchItemId, image: null, error: '请求已取消' }
-    }
+    if (signal?.aborted) return { batchItemId, image: null, error: '请求已取消' }
+    if (controller.signal.aborted) return { batchItemId, image: null, error: '生成请求超时，请稍后重试' }
     return { batchItemId, image: null, error: err instanceof Error ? err.message : String(err) }
   } finally {
     clearTimeout(timeoutId)

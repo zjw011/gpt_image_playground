@@ -6,6 +6,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { classifyGenerationError } from '../../src/lib/generationError.mjs'
 
 /** 明细只留最近这些条，够在后台看一眼"刚才发生了什么"，又不会让文件无限膨胀。 */
 const MAX_EVENTS = 400
@@ -48,7 +49,9 @@ const FLUSH_DELAY_MS = 5_000
  * - 400/422  请求内容或参数的问题
  * - 429      限流，是容量问题且会自行恢复
  */
-export function isChannelFault(status) {
+export function isChannelFault(status, error) {
+  const kind = classifyGenerationError(error)
+  if (kind === 'content_policy' || kind === 'cancelled') return false
   const code = toInt(status)
   if (code === 0) return true
   if (code >= 500) return true
@@ -117,6 +120,7 @@ function normalizeUsage(input) {
         consecutiveFailures: toInt(raw.consecutiveFailures),
         lastOkAt: toInt(raw.lastOkAt),
         lastFailAt: toInt(raw.lastFailAt),
+        lastFaultAt: toInt(raw.lastFaultAt, toInt(raw.lastFailAt)),
         lastError: typeof raw.lastError === 'string' ? raw.lastError.slice(0, 200) : '',
       }
     }
@@ -156,10 +160,19 @@ function normalizeUsage(input) {
         latencyMs: toInt(raw.latencyMs),
         at: toInt(raw.at),
         error: typeof raw.error === 'string' ? raw.error.slice(0, 200) : '',
-        // 老数据没有 fault 字段，按状态码补判，这样升级后历史记录也能参与健康度。
-        fault: raw.ok === true ? false : typeof raw.fault === 'boolean' ? raw.fault : isChannelFault(raw.status),
+        // 保留管理员清除的标记，同时纠正旧版把内容拒绝、取消记成渠道故障的记录。
+        fault: raw.ok !== true && raw.aborted !== true && raw.fault !== false && isChannelFault(raw.status, raw.error),
         aborted: raw.aborted === true,
       }))
+    for (const [id, stat] of Object.entries(next.channels)) {
+      const corrected = record.events.filter((raw) => isRecord(raw) && raw.channelId === id
+        && raw.ok !== true && raw.fault !== false && toInt(raw.at) >= stat.lastOkAt
+        && isChannelFault(raw.status) && (raw.aborted === true || !isChannelFault(raw.status, raw.error))).length
+      stat.consecutiveFailures = Math.max(0, stat.consecutiveFailures - corrected)
+      const lastFault = next.events.filter((item) => item.channelId === id && item.fault).at(-1)
+      if (lastFault) stat.lastFaultAt = lastFault.at
+      else if (stat.consecutiveFailures === 0) stat.lastFaultAt = 0
+    }
   }
 
   next.updatedAt = toInt(record.updatedAt)
@@ -242,10 +255,10 @@ export function recordChannelCall(entry) {
   const ok = entry.ok === true
   const latencyMs = toInt(entry.latencyMs)
   // 失败是否算渠道的锅。请求内容被拒、限流这类失败照样统计，但不参与健康度判定。
-  const fault = !ok && entry.aborted !== true && isChannelFault(entry.status)
+  const fault = !ok && entry.aborted !== true && isChannelFault(entry.status, entry.error)
 
   const channel = cache.channels[entry.channelId] ?? {
-    total: 0, ok: 0, fail: 0, latencySum: 0, consecutiveFailures: 0, lastOkAt: 0, lastFailAt: 0, lastError: '',
+    total: 0, ok: 0, fail: 0, latencySum: 0, consecutiveFailures: 0, lastOkAt: 0, lastFailAt: 0, lastFaultAt: 0, lastError: '',
   }
   channel.total += 1
   channel.latencySum += latencyMs
@@ -258,7 +271,10 @@ export function recordChannelCall(entry) {
     channel.lastFailAt = at
     channel.lastError = String(entry.error ?? '').slice(0, 200)
     // 只有渠道自身的故障才推进连续失败计数。
-    if (fault) channel.consecutiveFailures += 1
+    if (fault) {
+      channel.consecutiveFailures += 1
+      channel.lastFaultAt = at
+    }
   }
   cache.channels[entry.channelId] = channel
 
@@ -344,8 +360,8 @@ export function channelHealth(channelId, recentWindow = 20, now = Date.now()) {
   const recentFaults = recent.filter((item) => item.fault).length
   const recentFailRate = recent.length ? recentFaults / recent.length : 0
   // 最近一次成功比最近一次故障更晚，说明已经恢复了。
-  const recovered = stat.lastOkAt > stat.lastFailAt
-  const stale = stat.lastFailAt > 0 && now - stat.lastFailAt > STALE_FAULT_MS
+  const recovered = stat.lastOkAt > stat.lastFaultAt
+  const stale = stat.lastFaultAt > 0 && now - stat.lastFaultAt > STALE_FAULT_MS
   const faulting = stat.consecutiveFailures > 0 && !recovered && !stale
 
   const state = faulting && stat.consecutiveFailures >= DOWN_THRESHOLD
@@ -361,7 +377,7 @@ export function channelHealth(channelId, recentWindow = 20, now = Date.now()) {
     recentCalls: recent.length,
     stale,
     // 带上最近错误，后台的故障提示才能直接说"因为什么"，不必再跳到用量页。
-    lastError: state === 'healthy' ? '' : stat.lastError,
+    lastError: state === 'healthy' ? '' : cache.events.filter((item) => item.channelId === channelId && item.fault).at(-1)?.error ?? stat.lastError,
   }
 }
 

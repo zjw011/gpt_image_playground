@@ -21,7 +21,8 @@
     "audit:try-on": "node scripts/audit-try-on.mjs",
     "audit:image-cleanup": "node scripts/audit-image-cleanup.mjs",
     "audit:image-paste": "node scripts/audit-image-paste.mjs",
-    "audit:image-size": "node scripts/audit-image-size.mjs"
+    "audit:image-size": "node scripts/audit-image-size.mjs",
+    "audit:generation-errors": "node scripts/audit-generation-errors.mjs"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.0",

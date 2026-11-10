@@ -2,6 +2,7 @@ import type { AppSettings, ResponsesOutputItem, TaskParams } from '../types'
 import { blobToDataUrl } from './dataUrl'
 import { useCreditsStore } from './creditsStore'
 import { isImageSizeError } from './taskFailure'
+import { classifyGenerationError, formatGenerationError } from './generationError.mjs'
 
 export const MIME_MAP: Record<string, string> = {
   png: 'image/png',
@@ -107,7 +108,7 @@ export function assertMaskEditFileSize(label: string, bytes: number) {
   assertMaxBytes(label, bytes, MAX_MASK_EDIT_FILE_BYTES)
 }
 
-export const IMAGE_FETCH_CORS_HINT = ' 可点链接按钮复制结果链接，或尝试开启「返回 Base64 图片数据」避免此问题。'
+export const IMAGE_FETCH_CORS_HINT = ' 已收到结果链接，但未能取回有效图片；可能与网络、链接过期或跨域限制有关。'
 export const STREAMING_UNSUPPORTED_HINT = '提示：当前使用的 API 可能不支持流式传输，请尝试关闭「流式传输」功能。'
 export const STREAMING_FORMAT_HINT = '提示：API 返回了无法解析的流式数据格式，请尝试关闭「流式传输」功能。'
 export const TRANSPARENT_BACKGROUND_UNSUPPORTED_HINT = '提示：当前使用的 API 不支持为该模型使用原生透明背景，请将「透明背景实现方式」切换为「本地后处理」。'
@@ -127,7 +128,7 @@ export function maybeAppendTransparentBackgroundHint(message: string): string {
 
 /** 排除明确与流式无关的状态码后追加提示 */
 export function maybeAppendStreamingHint(message: string, status: number, streamImages?: boolean): string {
-  if (status === 413 || isImageSizeError(message)) return message
+  if (status === 413 || isImageSizeError(message) || classifyGenerationError(message)) return message
   const transparentMessage = maybeAppendTransparentBackgroundHint(message)
   if (transparentMessage !== message) return transparentMessage
   if (!streamImages) return message
@@ -135,24 +136,6 @@ export function maybeAppendStreamingHint(message: string, status: number, stream
     return message
   }
   return appendStreamingUnsupportedHint(message)
-}
-
-async function probeNoCorsReachability(url: string, timeoutMs = 8000): Promise<'opaque' | 'reachable' | 'failed'> {
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      mode: 'no-cors',
-      cache: 'no-store',
-      signal: controller.signal,
-    })
-    return response.type === 'opaque' ? 'opaque' : 'reachable'
-  } catch {
-    return 'failed'
-  } finally {
-    clearTimeout(timeoutId)
-  }
 }
 
 export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, signal?: AbortSignal): Promise<string> {
@@ -166,23 +149,25 @@ export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, 
     })
   } catch (err) {
     if (err instanceof TypeError) {
-      const probe = await probeNoCorsReachability(url)
-      if (probe === 'opaque') {
-        throw new Error(`图片已生成，但因服务商未允许跨域，图片链接下载失败。${IMAGE_FETCH_CORS_HINT}`)
-      }
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-        throw new Error(`图片链接下载失败（网络不可用）。${IMAGE_FETCH_CORS_HINT}`)
+        throw new Error('图片链接下载失败：当前网络不可用，请恢复网络后重试。')
       }
-      throw new Error(`图片链接下载失败（可能因跨域限制、链接过期或网络异常）。${IMAGE_FETCH_CORS_HINT}`)
+      throw new Error(`图片链接下载失败。${IMAGE_FETCH_CORS_HINT}`)
     }
     throw err
   }
 
-  if (!response.ok) {
-    throw new Error(`图片 URL 下载失败：HTTP ${response.status}`)
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+  if (!response.ok || /json|text\//.test(contentType)) {
+    const message = await getApiErrorMessage(response)
+    if (classifyGenerationError(message)) throw new Error(message)
+    throw new Error(`图片结果下载失败：HTTP ${response.status}，${response.ok ? '结果链接未返回图片' : message}`)
   }
 
   const blob = await response.blob()
+  if (!blob.size || (blob.type && !blob.type.startsWith('image/') && !blob.type.startsWith('application/octet-stream'))) {
+    throw new Error('图片结果下载失败：结果链接未返回有效图片')
+  }
   return blobToDataUrl(blob, fallbackMime)
 }
 
@@ -199,6 +184,8 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
     else if (Array.isArray(errJson.detail)) errorMsg = errJson.detail.map((item: unknown) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n')
     else if (typeof errJson.error === 'string') errorMsg = errJson.error
     else if (errJson.message) errorMsg = errJson.message
+    // code/refusal 可能是唯一的审核依据，不能只留下泛化的 message。
+    errorMsg = formatGenerationError(payload, errorMsg)
   } catch {
     try {
       errorMsg = await textResponse.text()

@@ -31,6 +31,7 @@ ENV GIP_DIST_DIR=/app/dist
 # 服务端零运行时依赖，只需要源码 + 构建产物。
 COPY --from=build /app/dist ./dist
 COPY server ./server
+COPY src/lib/generationError.mjs ./src/lib/generationError.mjs
 COPY package.json ./
 
 RUN mkdir -p /data && chown -R node:node /data /app

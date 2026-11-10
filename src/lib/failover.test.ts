@@ -49,6 +49,10 @@ describe('isFailoverableError', () => {
     expect(isFailoverableError(new Error('Failed to fetch'))).toBe(true)
     expect(isFailoverableError(new Error('HTTP 400: file too large'))).toBe(true)
   })
+
+  it.each(['content_policy_violation', 'safety rejected', 'upstream task cancelled', '图片结果下载失败：HTTP 403'])('明确请求终止或取图失败不再次生成：%s', (message) => {
+    expect(isFailoverableError(new Error(message))).toBe(false)
+  })
 })
 
 describe('getFailoverCandidates', () => {
@@ -113,5 +117,13 @@ describe('formatFailoverError', () => {
     expect(message).toContain('1. 渠道 a：429 too many requests')
     expect(message).toContain('2. 渠道 b：500 upstream error')
     expect(message).not.toContain('2. 渠道 b：500 upstream error\n更多细节')
+  })
+
+  it.each(['content_policy_violation', '上游生成任务已取消', '图片链接下载失败'])('后续收到请求终止或取图错误，不再包装为全部渠道失败：%s', (message) => {
+    const attempts = [
+      createFailoverAttempt(createProfile('a'), new Error('HTTP 502')),
+      createFailoverAttempt(createProfile('b'), new Error(message)),
+    ]
+    expect(formatFailoverError(attempts, message)).toBe(message)
   })
 })

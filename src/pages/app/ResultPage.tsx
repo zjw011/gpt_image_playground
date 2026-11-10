@@ -15,7 +15,8 @@ import { cleanVisibleWatermark, imageCleanupMessage } from '../../lib/imageClean
 import { exportQuickMotion, normalizeQuickMotionOptions } from '../../lib/quickMotion'
 import { isQuickMotionTask } from '../../lib/quickMotionTask'
 import { isLiveProfessionalPreset } from '../../lib/professionalTools'
-import { getTaskFailureHint, isImageSizeError } from '../../lib/taskFailure'
+import { getTaskFailureHint, isImageDownloadError, isImageSizeError } from '../../lib/taskFailure'
+import { classifyGenerationError, formatGenerationError } from '../../lib/generationError.mjs'
 import { isBackendMode, getBackendUser } from '../../lib/backend'
 import { publishWork } from '../../lib/galleryApi'
 import { copyTextToClipboard } from '../../lib/clipboard'
@@ -131,9 +132,22 @@ export default function ResultPage() {
   const running = task.status === 'running'
   const failedWithOutput = task.status === 'error' && task.outputImages.length > 0
   const exportAsLive = liveTask && (!failedWithOutput || task.outputImages.length > 1)
-  const sizeError = [task.error, ...(task.outputErrors ?? []).map((item) => item.error)].find(isImageSizeError)
-  const imageTooLarge = (task.status === 'error' || task.status === 'done') && Boolean(sizeError)
-  const errorHint = getTaskFailureHint(sizeError ?? task.error)
+  const errors = [
+    task.error,
+    ...(task.outputErrors ?? []).map((item) => item.error),
+    classifyGenerationError(task.rawResponsePayload) ? formatGenerationError(task.rawResponsePayload) : null,
+  ].filter(Boolean)
+  const failureError = errors.find((error) => classifyGenerationError(error) === 'content_policy')
+    ?? errors.find(isImageSizeError)
+    ?? errors.find((error) => classifyGenerationError(error) || isImageDownloadError(error))
+    ?? task.error
+  const failureKind = classifyGenerationError(failureError)
+  const imageTooLarge = (task.status === 'error' || task.status === 'done') && isImageSizeError(failureError)
+  const contentBlocked = (task.status === 'error' || task.status === 'done') && failureKind === 'content_policy'
+  const downloadFailed = isImageDownloadError(failureError)
+  const editBeforeRetry = imageTooLarge || contentBlocked
+  const errorHint = getTaskFailureHint(failureError)
+  const retryLabel = contentBlocked ? '修改内容' : imageTooLarge ? '调整参考图' : quickMotion ? '编辑运镜' : task.tryOn ? '编辑换装' : '再次生成'
   const showDiagnostics = !isBackendMode() || getBackendUser()?.role === 'admin'
 
   const download = async () => {
@@ -233,10 +247,10 @@ export default function ResultPage() {
       navigate(`/tools?tool=try-on&task=${task.id}`)
       return
     }
-    await reuseConfig(task, imageTooLarge ? { editOnly: true } : undefined)
-    if (imageTooLarge) {
+    await reuseConfig(task, editBeforeRetry ? { editOnly: true } : undefined)
+    if (editBeforeRetry) {
       const tool = liveTask ? 'live&liveMode=ai' : task.professionalPreset?.startsWith('product-suite-') ? 'product-suite' : task.professionalPreset?.startsWith('ecommerce-') ? 'ecommerce' : null
-      navigate(tool ? `/tools?tool=${tool}&task=${encodeURIComponent(task.id)}` : `/studio?mode=${task.maskImageId ? 'inpaint' : 'image'}`)
+      navigate(tool ? `/tools?tool=${tool}&task=${encodeURIComponent(task.id)}` : `/studio?mode=${task.maskImageId ? 'inpaint' : task.inputImageIds.length ? 'image' : 'text'}`)
       return
     }
     // 提交失败（渠道没了之类）就留在当前这件作品上，别把 task 参数清掉
@@ -321,7 +335,7 @@ export default function ResultPage() {
           disabled: publishing || published,
         }]
       : []),
-    { icon: IconRefresh, label: imageTooLarge ? '调整参考图' : quickMotion ? '编辑运镜' : task.tryOn ? '编辑换装' : '再次生成', onClick: () => void regenerate() },
+    { icon: IconRefresh, label: retryLabel, onClick: () => void regenerate() },
     ...(!quickMotion ? [{ icon: IconCopy, label: '复制提示词', onClick: () => void copyPrompt() }] : []),
     { icon: IconTrash, label: '删除', onClick: confirmDelete, danger: true },
   ]
@@ -370,11 +384,11 @@ export default function ResultPage() {
 
             {(failedWithOutput || (task.status === 'done' && Boolean(task.outputErrors?.length))) && (
               <div role="status" className="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs leading-5 text-amber-800">
-                本次部分完成，已保留 {task.outputImages.length} 张图片{liveTask && task.liveFrameCount ? `（目标 ${task.liveFrameCount} 帧）` : ''}。你可以查看和下载已有结果，或点击「{imageTooLarge ? '调整参考图' : quickMotion ? '编辑运镜' : task.tryOn ? '编辑换装' : '再次生成'}」重新创作。
-                {imageTooLarge && <p className="mt-2">{errorHint}</p>}
-                {failedWithOutput && task.error && <details className="mt-2 rounded-xl border border-amber-200 bg-white/80 px-3 py-2 text-left">
+                本次部分完成，已保留 {task.outputImages.length} 张图片{liveTask && task.liveFrameCount ? `（目标 ${task.liveFrameCount} 帧）` : ''}。你可以查看和下载已有结果，或点击「{retryLabel}」重新创作。
+                {(imageTooLarge || failureKind || downloadFailed) && <p className="mt-2">{errorHint}</p>}
+                {failureError && (failedWithOutput || showDiagnostics) && <details className="mt-2 rounded-xl border border-amber-200 bg-white/80 px-3 py-2 text-left">
                   <summary className="cursor-pointer font-medium">{showDiagnostics ? '查看错误详情' : '查看处理建议'}</summary>
-                  <p className="mt-2 whitespace-pre-wrap break-words text-[11px] leading-5">{showDiagnostics ? task.error : errorHint}</p>
+                  <p className="mt-2 whitespace-pre-wrap break-words text-[11px] leading-5">{showDiagnostics ? failureError : errorHint}</p>
                 </details>}
               </div>
             )}
@@ -396,12 +410,12 @@ export default function ResultPage() {
               ) : task.status === 'error' && !failedWithOutput ? (
                 <div className="w-full max-w-xl px-4 text-center">
                   <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50 text-2xl">!</span>
-                  <p className="mt-4 text-sm font-semibold text-red-500">{imageTooLarge ? '参考图片过大，请调整后再试' : '这次没有生成成功'}</p>
-                  <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-[#8a86ac]">{errorHint}本次失败不会扣除积分。</p>
-                  {task.error && showDiagnostics && (
+                  <p className="mt-4 text-sm font-semibold text-red-500">{contentBlocked ? '内容未通过安全审核' : imageTooLarge ? '参考图片过大，请调整后再试' : failureKind === 'cancelled' ? '本次生成已取消' : failureKind === 'timeout' ? '等待生成结果超时' : downloadFailed ? '暂未取回生成结果' : '这次没有生成成功'}</p>
+                  <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-[#8a86ac]">{errorHint}{isBackendMode() && (imageTooLarge ? '本次失败不会扣除积分。' : '积分结算请以「我的积分」记录为准。')}</p>
+                  {failureError && showDiagnostics && (
                     <details className="mx-auto mt-4 max-w-lg rounded-2xl border border-red-100 bg-white px-4 py-3 text-left">
                       <summary className="cursor-pointer text-xs font-medium text-[#8a86ac]">查看错误详情</summary>
-                      <p className="mt-3 whitespace-pre-wrap break-words text-[11px] leading-5 text-red-400">{task.error}</p>
+                      <p className="mt-3 whitespace-pre-wrap break-words text-[11px] leading-5 text-red-400">{failureError}</p>
                     </details>
                   )}
                   <button
@@ -409,7 +423,7 @@ export default function ResultPage() {
                     onClick={() => void regenerate()}
                     className="mt-5 min-h-11 rounded-full bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-[#7c6cf6]/25"
                   >
-                    {imageTooLarge ? '返回调整参考图' : '重新生成'}
+                    {contentBlocked ? '返回修改内容' : imageTooLarge ? '返回调整参考图' : '重新生成'}
                   </button>
                 </div>
               ) : quickMotion && fullSrc ? (

@@ -6066,6 +6066,43 @@ describe('channel failover', () => {
     expect(useStore.getState().tasks[0].failoverAttempts).toBeUndefined()
   })
 
+  it.each(['content_policy_violation', 'upstream request cancelled', '图片结果下载失败：HTTP 403'])('请求终止或取图失败不自动换渠道重复生成：%s', async (message) => {
+    vi.mocked(callImageApi).mockRejectedValueOnce(new Error(message))
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+    expect(useStore.getState().tasks[0].error).toBe(message)
+    expect(useStore.getState().showToast).not.toHaveBeenCalledWith(expect.stringContaining('正在尝试'), 'info')
+  })
+
+  it.each([
+    { provider: 'fal', message: 'request aborted: content_policy_violation' },
+    { provider: 'fal', message: 'upstream request cancelled; connection closed' },
+    { provider: 'custom-async', message: '请求因内容安全审核未通过而中断' },
+    { provider: 'custom-async', message: 'upstream task cancelled; network disconnected' },
+  ])('$provider 审核拒绝或上游取消不能因中断关键词进入自动恢复', async ({ provider, message }) => {
+    const profile = provider === 'fal'
+      ? createDefaultFalProfile({ id: 'queued', apiKey: 'key' })
+      : { ...firstProfile, provider }
+    useStore.setState({
+      settings: normalizeSettings({
+        ...useStore.getState().settings,
+        profiles: [profile, secondProfile],
+        activeProfileId: profile.id,
+        customProviders: provider === 'fal' ? [] : [{ id: provider, name: '异步测试', submit: { path: 'images/generations', taskIdPath: 'task_id' }, poll: { path: 'tasks/$taskId', statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], intervalSeconds: 1 } }],
+      }),
+    })
+    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
+      if (provider === 'fal') opts.onFalRequestEnqueued?.({ requestId: 'queued-1', endpoint: 'fal-ai/image' })
+      else opts.onCustomTaskEnqueued?.({ taskId: 'queued-1' })
+      throw new Error(message)
+    })
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+    expect(useStore.getState().tasks[0]).toMatchObject({ error: message, falRecoverable: false, customRecoverable: false })
+  })
+
   it('keeps a single attempt when failover is disabled', async () => {
     useStore.setState({
       settings: normalizeSettings({

@@ -2,7 +2,7 @@
 // 一旦健康度判定或滚动裁剪出错，后台就会指着好渠道说它挂了，或者让文件无限膨胀。
 
 import { describe, expect, it } from 'vitest'
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -179,9 +179,40 @@ describe('isChannelFault', () => {
       expect(isChannelFault(status), `status=${status}`).toBe(false)
     }
   })
+
+  it.each([0, 403, 500, 502])('状态 %s 也优先按明确的审核拒绝或取消判断', (status) => {
+    expect(isChannelFault(status, { error: { code: 'content_policy_violation', message: 'Rejected' } })).toBe(false)
+    expect(isChannelFault(status, 'request canceled')).toBe(false)
+    expect(isChannelFault(status, 'operation canceled after timeout')).toBe(true)
+  })
 })
 
 describe('健康度的误报防线', () => {
+  it('升级后纠正旧版审核/取消故障标记和连续计数，保留真实故障与调用统计', () => {
+    const dir = freshDir()
+    const at = Date.now()
+    const errors = ['content_policy_violation', 'request cancelled', 'socket hang up']
+    writeFileSync(join(dir, 'usage.json'), JSON.stringify({
+      channels: { 'ch-1': { total: 3, ok: 0, fail: 3, consecutiveFailures: 3, lastFailAt: at, lastError: errors[2] } },
+      events: errors.map((error, idx) => ({ channelId: 'ch-1', ok: false, status: 502, error, fault: true, at: at - 2 + idx })),
+    }))
+    initUsage(dir)
+    expect(usageSummary().events.map((item) => item.fault)).toEqual([true, false, false])
+    expect(usageSummary().channels[0]).toMatchObject({ total: 3, fail: 3, consecutiveFailures: 1 })
+    flushUsage()
+    initUsage(dir)
+    expect(usageSummary().channels[0].consecutiveFailures).toBe(1)
+  })
+
+  it('持续审核拒绝不会刷新真正渠道故障的过期时间', () => {
+    freshDir()
+    const old = Date.now() - 7 * 3_600_000
+    record('ch-1', false, 3, { at: old, status: 502, error: 'Bad gateway' })
+    record('ch-1', false, 4, { status: 403, error: 'content_policy_violation' })
+    expect(channelHealth('ch-1')).toMatchObject({ state: 'healthy', stale: true, consecutiveFailures: 0 })
+    expect(usageSummary().totals).toEqual({ total: 7, ok: 0, fail: 7 })
+  })
+
   it('提示词被拒（400）重复多次也不会把渠道标成故障', () => {
     freshDir()
     // 故障转移会让同一个坏提示词把每条渠道都试一遍，各吃一次 400。

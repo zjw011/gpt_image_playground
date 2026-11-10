@@ -1,7 +1,92 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultOpenAIProfile, DEFAULT_SETTINGS } from './apiProfiles'
-import { callAgentConversationTitleApi, callAgentResponsesApi, parseBatchImageCallArguments } from './agentApi'
+import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments } from './agentApi'
+import { classifyGenerationError } from './generationError.mjs'
+
+describe('Agent 批量图片失败原因', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it.each([false, true])('审核拒绝保留错误代码，流式=%s', async (streamImages) => {
+    const payload = {
+      output: [{ type: 'image_generation_call', id: 'ig-fail', status: 'failed', error: { code: 'content_policy_violation', message: 'Request rejected' } }],
+    }
+    const body = streamImages
+      ? `data: ${JSON.stringify({ type: 'response.completed', response: payload })}\n\ndata: [DONE]\n\n`
+      : JSON.stringify(payload)
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, {
+      headers: { 'Content-Type': streamImages ? 'text/event-stream' : 'application/json' },
+    }))
+    const result = await callBatchImageSingle({
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses', streamImages }),
+      params: DEFAULT_PARAMS, batchItemId: 'batch-fail', prompt: 'prompt', referenceImageDataUrls: [],
+    })
+
+    expect(result.image).toBeNull()
+    expect(classifyGenerationError(result.error)).toBe('content_policy')
+    expect(result.error).toContain('Request rejected')
+    expect(result.error).not.toContain('流式传输')
+  })
+
+  it('refusal 响应不改写成没有图片数据', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{ type: 'message', content: [{ type: 'refusal', refusal: 'I cannot fulfill this request.' }] }],
+    }), { headers: { 'Content-Type': 'application/json' } }))
+    const result = await callBatchImageSingle({
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses' }),
+      params: DEFAULT_PARAMS, batchItemId: 'batch-refusal', prompt: 'prompt', referenceImageDataUrls: [],
+    })
+
+    expect(classifyGenerationError(result.error)).toBe('content_policy')
+    expect(result.error).toContain('I cannot fulfill this request.')
+  })
+
+  it('没有 error 包装的 SSE 错误事件保留审核 code', async () => {
+    const body = `data: ${JSON.stringify({ type: 'error', code: 'content_policy_violation', message: 'Rejected' })}\n\n`
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, {
+      headers: { 'Content-Type': 'text/event-stream' },
+    }))
+    const result = await callBatchImageSingle({
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses', streamImages: true }),
+      params: DEFAULT_PARAMS, batchItemId: 'batch-event-error', prompt: 'prompt', referenceImageDataUrls: [],
+    })
+
+    expect(classifyGenerationError(result.error)).toBe('content_policy')
+    expect(result.error).toContain('Rejected')
+  })
+
+  it('已取消只保留取消原因，不推断内容审核', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ status: 'cancelled', output: [] }), {
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const result = await callBatchImageSingle({
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses' }),
+      params: DEFAULT_PARAMS, batchItemId: 'batch-cancelled', prompt: 'prompt', referenceImageDataUrls: [],
+    })
+
+    expect(classifyGenerationError(result.error)).toBe('cancelled')
+    expect(result.error).not.toContain('审核')
+  })
+
+  it('本地超时不误报用户取消', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+    }))
+    const pending = callBatchImageSingle({
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses', timeout: 1 }),
+      params: DEFAULT_PARAMS, batchItemId: 'batch-timeout', prompt: 'prompt', referenceImageDataUrls: [],
+    })
+    await vi.advanceTimersByTimeAsync(1000)
+    const result = await pending
+
+    expect(classifyGenerationError(result.error)).toBe('timeout')
+    expect(result.error).not.toContain('取消')
+  })
+})
 
 describe('parseBatchImageCallArguments', () => {
   it('trims ids and prompts, fills missing ids, and skips empty prompts', () => {
@@ -119,7 +204,8 @@ describe('callAgentResponsesApi', () => {
       },
     })
 
-    expect(failures).toEqual([{ toolCallId: 'ig_fail', error: 'safety rejected' }])
+    expect(failures).toEqual([{ toolCallId: 'ig_fail', error: expect.stringContaining('safety rejected') }])
+    expect(classifyGenerationError(failures[0].error)).toBe('content_policy')
     expect(result).toMatchObject({
       responseId: 'resp_1',
       text: '已跳过失败图片',

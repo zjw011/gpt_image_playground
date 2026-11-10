@@ -26,6 +26,7 @@ import { generationGate } from './generationGate.mjs'
 import { findChannel, getConfig } from './store.mjs'
 import { attemptUpstream, buildUpstreamUrl, forwardableHeaders } from './upstream.mjs'
 import { isChannelFault, recordChannelCall } from './usage.mjs'
+import { classifyGenerationError, formatGenerationError, getGenerationResponseError } from '../../src/lib/generationError.mjs'
 
 const FAL_TARGET_URL_HEADER = 'x-fal-target-url'
 const FAL_ALLOWED_HOSTS = /(^|\.)(fal\.run|fal\.ai)$/
@@ -133,14 +134,38 @@ function hasImageOrTaskPayload(text) {
     || /"task_id"\s*:\s*"[^"]+/i.test(text)
 }
 
+/** 整体失败优先；单个工具失败不能覆盖同一响应里已经完成的其他图片。 */
+function inspectImagePayload(payload) {
+  if (!payload || typeof payload !== 'object') return { image: false, error: null }
+  const { data, output, response, item, content, ...head } = payload
+  const error = getGenerationResponseError(head)
+  if (error) return { image: false, error: getGenerationResponseError(payload) || error }
+  if (response && typeof response === 'object') return inspectImagePayload(response)
+
+  const entries = Array.isArray(payload) ? payload : Array.isArray(data) ? data : Array.isArray(output) ? output : item ? [item] : [payload]
+  const image = entries.some((entry) => {
+    if (!entry || typeof entry !== 'object' || getGenerationResponseError(entry)) return false
+    if (typeof entry.b64_json === 'string' && entry.b64_json.trim()) return true
+    if (typeof entry.partial_image_b64 === 'string' && entry.partial_image_b64.trim()) return true
+    if (typeof entry.url === 'string' && /^(?:https?:|data:image\/)/i.test(entry.url)) return true
+    if (entry.type !== 'image_generation_call') return false
+    const result = entry.result
+    return typeof result === 'string' ? Boolean(result.trim()) : result && typeof result === 'object'
+      && ['b64_json', 'base64', 'image', 'data'].some((key) => typeof result[key] === 'string' && result[key].trim())
+  })
+  return { image, error: image ? null : getGenerationResponseError(payload) }
+}
+
 /**
  * 兼容网关偶尔会用 HTTP 200 包一段错误 JSON。过去这里只看状态码就扣积分，
  * 前端随后解析不到图片，用户看到失败却已经被扣费。先窥视响应开头：小响应直到结束
- * 都没有图片/异步任务字段就判为渠道故障；大响应超过检查窗口时保守放行。
+ * 都没有图片/异步任务字段就判为失败；内容审核或取消由调用处单独处理。
+ * SSE 也检查首批完整事件；超过检查窗口或开始传图后继续流式转发。
  */
 function inspectSuccessfulPayload(upstreamRes) {
   const contentType = String(upstreamRes.headers['content-type'] ?? '').toLowerCase()
-  if (contentType && !contentType.includes('json')) {
+  const streaming = contentType.includes('text/event-stream')
+  if (contentType && !contentType.includes('json') && !streaming) {
     return Promise.resolve({ valid: true, chunks: [], complete: false })
   }
 
@@ -163,15 +188,34 @@ function inspectSuccessfulPayload(upstreamRes) {
       resolve({ valid, chunks, message, complete })
     }
     const text = () => Buffer.concat(chunks).toString('utf-8')
+    const inspectBody = (body, complete = false) => {
+      const frames = streaming ? body.split(/\r?\n\r?\n/).slice(0, complete ? undefined : -1) : [body]
+      for (const frame of frames) {
+        const data = streaming ? frame.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n') : frame
+        if (!data || data === '[DONE]') continue
+        try {
+          const result = inspectImagePayload(JSON.parse(data))
+          // SSE 按事件顺序处理：开始传图之后，后续失败继续交给客户端处理部分结果。
+          if (result.error || result.image) return result
+        } catch {
+          // 未完成的 JSON 留给后续字节；未知格式保持原来的转发行为。
+        }
+      }
+      return { image: false, error: null }
+    }
     const onData = (chunk) => {
       chunks.push(chunk)
       size += chunk.length
-      if (hasImageOrTaskPayload(text())) return finish(true)
+      const body = text()
+      const result = inspectBody(body)
+      if (result.error) return finish(false, result.error.slice(0, ERROR_SNIPPET_BYTES))
+      if (streaming && result.image) return finish(true)
       if (size >= SUCCESS_PEEK_BYTES) finish(true)
     }
     const onEnd = () => {
       const body = text()
-      finish(hasImageOrTaskPayload(body), body.trim().slice(0, ERROR_SNIPPET_BYTES), true)
+      const result = inspectBody(body, true)
+      finish(!result.error && hasImageOrTaskPayload(body), result.error || body.trim().slice(0, ERROR_SNIPPET_BYTES), true)
     }
     const onError = () => finish(false, '上游成功响应读取失败')
 
@@ -359,7 +403,7 @@ function adoptResponse(res, upstreamRes, extraHeaders, headChunks = [], complete
       res.writeHead(upstreamRes.statusCode ?? 502, { ...forwardableHeaders(upstreamRes), ...extraHeaders })
     }
     for (const chunk of headChunks) res.write(chunk)
-    if (complete) {
+    if (complete || upstreamRes.readableEnded) {
       res.end()
       resolve({ status: upstreamRes.statusCode ?? 0 })
       return
@@ -513,6 +557,9 @@ export async function handleRelay(req, res, ctx) {
           release()
           return { status: 0 }
         }
+        if (!isChannelFault(0, message)) {
+          throw new HttpError(classifyGenerationError(message) === 'content_policy' ? 400 : 409, formatGenerationError(message))
+        }
         continue
       }
 
@@ -521,26 +568,27 @@ export async function handleRelay(req, res, ctx) {
       if (isChannelFault(attempt.status)) {
         const snippet = await readErrorSnippet(attempt.upstreamRes).catch(() => '')
         attempt.upstream.destroy()
-        const message = `HTTP ${attempt.status}${snippet ? `：${snippet.slice(0, 160)}` : ''}`
-        failures.push(`${channel.name}：${message}`)
+        const message = `HTTP ${attempt.status}${snippet ? `：${formatGenerationError(snippet).slice(0, ERROR_SNIPPET_BYTES)}` : ''}`
         track(false, attempt.status, message)
         if (clientGone || res.writableEnded) {
           release()
           return { status: attempt.status }
         }
+        if (!isChannelFault(attempt.status, message)) throw new HttpError(attempt.status, message)
+        failures.push(`${channel.name}：${message}`)
         continue
       }
 
       // 采用这条渠道。从这里开始就不再有重试的机会了。
       //
-      // 结算放在写响应头之前：上游已经给出 2xx，出图这件事就已经发生了，
-      // 之后再断流也不该白送——否则"客户端中途关页面"就成了免费的旁路。
+      // 结算前检查小型响应里的实际失败。传图开始后的断流仍由现有流式结算处理，
+      // 不能仅凭浏览器断开就认定上游取消或审核失败。
       // 顺带把扣费结果塞进响应头，前端不用再打一次接口就知道新余额。
       const success = attempt.status >= 200 && attempt.status < 300
       if (!success && heartbeat.started) {
         const snippet = await readErrorSnippet(attempt.upstreamRes).catch(() => '')
         attempt.upstream.destroy()
-        const message = `HTTP ${attempt.status}${snippet ? `：${snippet.slice(0, 160)}` : ''}`
+        const message = `HTTP ${attempt.status}${snippet ? `：${formatGenerationError(snippet).slice(0, ERROR_SNIPPET_BYTES)}` : ''}`
         track(false, attempt.status, message)
         release()
         heartbeat.finishError(message)
@@ -551,6 +599,12 @@ export async function handleRelay(req, res, ctx) {
         : { valid: true, chunks: [], complete: false }
       if (!inspected.valid) {
         attempt.upstream.destroy()
+        const kind = classifyGenerationError(inspected.message)
+        if (kind === 'content_policy' || kind === 'cancelled') {
+          const status = kind === 'content_policy' ? 400 : 409
+          track(false, status, inspected.message)
+          throw new HttpError(status, inspected.message)
+        }
         const message = `HTTP 502：上游返回成功状态，但没有可识别的图片或任务数据${inspected.message ? `：${inspected.message}` : ''}`
         failures.push(`${channel.name}：${message}`)
         track(false, 502, message)

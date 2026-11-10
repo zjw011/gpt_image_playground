@@ -3,6 +3,8 @@
 
 import type { ApiProfile, AppSettings, TaskRecord } from '../types'
 import { validateApiProfile } from './apiProfiles'
+import { classifyGenerationError } from './generationError.mjs'
+import { isImageDownloadError } from './taskFailure'
 
 /** 本地前置校验失败，换渠道也一样会失败，不参与故障转移。 */
 const LOCAL_FAILURE_PATTERNS = [
@@ -18,6 +20,8 @@ const LOCAL_FAILURE_PATTERNS = [
 
 export function isFailoverableError(err: unknown): boolean {
   if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return false
+  const kind = classifyGenerationError(err)
+  if (kind === 'content_policy' || kind === 'cancelled' || isImageDownloadError(err)) return false
   const message = err instanceof Error ? err.message : String(err)
   return !LOCAL_FAILURE_PATTERNS.some((pattern) => pattern.test(message))
 }
@@ -68,6 +72,8 @@ export function createFailoverAttempt(profile: ApiProfile, err: unknown): NonNul
 
 /** 全部候选都失败时的汇总错误文案。 */
 export function formatFailoverError(attempts: NonNullable<TaskRecord['failoverAttempts']>, lastError: string): string {
+  const kind = classifyGenerationError(lastError)
+  if (kind === 'content_policy' || kind === 'cancelled' || isImageDownloadError(lastError)) return lastError
   if (attempts.length <= 1) return lastError
   const lines = attempts.map((attempt, idx) => {
     const summary = attempt.error.split('\n').map((line) => line.trim()).find(Boolean) || '未知错误'

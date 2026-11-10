@@ -1,6 +1,7 @@
 import { fal } from '@fal-ai/client'
 import type { ApiProfile, FalApiResponse, TaskParams } from '../types'
 import { DEFAULT_FAL_BASE_URL } from './apiProfiles'
+import { getGenerationResponseError } from './generationError.mjs'
 import {
   assertImageInputPayloadSize,
   assertMaskEditFileSize,
@@ -96,6 +97,8 @@ async function parseFalImageResults(payload: FalApiResponse, fallbackMime: strin
   actualParams?: Partial<TaskParams>
   rawImageUrl?: string
 }>> {
+  const payloadError = getGenerationResponseError(payload)
+  if (payloadError) throw new Error(payloadError)
   const candidates: unknown[] = []
   if (Array.isArray(payload.images)) candidates.push(...payload.images)
   if (payload.image) candidates.push(payload.image)
@@ -152,6 +155,8 @@ async function parseFalResult(payload: FalApiResponse, params: TaskParams, custo
 export function getFalErrorMessage(err: unknown): string | null {
   const body = err && typeof err === 'object' && 'body' in err ? (err as { body?: unknown }).body : null
   if (!body || typeof body !== 'object') return null
+  const payloadError = getGenerationResponseError(body)
+  if (payloadError) return payloadError
 
   const detail = (body as Record<string, unknown>).detail
   if (typeof detail === 'string' && detail.trim()) return detail
@@ -187,9 +192,15 @@ export async function getFalQueuedImageResult(
   params: TaskParams,
 ): Promise<CallApiResult> {
   configureFal(profile)
-  await fal.queue.subscribeToStatus(endpoint, { requestId, logs: true })
-  const result = await fal.queue.result(endpoint, { requestId })
-  return parseFalResult(result.data as FalApiResponse, params, getFalCustomBaseUrlLabel(profile))
+  try {
+    await fal.queue.subscribeToStatus(endpoint, { requestId, logs: true })
+    const result = await fal.queue.result(endpoint, { requestId })
+    return parseFalResult(result.data as FalApiResponse, params, getFalCustomBaseUrlLabel(profile))
+  } catch (err) {
+    const falMessage = getFalErrorMessage(err)
+    if (falMessage) throw new Error(falMessage)
+    throw err
+  }
 }
 
 export async function callFalAiImageApi(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
