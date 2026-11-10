@@ -103,10 +103,9 @@ function startAppBootstrap(setBackend: (b: BackendBootstrap | null) => void, set
             const state = useStore.getState()
             state.setSettings(normalizeSettings({
               ...state.settings,
-              // 托管模式的 /api/relay 已在服务端完成整条渠道链故障转移。
-              // 前端再重试一次会把 N 条渠道放大成 N×N 次请求，还可能重复结算积分。
-              channelFailover: false,
-              channelFailoverMaxAttempts: 0,
+              // 新客户端按各渠道协议重新构造请求，中继收到协商头后只执行当前候选。
+              channelFailover: data.site.failoverEnabled,
+              channelFailoverMaxAttempts: data.site.failoverMaxAttempts,
               // Agent 也由后台总控：用户不需要（也无法）自己挑文本/图像渠道。
               ...backendAgentSettings(data),
             }))

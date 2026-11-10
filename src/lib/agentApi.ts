@@ -1,7 +1,7 @@
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
 import { classifyGenerationError, formatGenerationError, getGenerationResponseError } from './generationError.mjs'
-import { appendStreamingFormatHint, getApiErrorMessage, getResponsesImageResultBase64, maybeAppendStreamingHint, MIME_MAP, normalizeBase64Image, pickActualParams, PROMPT_REWRITE_GUARD_PREFIX } from './imageApiShared'
+import { appendStreamingFormatHint, getApiErrorMessage, getApiResponseError, getResponsesImageResultBase64, maybeAppendStreamingHint, MIME_MAP, normalizeBase64Image, pickActualParams, PROMPT_REWRITE_GUARD_PREFIX } from './imageApiShared'
 import { normalizeResponsesOutputItems } from './responsesOutputState'
 import { isEventStreamResponse, readJsonServerSentEvents, throwIfAborted } from './serverSentEvents'
 
@@ -601,7 +601,7 @@ export async function callAgentResponsesApi(opts: {
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const timeoutId = setTimeout(() => controller.abort(new DOMException('Agent 请求超时', 'TimeoutError')), profile.timeout * 1000)
   const abortFromCaller = () => controller.abort()
   if (signal?.aborted) controller.abort()
   signal?.addEventListener('abort', abortFromCaller, { once: true })
@@ -627,12 +627,11 @@ export async function callAgentResponsesApi(opts: {
     })
 
     if (!response.ok) {
-      const errorMessage = await getApiErrorMessage(response)
-      throw new Error(maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages))
+      throw await getApiResponseError(response, profile.streamImages)
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
-      return parseAgentStreamResponse(response, mime, controller.signal, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted, onImageToolFailed)
+      return await parseAgentStreamResponse(response, mime, controller.signal, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted, onImageToolFailed)
     }
 
     const rawPayload = await response.json() as unknown
@@ -647,6 +646,9 @@ export async function callAgentResponsesApi(opts: {
       outputItems: payload.output,
       rawResponsePayload: JSON.stringify(payload, null, 2),
     }
+  } catch (err) {
+    throwIfAborted(controller.signal, signal)
+    throw err
   } finally {
     clearTimeout(timeoutId)
     signal?.removeEventListener('abort', abortFromCaller)
@@ -664,7 +666,7 @@ export async function callAgentConversationTitleApi(opts: {
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const timeoutId = setTimeout(() => controller.abort(new DOMException('Agent 标题请求超时', 'TimeoutError')), profile.timeout * 1000)
   const abortFromCaller = () => controller.abort()
   if (signal?.aborted) controller.abort()
   signal?.addEventListener('abort', abortFromCaller, { once: true })
@@ -693,12 +695,15 @@ export async function callAgentConversationTitleApi(opts: {
     })
 
     if (!response.ok) {
-      throw new Error(await getApiErrorMessage(response))
+      throw await getApiResponseError(response)
     }
 
     const payload = normalizeResponsePayload(await response.json())
     if (!payload) throw new Error('Agent 标题接口返回格式无效')
     return parseAgentConversationTitleXml(extractText(payload))
+  } catch (err) {
+    throwIfAborted(controller.signal, signal)
+    throw err
   } finally {
     clearTimeout(timeoutId)
     signal?.removeEventListener('abort', abortFromCaller)
@@ -740,7 +745,7 @@ export async function callBatchImageSingle(opts: {
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const timeoutId = setTimeout(() => controller.abort(new DOMException('生成请求超时', 'TimeoutError')), profile.timeout * 1000)
   const abortFromCaller = () => controller.abort()
   if (signal?.aborted) controller.abort()
   signal?.addEventListener('abort', abortFromCaller, { once: true })

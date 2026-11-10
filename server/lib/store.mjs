@@ -199,6 +199,7 @@ export function normalizeChannel(input, fallbackId) {
   const record = isRecord(input) ? input : {}
   const provider = normalizeString(record.provider, 'openai').trim() || 'openai'
   const apiMode = record.apiMode === 'responses' ? 'responses' : 'images'
+  const model = normalizeString(record.model, 'gpt-image-2').trim() || 'gpt-image-2'
 
   return {
     id: normalizeString(record.id, fallbackId).trim() || fallbackId,
@@ -208,8 +209,10 @@ export function normalizeChannel(input, fallbackId) {
     provider,
     baseUrl: normalizeString(record.baseUrl, '').trim(),
     apiKey: normalizeString(record.apiKey, ''),
-    model: normalizeString(record.model, 'gpt-image-2').trim() || 'gpt-image-2',
+    model,
     apiMode,
+    supportsNativeGif: provider === 'openai' && apiMode === 'images'
+      && normalizeBool(record.supportsNativeGif, /^gpt-image-2\.6-(sunburst|flare)(?:-|$)/i.test(model)),
     timeout: normalizeInt(record.timeout, 600, 10, 3600),
     codexCli: normalizeBool(record.codexCli, false),
     responseFormatB64Json: normalizeBool(record.responseFormatB64Json, false),
@@ -569,6 +572,7 @@ export function toPublicChannel(channel) {
     provider: channel.provider,
     model: channel.model,
     apiMode: channel.apiMode,
+    supportsNativeGif: channel.supportsNativeGif,
     timeout: Math.max(MIN_PUBLIC_IMAGE_TIMEOUT_SECONDS, channel.timeout),
     codexCli: channel.codexCli,
     responseFormatB64Json: channel.responseFormatB64Json,

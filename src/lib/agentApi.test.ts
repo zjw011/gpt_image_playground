@@ -123,6 +123,62 @@ describe('parseBatchImageCallArguments', () => {
 describe('callAgentResponsesApi', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('收到流式响应头后继续保留超时，结束挂起的读取并释放定时器', async () => {
+    vi.useFakeTimers()
+    const cancel = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"生成中"}\n\n'))
+      },
+      cancel,
+    }), { headers: { 'Content-Type': 'text/event-stream' } }))
+    const onTextDelta = vi.fn()
+    const pending = callAgentResponsesApi({
+      settings: DEFAULT_SETTINGS,
+      profile: createDefaultOpenAIProfile({ apiKey: 'key', apiMode: 'responses', streamImages: true, timeout: 1 }),
+      params: DEFAULT_PARAMS,
+      input: 'prompt',
+      onTextDelta,
+    }).catch((err: unknown) => err)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await pending).toMatchObject({ name: 'TimeoutError', message: 'Agent 请求超时' })
+    expect(onTextDelta).toHaveBeenCalledWith('生成中')
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['responses', 'title'])('读取正文超时返回 TimeoutError，保留浏览器 AbortError 的真实原因：%s', async (mode) => {
+    vi.useFakeTimers()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const response = new Response('{}', { headers: { 'Content-Type': 'application/json' } })
+      response.json = () => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+      })
+      return response
+    })
+    const profile = createDefaultOpenAIProfile({ apiKey: 'key', apiMode: 'responses', timeout: 1 })
+    const pending = (mode === 'responses'
+      ? callAgentResponsesApi({ settings: DEFAULT_SETTINGS, profile, params: DEFAULT_PARAMS, input: 'prompt' })
+      : callAgentConversationTitleApi({ settings: DEFAULT_SETTINGS, profile, prompt: 'prompt' }))
+      .catch((err: unknown) => err)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await pending).toMatchObject({ name: 'TimeoutError' })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('保留本站并发限制的禁止故障转移标记', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ error: '当前任务较多' }), {
+      status: 429, headers: { 'Content-Type': 'application/json', 'X-GIP-Failover': 'stop' },
+    }))
+    await expect(callAgentResponsesApi({
+      settings: DEFAULT_SETTINGS,
+      profile: createDefaultOpenAIProfile({ apiKey: 'key', apiMode: 'responses' }),
+      params: DEFAULT_PARAMS,
+      input: 'prompt',
+    })).rejects.toMatchObject({ status: 429, retryable: false })
   })
 
   it('streams Agent text and requests configured partial images', async () => {

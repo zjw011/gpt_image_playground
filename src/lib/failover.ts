@@ -1,10 +1,11 @@
 // 渠道故障转移：一个渠道出图失败时，按顺序换下一个渠道重试，直到成功或候选用尽。
 // 纯逻辑放在这里，store.ts 只负责按候选列表循环调用。
 
-import type { ApiProfile, AppSettings, TaskRecord } from '../types'
+import type { ApiProfile, AppSettings, TaskParams, TaskRecord } from '../types'
 import { validateApiProfile } from './apiProfiles'
 import { classifyGenerationError } from './generationError.mjs'
 import { isImageDownloadError } from './taskFailure'
+import { supportsNativeGif } from './nativeGif'
 
 /** 本地前置校验失败，换渠道也一样会失败，不参与故障转移。 */
 const LOCAL_FAILURE_PATTERNS = [
@@ -19,6 +20,7 @@ const LOCAL_FAILURE_PATTERNS = [
 ]
 
 export function isFailoverableError(err: unknown): boolean {
+  if (err && typeof err === 'object' && 'retryable' in err && err.retryable === false) return false
   if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return false
   const kind = classifyGenerationError(err)
   if (kind === 'content_policy' || kind === 'cancelled' || isImageDownloadError(err)) return false
@@ -30,13 +32,16 @@ export function isFailoverableError(err: unknown): boolean {
  * 候选渠道顺序：起始渠道排第一，其余按 settings.profiles 顺序补齐。
  * 只保留配置完整的渠道，避免把必然失败的配置算进尝试次数。
  */
-export function getFailoverCandidates(settings: AppSettings, startProfile: ApiProfile): ApiProfile[] {
-  const candidates = [startProfile]
+export function getFailoverCandidates(settings: AppSettings, startProfile: ApiProfile, params?: TaskParams): ApiProfile[] {
+  const candidates = params?.output_format === 'gif' && !supportsNativeGif(startProfile) ? [] : [startProfile]
   if (!settings.channelFailover) return candidates
 
+  const seen = new Set([startProfile.id])
   for (const profile of settings.profiles) {
-    if (profile.id === startProfile.id) continue
+    if (seen.has(profile.id)) continue
     if (validateApiProfile(profile)) continue
+    if (params?.output_format === 'gif' && !supportsNativeGif(profile)) continue
+    seen.add(profile.id)
     candidates.push(profile)
   }
 

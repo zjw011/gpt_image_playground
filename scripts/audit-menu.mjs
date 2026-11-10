@@ -58,6 +58,9 @@ try {
     await open('/')
     await waitFor(selector, 6000)
     const state = await click(selector)
+    // 首次进入懒加载页面需等待 Vite 编译和 React 提交导航，仍严格校验最终路径。
+    const deadline = Date.now() + 6000
+    while (await currentUrl() !== expected && Date.now() < deadline) await wait(100)
     const url = await currentUrl()
     report(label, state === 'clicked' && url === expected, `${state} -> ${url}（期望 ${expected}）`)
   }

@@ -7,6 +7,7 @@ import {
   testChannel, testAllChannels, auditChannels, bulkDisableChannels, updateCustomProviders,
   type AdminChannel,
 } from '../../lib/adminApi'
+import { supportsNativeGif } from '../../lib/nativeGif'
 import { IconPlus, IconRefresh, IconTrash, IconEdit } from '../icons'
 
 const HEALTH_TONE: Record<string, string> = {
@@ -30,7 +31,8 @@ export default function ChannelsPage() {
   const [creating, setCreating] = useState(false)
 
   // 表单态
-  const [form, setForm] = useState({ name: '', provider: 'openai', baseUrl: '', model: '', apiKey: '', enabled: true })
+  const [form, setForm] = useState({ name: '', provider: 'openai', baseUrl: '', model: '', apiKey: '', enabled: true, supportsNativeGif: undefined as boolean | undefined })
+  const nativeGifEnabled = supportsNativeGif({ ...form, apiMode: 'images' })
 
   const load = useCallback(async (fresh = false) => {
     try {
@@ -70,21 +72,22 @@ export default function ChannelsPage() {
     } finally { setBusy(false) }
   }
 
-  const openCreate = () => { setCreating(true); setEditing(null); setForm({ name: '', provider: 'openai', baseUrl: '', model: '', apiKey: '', enabled: true }) }
+  const openCreate = () => { setCreating(true); setEditing(null); setForm({ name: '', provider: 'openai', baseUrl: '', model: '', apiKey: '', enabled: true, supportsNativeGif: undefined }) }
   const openEdit = (channel: AdminChannel) => {
     setEditing(channel); setCreating(false)
-    setForm({ name: String(channel.name ?? ''), provider: String(channel.provider ?? 'openai'), baseUrl: String(channel.baseUrl ?? ''), model: String(channel.model ?? ''), apiKey: '', enabled: channel.enabled !== false })
+    setForm({ name: String(channel.name ?? ''), provider: String(channel.provider ?? 'openai'), baseUrl: String(channel.baseUrl ?? ''), model: String(channel.model ?? ''), apiKey: '', enabled: channel.enabled !== false, supportsNativeGif: channel.supportsNativeGif })
   }
   const closeForm = () => { setEditing(null); setCreating(false) }
 
   const submit = async () => {
     setBusy(true); setError(null)
     try {
+      const payload = { ...form, supportsNativeGif: nativeGifEnabled, ...(nativeGifEnabled ? { apiMode: 'images' as const } : {}) }
       if (editing) {
-        await updateChannel(editing.id, { ...form, apiKey: form.apiKey || undefined })
+        await updateChannel(editing.id, { ...payload, apiKey: form.apiKey || undefined })
         toast('渠道已更新')
       } else {
-        await createChannel(form)
+        await createChannel(payload)
         toast('渠道已创建')
       }
       closeForm()
@@ -211,6 +214,15 @@ export default function ChannelsPage() {
               <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} className="h-4 w-4 rounded accent-[#2563eb]" />
               启用这条渠道
             </label>
+            {form.provider === 'openai' && (
+              <label className="flex items-start gap-3 rounded-xl border border-[#dbeafe] bg-[#eff6ff]/60 p-4 text-sm sm:col-span-2">
+                <input type="checkbox" checked={nativeGifEnabled} onChange={(e) => setForm({ ...form, supportsNativeGif: e.target.checked })} className="mt-0.5 h-4 w-4 rounded accent-[#2563eb]" />
+                <span>
+                  <span className="block font-medium text-[#1e40af]">支持原生 GIF 动图</span>
+                  <span className="mt-1 block text-xs leading-5 text-[#64748b]">用于「动态影像」的原生动图生成。Image 2.6 Sunburst / Flare 自动勾选；其他模型别名请确认上游支持后开启。开启后使用 Images API。</span>
+                </span>
+              </label>
+            )}
           </div>
           <div className="mt-5 flex gap-2">
             <button type="button" onClick={submit} disabled={busy} className="rounded-lg bg-[#2563eb] px-5 py-2 text-sm font-medium text-white transition hover:bg-[#1d4ed8] disabled:opacity-50">
@@ -247,7 +259,10 @@ export default function ChannelsPage() {
                       <p className="text-xs text-[#94a3b8]">{channel.apiKeyMask || '（无密钥）'}</p>
                     </td>
                     <td className="px-5 py-3 text-[#64748b]">{channel.provider}</td>
-                    <td className="max-w-[180px] truncate px-5 py-3 text-[#64748b]">{String(channel.model ?? '—')}</td>
+                    <td className="max-w-[180px] px-5 py-3 text-[#64748b]">
+                      <p className="truncate" title={channel.model}>{String(channel.model ?? '—')}</p>
+                      {channel.supportsNativeGif && <span className="mt-1 inline-block rounded bg-[#eff6ff] px-2 py-0.5 text-[10px] font-medium text-[#2563eb]">原生 GIF</span>}
+                    </td>
                     <td className="px-5 py-3">
                       <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${channel.enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-500'}`}>
                         {channel.enabled ? '启用' : '停用'}

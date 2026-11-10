@@ -75,6 +75,7 @@ import { ALL_FAVORITES_COLLECTION_ID, DEFAULT_FAVORITE_COLLECTION_ID, createDefa
 import { createPersistedState, mergePersistedAgentConversations, migratePersistedState, normalizePersistedState } from './lib/persistedState'
 import { addImageSizeParam, createTaskDonePatch, createTaskErrorPatch, deriveAgentImageActualParams, deriveGalleryActualParams, firstActualParams, hasActualParams, hasActualSizeParam, mapActualParamsByImage, mapRevisedPromptsByImage, markInterruptedOpenAIRunningTasks } from './lib/taskState'
 import { createFailoverAttempt, formatFailoverError, getFailoverCandidates, getFailoverTimeoutBudget, isFailoverableError, withFailoverStreamingDisabled } from './lib/failover'
+import { isNativeGifTask, normalizeNativeGifParams, supportsNativeGif } from './lib/nativeGif'
 import { stripInjectedCodexCliSizePrompt } from './lib/size'
 import { appendStylePreset } from './lib/stylePresets'
 import { appendProfessionalPreset, isLiveProfessionalPreset } from './lib/professionalTools'
@@ -1170,11 +1171,14 @@ function getTaskApiProfileName(task: TaskRecord) {
 }
 
 function isNetworkRecoverableError(err: unknown) {
+  if (err && typeof err === 'object' && 'retryable' in err && err.retryable === false) return false
   if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return true
   const kind = classifyGenerationError(err)
   if (kind === 'content_policy' || kind === 'cancelled') return false
+  if (kind === 'timeout') return true
   const message = err instanceof Error ? err.message : String(err)
   return /abort|network|failed to fetch|fetch failed|load failed|timeout|连接|断开|中断/i.test(message)
+    || /\bHTTP\s*[:=]?\s*(?:408|425|429|5\d{2})\b/i.test(message)
 }
 
 function isApiRequestNetworkError(err: unknown): boolean {
@@ -1330,13 +1334,17 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
   updateTaskInStore(task.id, {
     outputImages: outputIds,
     transparentOriginalImages: transparentOriginalImageIds,
+    outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
+    rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
     actualParams: firstActualParams(actualParamsList),
     actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
     revisedPromptByImage: undefined,
     ...createTaskDonePatch(task, Date.now()),
     falRecoverable: false,
   })
-  useStore.getState().showToast(`fal.ai 任务已恢复，共 ${outputIds.length} 张图片`, 'success')
+  useStore.getState().showToast(result.failedRequests?.length
+    ? `fal.ai 任务已恢复：成功 ${outputIds.length} 张，失败 ${result.failedRequests.length} 张`
+    : `fal.ai 任务已恢复，共 ${outputIds.length} 张图片`, result.failedRequests?.length ? 'error' : 'success')
   if (!isAgentTask(task)) showTaskCompletionNotification('图像生成完成', `fal.ai 任务已恢复，共 ${outputIds.length} 张图片。`)
   else void continueRecoveredAgentRound(task.id)
 }
@@ -1352,21 +1360,23 @@ async function recoverFalTask(taskId: string) {
     return
   }
 
+  let generationCompleted = false
   try {
     const result = await getFalQueuedImageResult(profile, task.falEndpoint, task.falRequestId, task.params)
+    generationCompleted = true
     clearFalRecoveryTimer(taskId)
     await completeRecoveredFalTask(task, result)
     return
   } catch (err) {
     if (!useStore.getState().tasks.some((item) => item.id === taskId)) return
-    if (isNetworkRecoverableError(err)) {
+    if (!generationCompleted && isNetworkRecoverableError(err)) {
       scheduleFalRecovery(taskId)
       return
     }
 
     clearFalRecoveryTimer(taskId)
     updateTaskInStore(taskId, {
-      ...createTaskErrorPatch(task, getFalErrorMessage(err) ?? (err instanceof Error ? err.message : String(err)), Date.now()),
+      ...createTaskErrorPatch(task, `${generationCompleted ? '图片已生成，但保存到浏览器失败：' : ''}${getFalErrorMessage(err) ?? (err instanceof Error ? err.message : String(err))}`, Date.now()),
       ...getRawErrorPayload(err),
       falRecoverable: false,
     })
@@ -1615,12 +1625,14 @@ async function hydrateStore() {
 }
 
 /** 提交新任务 */
-export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; stylePreset?: string; professionalPreset?: string; liveFrameCount?: number; tryOn?: TryOnOptions; inputSnapshot?: { prompt: string; inputImages: InputImage[]; params: TaskParams } } = {}): Promise<boolean> {
+export async function submitTask(options: { apiProfileId?: string; allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; stylePreset?: string; professionalPreset?: string; liveFrameCount?: number; tryOn?: TryOnOptions; inputSnapshot?: { prompt: string; inputImages: InputImage[]; params: TaskParams } } = {}): Promise<boolean> {
   const state = useStore.getState()
   const { settings, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, showToast, setConfirmDialog } = state
   const prompt = options.inputSnapshot?.prompt ?? state.prompt
   const inputImages = options.inputSnapshot?.inputImages ?? state.inputImages
-  const params = options.inputSnapshot?.params ?? state.params
+  const inputParams = options.inputSnapshot?.params ?? state.params
+  const nativeGif = options.professionalPreset === 'live-gif' || inputParams.output_format === 'gif'
+  const params = nativeGif ? normalizeNativeGifParams({ ...inputParams, output_format: 'gif' }) : inputParams
   const maskDraft = options.inputSnapshot ? null : state.maskDraft
 
   if (options.professionalPreset === 'live-quick') {
@@ -1633,9 +1645,14 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   }
 
   const normalizedSettings = normalizeSettings(settings)
-  let activeProfile = getActiveApiProfile(settings)
+  const selectedProfile = options.apiProfileId ? normalizedSettings.profiles.find((profile) => profile.id === options.apiProfileId) : undefined
+  if (options.apiProfileId && !selectedProfile) {
+    showToast('所选绘图渠道已不可用，请重新选择渠道', 'error')
+    return false
+  }
+  let activeProfile = selectedProfile ?? getActiveApiProfile(settings)
   let requestSettings = createSettingsForApiProfile(normalizedSettings, activeProfile)
-  if (!options.inputSnapshot && normalizedSettings.reuseTaskApiProfileTemporarily && (reusedTaskApiProfileId || reusedTaskApiProfileMissing)) {
+  if (!options.apiProfileId && !options.inputSnapshot && normalizedSettings.reuseTaskApiProfileTemporarily && (reusedTaskApiProfileId || reusedTaskApiProfileMissing)) {
     const reusedProfile = getReusedTaskApiProfile(normalizedSettings, reusedTaskApiProfileId)
     if (!reusedProfile) {
       if (options.useCurrentApiProfileWhenReusedMissing) {
@@ -1667,6 +1684,16 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
       'error',
     )
     return false
+  }
+  if (nativeGif) {
+    if (!supportsNativeGif(activeProfile)) {
+      showToast('所选渠道不支持原生 GIF，请选择支持动图的渠道', 'error')
+      return false
+    }
+    if (maskDraft || inputImages.length > 1 || inputImages.some((image) => !/^data:image\/(?:png|jpeg|webp);base64,/i.test(image.dataUrl))) {
+      showToast('原生 GIF 最多使用一张 PNG、JPEG 或 WebP 参考图，暂不支持遮罩', 'error')
+      return false
+    }
   }
   if (options.tryOn) {
     try {
@@ -1749,7 +1776,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     id: taskId,
     prompt: prompt.trim(),
     stylePreset: options.stylePreset,
-    professionalPreset: options.professionalPreset,
+    professionalPreset: nativeGif ? 'live-gif' : options.professionalPreset,
     ...(options.tryOn ? { tryOn: normalizeTryOnOptions(options.tryOn) } : {}),
     ...(options.inputSnapshot ? { sourceMode: 'gallery' as const } : {}),
     liveFrameCount,
@@ -3604,24 +3631,40 @@ async function executeTask(taskId: string) {
     return
   }
   const startProfile = taskProfile ?? getActiveApiProfile(settings)
-  const candidates = getFailoverCandidates(normalizeSettings(settings), startProfile)
+  const candidates = getFailoverCandidates(normalizeSettings(settings), startProfile, task.params)
+  if (!candidates.length) {
+    updateTaskInStore(taskId, createTaskErrorPatch(task, '暂无可用的原生 GIF 渠道，请联系管理员配置后重试', Date.now()))
+    return
+  }
   const attempts: NonNullable<TaskRecord['failoverAttempts']> = []
 
   for (const [attemptIndex, candidate] of candidates.entries()) {
     const hasNextCandidate = attemptIndex < candidates.length - 1
     // 换渠道重试时把提示信息写进任务，让用户知道当前在试第几个渠道。
-    if (attemptIndex > 0) {
+    if (attemptIndex > 0 || candidate.id !== startProfile.id) {
       const latest = useStore.getState().tasks.find((t) => t.id === taskId)
       if (!latest || latest.status !== 'running') return
+      const transparentMeta = latest.params.transparent_output && candidate.transparentBackgroundMethod === 'local'
+        ? createTransparentOutputMeta(latest.prompt)
+        : null
       updateTaskInStore(taskId, {
         apiProvider: candidate.provider,
         apiProfileId: candidate.id,
         apiProfileName: candidate.name,
         apiMode: candidate.apiMode,
         apiModel: candidate.model,
+        transparentOutput: transparentMeta?.transparentOutput,
+        transparentPrompt: transparentMeta?.effectivePrompt,
+        falRequestId: undefined,
+        falEndpoint: undefined,
+        falRecoverable: false,
+        customTaskId: undefined,
+        customRecoverable: false,
         failoverAttempts: attempts,
       })
-      useStore.getState().showToast(`渠道「${attempts[attempts.length - 1].profileName}」失败，正在尝试「${candidate.name}」`, 'info')
+      if (attemptIndex > 0) useStore.getState().showToast(isBackendManagedMode()
+        ? '当前绘图服务暂时不可用，正在自动切换备用服务'
+        : `渠道「${attempts[attempts.length - 1].profileName}」失败，正在尝试「${candidate.name}」`, 'info')
     }
 
     const outcome = await runTaskWithProfile(taskId, withFailoverStreamingDisabled(candidate, hasNextCandidate), {
@@ -3654,6 +3697,8 @@ async function runTaskWithProfile(
   if (!task) return { kind: 'settled' }
   const requestSettings = createSettingsForApiProfile(settings, activeProfile)
   const taskProvider = activeProfile.provider
+  let generationCompleted = false
+  let outputReceived = false
   let falRequestInfo: { requestId: string; endpoint: string } | null = task.falRequestId && task.falEndpoint
         ? { requestId: task.falRequestId, endpoint: task.falEndpoint }
     : null
@@ -3696,6 +3741,7 @@ async function runTaskWithProfile(
 
     const apiOptions: CallApiOptions = {
       settings: requestSettings,
+      clientFailover: true,
       prompt: replaceImageMentionsForApi(requestPrompt, inputDataUrls.length),
       params: task.params,
       nativeTransparentBackground: task.params.transparent_output && !task.transparentOutput,
@@ -3718,18 +3764,23 @@ async function runTaskWithProfile(
         })
       },
       onPartialImage: (partial) => {
+        outputReceived = true
         useStore.getState().setTaskStreamPreview(taskId, partial.image, partial.requestIndex)
         void persistTaskStreamPartialImage(taskId, partial.image)
       },
     }
     const result = isLiveProfessionalPreset(task.professionalPreset) && task.liveFrameCount
       ? await generateLiveFrameSequence(apiOptions, task.liveFrameCount, (progress) => {
+          outputReceived = true
           const latest = useStore.getState().tasks.find((item) => item.id === taskId)
           if (!latest || latest.status !== 'running') return
           useStore.getState().setTaskStreamPreview(taskId, progress.image, progress.completed - 1)
           updateTaskInStore(taskId, { liveFramesCompleted: progress.completed })
         })
       : await callImageApi(apiOptions)
+    generationCompleted = true
+    // 上游已完成后只剩本地处理，不能再被生图超时或故障转移重复提交。
+    clearOpenAIWatchdogTimer(taskId)
 
     const latestBeforeSuccess = useStore.getState().tasks.find((t) => t.id === taskId)
     if (!latestBeforeSuccess || latestBeforeSuccess.status !== 'running') {
@@ -3816,7 +3867,7 @@ async function runTaskWithProfile(
       ? { requestId: latestTask.falRequestId, endpoint: latestTask.falEndpoint }
       : null)
     const latestCustomTaskInfo = customTaskInfo ?? (latestTask.customTaskId ? { taskId: latestTask.customTaskId } : null)
-    if (latestTask.apiProvider === 'fal' && latestFalRequestInfo && isNetworkRecoverableError(err)) {
+    if (!generationCompleted && latestTask.apiProvider === 'fal' && latestFalRequestInfo && isNetworkRecoverableError(err)) {
       updateTaskInStore(taskId, {
         ...createTaskErrorPatch(task, '与 fal.ai 的连接已断开，之后会继续查询任务结果。', Date.now()),
         falRequestId: latestFalRequestInfo.requestId,
@@ -3826,7 +3877,7 @@ async function runTaskWithProfile(
       scheduleFalRecovery(taskId)
       return { kind: 'settled' }
     }
-    if (latestCustomTaskInfo && isNetworkRecoverableError(err)) {
+    if (!generationCompleted && latestCustomTaskInfo && isNetworkRecoverableError(err)) {
       updateTaskInStore(taskId, {
         ...createTaskErrorPatch(task, '与自定义异步任务的连接已断开，之后会继续查询任务结果。', Date.now()),
         customTaskId: latestCustomTaskInfo.taskId,
@@ -3836,17 +3887,19 @@ async function runTaskWithProfile(
       return { kind: 'settled' }
     }
 
-    // 还有候选渠道且错误不是本地校验类，交由上层换渠道重试，不落错误状态。
-    if (!context.isFinalCandidate && isFailoverableError(err)) return { kind: 'failover', error: err }
+    // 已受理的异步任务只查询原任务；收到图片后也不能因保存失败重新收费生成。
+    const canFailover = !generationCompleted && !outputReceived && !latestFalRequestInfo && !latestCustomTaskInfo && isFailoverableError(err)
+    if (!context.isFinalCandidate && canFailover) return { kind: 'failover', error: err }
 
     let errorMessage = err instanceof Error ? err.message : String(err)
+    if (generationCompleted) errorMessage = `图片已生成，但保存到浏览器失败：${errorMessage}`
     const networkErrorHint = getApiRequestNetworkErrorHint(err, latestTask.createdAt, activeProfile.apiProxy, activeProfile)
     if (networkErrorHint && !errorMessage.includes(IMAGE_FETCH_CORS_HINT)) {
       errorMessage += `\n${networkErrorHint}`
     }
     const allAttempts = [...context.attempts, createFailoverAttempt(activeProfile, err)]
     updateTaskInStore(taskId, {
-      ...createTaskErrorPatch(task, formatFailoverError(allAttempts, errorMessage), Date.now()),
+      ...createTaskErrorPatch(task, canFailover ? formatFailoverError(allAttempts, errorMessage) : errorMessage, Date.now()),
       ...getRawErrorPayload(err),
       failoverAttempts: allAttempts.length > 1 ? allAttempts : undefined,
       falRecoverable: false,
@@ -3962,6 +4015,27 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
 
 /** 重试失败的任务：创建新任务并执行 */
 export async function retryTask(task: TaskRecord) {
+  if (isNativeGifTask(task)) {
+    try {
+      const settings = normalizeSettings(useStore.getState().settings)
+      const original = getTaskApiProfile(settings, task)
+      const profile = original && supportsNativeGif(original) && !validateApiProfile(original)
+        ? original
+        : settings.profiles.find((item) => supportsNativeGif(item) && !validateApiProfile(item))
+      if (!profile) throw new Error('暂无可用的原生 GIF 渠道，请联系管理员配置后重试')
+      const inputImages: InputImage[] = []
+      for (const id of task.inputImageIds) {
+        const image = await getImage(id)
+        if (!image) throw new Error('原始参考图片已不存在，请重新上传后再试')
+        inputImages.push({ id, dataUrl: image.dataUrl })
+      }
+      await submitTask({ apiProfileId: profile.id, professionalPreset: 'live-gif', inputSnapshot: { prompt: task.prompt, inputImages, params: { ...task.params, output_format: 'gif' } } })
+    } catch (err) {
+      console.warn('原生 GIF 重试失败', err)
+      useStore.getState().showToast(err instanceof Error ? err.message : '原生 GIF 重试失败', 'error')
+    }
+    return
+  }
   if (isTryOnTask(task)) {
     const restored = normalizeTryOnTask(task)
     try {
@@ -4033,6 +4107,10 @@ export async function retryTask(task: TaskRecord) {
 /** 复用配置 */
 export async function reuseConfig(task: TaskRecord, opts?: { editOnly?: boolean }) {
   const { settings, setPrompt, setParams, setInputImages, setMaskDraft, clearMaskDraft, showToast, setConfirmDialog, setReusedTaskApiProfile } = useStore.getState()
+  if (isNativeGifTask(task)) {
+    showToast('原生 GIF 配置与参考图已保留，请在 Live 实况的原生 GIF 中编辑', 'info')
+    return
+  }
   if (isTryOnTask(task)) {
     showToast('换装配置和双图已保留，请在 AI 换装工具中编辑此作品', 'info')
     return
@@ -4440,13 +4518,17 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
   updateTaskInStore(task.id, {
     outputImages: outputIds,
     transparentOriginalImages: transparentOriginalImageIds,
+    outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
+    rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
     actualParams: firstActualParams(actualParamsList),
     actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
     revisedPromptByImage: undefined,
     ...createTaskDonePatch(task, Date.now()),
     customRecoverable: false,
   })
-  useStore.getState().showToast(`自定义异步任务已恢复，共 ${outputIds.length} 张图片`, 'success')
+  useStore.getState().showToast(result.failedRequests?.length
+    ? `自定义异步任务已恢复：成功 ${outputIds.length} 张，失败 ${result.failedRequests.length} 张`
+    : `自定义异步任务已恢复，共 ${outputIds.length} 张图片`, result.failedRequests?.length ? 'error' : 'success')
   if (!isAgentTask(task)) showTaskCompletionNotification('图像生成完成', `自定义异步任务已恢复，共 ${outputIds.length} 张图片。`)
   else void continueRecoveredAgentRound(task.id)
 }
@@ -4463,15 +4545,21 @@ async function recoverCustomTask(taskId: string) {
     return
   }
 
+  let generationCompleted = false
   try {
     const result = await getCustomQueuedImageResult(profile, customProvider, task.customTaskId, task.params)
+    generationCompleted = true
     clearCustomRecoveryTimer(taskId)
     await completeRecoveredCustomTask(task, result)
   } catch (err) {
     clearCustomRecoveryTimer(taskId)
     if (!useStore.getState().tasks.some((item) => item.id === taskId)) return
+    if (!generationCompleted && isNetworkRecoverableError(err)) {
+      scheduleCustomRecovery(taskId)
+      return
+    }
     updateTaskInStore(taskId, {
-      ...createTaskErrorPatch(task, err instanceof Error ? err.message : String(err), Date.now()),
+      ...createTaskErrorPatch(task, `${generationCompleted ? '图片已生成，但保存到浏览器失败：' : ''}${err instanceof Error ? err.message : String(err)}`, Date.now()),
       ...getRawErrorPayload(err),
       customRecoverable: false,
     })

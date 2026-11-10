@@ -4,6 +4,7 @@ import { normalizeAgentConversations } from './agentConversationState'
 import { ensureDefaultFavoriteCollection, normalizeFavoriteCollections, resolveDefaultFavoriteCollectionId } from './favoriteState'
 import { cleanStaleAgentInputDrafts, getPersistableAgentInputDrafts, isEmptyAgentInputDraft, normalizeAgentInputDraft, normalizeAgentInputDrafts, normalizeAgentInputDraftsByKey, saveGalleryInputDraft } from './inputDraftState'
 import { getPersistableAgentConversations, stripPersistedAgentConversations } from './agentResponseState'
+import { normalizeNativeGifParams } from './nativeGif'
 
 export interface PersistedAppState {
   settings: AppSettings
@@ -71,10 +72,10 @@ function normalizeStringArray(value: unknown, fallback: string[]) {
 
 function normalizeParams(value: unknown, fallback: TaskParams): TaskParams {
   if (!isRecord(value)) return fallback
-  return {
+  const params: TaskParams = {
     size: typeof value.size === 'string' ? value.size : fallback.size,
     quality: value.quality === 'auto' || value.quality === 'low' || value.quality === 'medium' || value.quality === 'high' ? value.quality : fallback.quality,
-    output_format: value.output_format === 'png' || value.output_format === 'jpeg' || value.output_format === 'webp' ? value.output_format : fallback.output_format,
+    output_format: value.output_format === 'png' || value.output_format === 'jpeg' || value.output_format === 'webp' || value.output_format === 'gif' ? value.output_format : fallback.output_format,
     output_compression: value.output_compression === null || (typeof value.output_compression === 'number' && Number.isFinite(value.output_compression))
       ? value.output_compression
       : fallback.output_compression,
@@ -82,6 +83,12 @@ function normalizeParams(value: unknown, fallback: TaskParams): TaskParams {
     n: typeof value.n === 'number' && Number.isFinite(value.n) ? value.n : fallback.n,
     transparent_output: typeof value.transparent_output === 'boolean' ? value.transparent_output : fallback.transparent_output,
   }
+  if (params.output_format !== 'gif') return params
+  return normalizeNativeGifParams({
+    ...params,
+    frame_count: typeof value.frame_count === 'number' && Number.isFinite(value.frame_count) ? value.frame_count : fallback.frame_count,
+    frame_duration_ms: typeof value.frame_duration_ms === 'number' && Number.isFinite(value.frame_duration_ms) ? value.frame_duration_ms : fallback.frame_duration_ms,
+  })
 }
 
 export function createPersistedState(state: PersistedStateSource, includeLegacyAgentConversations = false): PersistedAppState {

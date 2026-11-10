@@ -139,6 +139,75 @@ afterEach(async () => {
 })
 
 describe('渠道故障转移', () => {
+  it.each(['json', 'multipart'])('原生 GIF 的 %s 请求只回退到支持动图的渠道，按成品扣费', async (format) => {
+    const called = []
+    const primary = await startUpstream((req, res) => {
+      called.push('primary')
+      res.writeHead(503, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: { message: 'upstream temporarily unavailable' } }))
+    })
+    const staticOnly = await startUpstream((req, res) => {
+      called.push('static')
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(IMAGE_RESPONSE)
+    })
+    const backup = await startUpstream((req, res, body) => {
+      called.push('backup')
+      expect(body.toString()).toContain('gif')
+      if (format === 'json') expect(JSON.parse(body.toString()).size).toBe('auto')
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(IMAGE_RESPONSE)
+    })
+    upstreams = [primary, staticOnly, backup]
+    await setup([
+      { name: '动图主线', baseUrl: primary.url, apiKey: 'k1', supportsNativeGif: true },
+      { name: '静态线路', baseUrl: staticOnly.url, apiKey: 'k2', supportsNativeGif: false },
+      { name: '动图备用', baseUrl: backup.url, apiKey: 'k3', supportsNativeGif: true },
+    ])
+
+    const boundary = '----GifBoundary'
+    const fields = { n: 1, output_format: 'gif', frame_count: 16, size: 'auto', prompt: 'a butterfly flying' }
+    const response = await relay(`ch-1/images/${format === 'json' ? 'generations' : 'edits'}`, {
+      headers: { 'Content-Type': format === 'json' ? 'application/json' : `multipart/form-data; boundary=${boundary}` },
+      body: format === 'json'
+        ? JSON.stringify(fields)
+        : Object.entries(fields).map(([name, value]) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`).join('') + `--${boundary}--\r\n`,
+    })
+    expect(response.status).toBe(200)
+    await response.json()
+    expect(called).toEqual(['primary', 'backup'])
+    expect(getBalance(USER_ID)).toBe(99)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
+  it('未开启动图的渠道在调用上游前拒绝 GIF 请求且不扣费', async () => {
+    let called = false
+    const upstream = await startUpstream((req, res) => {
+      called = true
+      res.end(IMAGE_RESPONSE)
+    })
+    upstreams = [upstream]
+    await setup([{ name: '静态线路', baseUrl: upstream.url, apiKey: 'k1' }])
+    const response = await relay('ch-1/images/generations', { body: JSON.stringify({ output_format: 'gif', n: 1, frame_count: 16 }) })
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain('native-gif-unsupported')
+    expect(called).toBe(false)
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
+  it('提示词中的 GIF 格式示例不会被当作原生动图请求', async () => {
+    const upstream = await startUpstream((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(IMAGE_RESPONSE)
+    })
+    upstreams = [upstream]
+    await setup([{ name: '静态线路', baseUrl: upstream.url, apiKey: 'k1' }])
+    const response = await relay('ch-1/images/generations', { body: JSON.stringify({ prompt: '在屏幕上显示代码 "output_format":"gif"', output_format: 'png' }) })
+    expect(response.status).toBe(200)
+    await response.json()
+  })
+
   it('生图请求至少等待 5 分钟，普通接口仍采用渠道配置', () => {
     expect(getUpstreamTimeoutMs({ timeout: 15 }, true)).toBe(300_000)
     expect(getUpstreamTimeoutMs({ timeout: 900 }, true)).toBe(900_000)
@@ -322,9 +391,9 @@ describe('渠道故障转移', () => {
   it.each([
     [403, { error: { code: 'content_policy_violation', message: 'Rejected' } }, 403, '内容安全审核未通过'],
     [500, { error: { message: 'Rejected by safety system' } }, 500, '内容安全审核未通过'],
-    [200, { error: { code: 'content_policy_violation', message: 'Rejected' }, data: [{ url: 'https://example.com/not-an-image' }] }, 400, '内容安全审核未通过'],
-    [200, { status: 'failed', error: { code: 'content_policy_violation' }, output: [{ type: 'image_generation_call', result: 'AAAA' }] }, 400, '内容安全审核未通过'],
-    [200, { status: 'cancelled', task_id: 'task-cancelled', data: [{ url: 'https://example.com/not-an-image' }] }, 409, '上游生成任务已取消'],
+    [200, { error: { code: 'content_policy_violation', message: 'Rejected' } }, 400, '内容安全审核未通过'],
+    [200, { status: 'failed', error: { code: 'content_policy_violation' }, output: [{ type: 'image_generation_call', status: 'failed', result: 'AAAA' }] }, 400, '内容安全审核未通过'],
+    [200, { status: 'cancelled' }, 409, '上游生成任务已取消'],
     [502, { error: { message: 'request canceled' } }, 502, '上游生成任务已取消'],
   ])('HTTP %s 的审核拒绝或取消不会换渠道、扣分或污染健康度', async (upstreamStatus, payload, status, message) => {
     let secondCalled = false
@@ -395,6 +464,8 @@ describe('渠道故障转移', () => {
   it.each([
     ['responses', { output: [{ type: 'image_generation_call', status: 'completed', result: 'AAAA' }, { type: 'image_generation_call', status: 'failed', error: { code: 'content_policy_violation' } }] }],
     ['images/generations', { data: [{ b64_json: 'AAAA' }, { error: { code: 'content_policy_violation' } }] }],
+    ['images/generations', { error: { code: 'content_policy_violation' }, data: [{ b64_json: 'AAAA' }] }],
+    ['responses', { status: 'failed', error: { code: 'content_policy_violation' }, output: [{ type: 'image_generation_call', status: 'completed', result: 'AAAA' }] }],
   ])('%s 局部审核失败时保留已经成功的图片，不重复换渠道', async (endpoint, payload) => {
     let secondCalled = false
     const first = await startUpstream((req, res) => res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(payload)))
@@ -413,6 +484,52 @@ describe('渠道故障转移', () => {
     expect(secondCalled).toBe(false)
     expect(getReserved(USER_ID)).toBe(0)
     expect(usageSummary().events[0]).toMatchObject({ ok: true, fault: false })
+  })
+
+  it.each(['cancelled', 'failed'])('HTTP 200 的任务 ID 和 %s 错误同时出现时保留受理记录，不重复提交或扣费', async (status) => {
+    let secondCalled = false
+    const payload = { task_id: 'accepted-task', status, error: { message: status === 'cancelled' ? 'request cancelled' : 'upstream unavailable' } }
+    const first = await startUpstream((req, res) => res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(payload)))
+    const second = await startUpstream((req, res) => {
+      secondCalled = true
+      res.writeHead(200).end(IMAGE_RESPONSE)
+    })
+    upstreams = [first, second]
+    await setup([
+      { name: '主渠道', baseUrl: `${first.url}/v1`, apiKey: 'k1' },
+      { name: '备用渠道', baseUrl: `${second.url}/v1`, apiKey: 'k2' },
+    ])
+
+    const response = await relay('ch-1/images/generations')
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(payload)
+    expect(secondCalled).toBe(false)
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(0)
+    expect(usageSummary().events[0]).toMatchObject({ ok: false, fault: status !== 'cancelled' })
+  })
+
+  it.each([
+    [{ request_id: 'fal-accepted' }, 200, 1],
+    [{ images: [{ url: 'https://example.com/generated.png' }] }, 200, 1],
+    [{ image: { url: 'data:image/png;base64,AAAA' } }, 200, 1],
+    [{ request_id: 'fal-accepted', error: { message: 'upstream unavailable' } }, 200, 0],
+    [{ error: { message: 'upstream unavailable' } }, 502, 0],
+    [{ error: { code: 'content_policy_violation' } }, 400, 0],
+  ])('Fal 标准提交响应 %j 按实际受理/错误结算', async (payload, expectedStatus, charged) => {
+    const upstream = await startUpstream((req, res) => res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(payload)))
+    upstreams = [upstream]
+    await setup([{ name: 'Fal', provider: 'fal', baseUrl: upstream.url, apiKey: 'k1' }])
+
+    const response = await relay('ch-1/fal-submit', { headers: {
+      'X-GIP-Failover': 'client',
+      'X-Fal-Target-Url': 'https://queue.fal.run/openai/gpt-image-2',
+    } })
+    expect(response.status).toBe(expectedStatus)
+    if (expectedStatus === 200) expect(await response.json()).toEqual(payload)
+    expect(getBalance(USER_ID)).toBe(100 - charged)
+    expect(getReserved(USER_ID)).toBe(0)
+    expect(userCreditsView(USER_ID).ledger.filter((item) => item.type === 'spend')).toHaveLength(charged)
   })
 
   it.each([false, true])('同一 SSE 数据块按事件顺序处理图片与失败（错误在前：%s）', async (errorFirst) => {
@@ -473,6 +590,235 @@ describe('渠道故障转移', () => {
     const response = await relay('ch-1/images/generations')
     expect(response.status).toBe(502)
     expect(calls).toEqual(['a', 'b'])
+  })
+
+  it('上游 429 会切换备用容量，限流不被记作渠道损坏', async () => {
+    const busy = await startUpstream((req, res) => res.writeHead(429).end('rate limit exceeded'))
+    const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
+    upstreams = [busy, good]
+    await setup([
+      { name: '繁忙渠道', baseUrl: `${busy.url}/v1`, apiKey: 'k1' },
+      { name: '备用渠道', baseUrl: `${good.url}/v1`, apiKey: 'k2' },
+    ])
+
+    const response = await relay('ch-1/images/generations')
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(JSON.parse(IMAGE_RESPONSE))
+    expect(usageSummary().events.find((item) => item.channelId === 'ch-1')).toMatchObject({ status: 429, ok: false, fault: false })
+    expect(getBalance(USER_ID)).toBe(99)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
+  it('客户端编排时每次请求只发指定渠道，不产生双层重试或占用备用高价额度', async () => {
+    const calls = []
+    const bad = await startUpstream((req, res) => {
+      calls.push('bad')
+      expect(req.headers['x-gip-failover']).toBeUndefined()
+      expect(req.headers['x-gip-keepalive']).toBeUndefined()
+      res.writeHead(503).end('down')
+    })
+    const good = await startUpstream((req, res) => {
+      calls.push('good')
+      res.writeHead(200, { 'X-GIP-Failover': 'stop' }).end(IMAGE_RESPONSE)
+    })
+    upstreams = [bad, good]
+    await setup([
+      { name: '主渠道', baseUrl: `${bad.url}/v1`, apiKey: 'k1' },
+      { name: '备用渠道', baseUrl: `${good.url}/v1`, apiKey: 'k2' },
+    ], { balance: 2, channelRates: { 'ch-2': 300 } })
+
+    const failed = await relay('ch-1/images/generations', { headers: { 'X-GIP-Failover': 'client', 'X-GIP-Keepalive': '1' } })
+    const failureBody = await failed.text()
+    expect(failureBody).toContain('down')
+    expect(failureBody).not.toContain('所有渠道均失败')
+    expect(calls).toEqual(['bad'])
+    expect(getBalance(USER_ID)).toBe(2)
+    expect(getReserved(USER_ID)).toBe(0)
+
+    addCredits(USER_ID, 5)
+    const response = await relay('ch-2/images/generations', { headers: { 'X-GIP-Failover': 'client' } })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('x-gip-failover')).toBeNull()
+    expect(calls).toEqual(['bad', 'good'])
+    expect(getBalance(USER_ID)).toBe(4)
+    expect(userCreditsView(USER_ID).ledger.filter((item) => item.type === 'spend')).toHaveLength(1)
+  })
+
+  it('旧客户端只向协议与模型兼容的备用渠道重放', async () => {
+    const calls = []
+    const bad = await startUpstream((req, res) => {
+      calls.push('bad')
+      res.writeHead(503).end('down')
+    })
+    const incompatible = await startUpstream((req, res) => {
+      calls.push('incompatible')
+      res.writeHead(200).end(IMAGE_RESPONSE)
+    })
+    const good = await startUpstream((req, res) => {
+      calls.push('good')
+      res.writeHead(200).end(IMAGE_RESPONSE)
+    })
+    upstreams = [bad, incompatible, good]
+    await setup([
+      { name: '主渠道', baseUrl: `${bad.url}/v1`, apiKey: 'k1' },
+      { name: '异步', baseUrl: `${incompatible.url}/v1`, apiKey: 'k2', provider: 'sb2api-async' },
+      { name: '其他模型', baseUrl: `${incompatible.url}/v1`, apiKey: 'k3', model: 'other-image-model' },
+      { name: '其他协议', baseUrl: `${incompatible.url}/v1`, apiKey: 'k4', apiMode: 'responses' },
+      { name: '兼容备用', baseUrl: `${good.url}/v1`, apiKey: 'k5' },
+    ], { maxAttempts: 2 })
+
+    const response = await relay('ch-1/images/generations')
+    expect(response.status).toBe(200)
+    expect(calls).toEqual(['bad', 'good'])
+    expect(getBalance(USER_ID)).toBe(99)
+  })
+
+  it.each([401, 429, 503])('客户端编排时保留上游 HTTP %s，不谎称所有渠道已失败', async (status) => {
+    const upstream = await startUpstream((req, res) => res.writeHead(status).end('upstream unavailable'))
+    upstreams = [upstream]
+    await setup([{ name: '主渠道', baseUrl: `${upstream.url}/v1`, apiKey: 'k1' }])
+
+    const response = await relay('ch-1/images/generations', { headers: { 'X-GIP-Failover': 'client' } })
+    expect(response.status).toBe(status)
+    expect(response.headers.get('x-gip-failover')).toBeNull()
+    const body = await response.text()
+    expect(body).toContain(`HTTP ${status}`)
+    expect(body).not.toContain('所有渠道均失败')
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
+  it.each([
+    ['GET', 'tasks/original-task', 'openai'],
+    ['POST', 'images/generations', 'sb2api-async'],
+    ['POST', 'chat/completions', 'openai'],
+  ])('%s %s 不在服务端跨渠道重放（%s）', async (method, endpoint, provider) => {
+    let secondCalled = false
+    const bad = await startUpstream((req, res) => res.writeHead(503).end('down'))
+    const second = await startUpstream((req, res) => {
+      secondCalled = true
+      res.writeHead(200).end(IMAGE_RESPONSE)
+    })
+    upstreams = [bad, second]
+    await setup([
+      { name: '主渠道', baseUrl: `${bad.url}/v1`, apiKey: 'k1', provider },
+      { name: '备用渠道', baseUrl: `${second.url}/v1`, apiKey: 'k2', provider },
+    ])
+
+    const response = await relay(`ch-1/${endpoint}`, { method, ...(method === 'GET' ? { body: undefined } : {}) })
+    expect(response.status).toBe(502)
+    expect(secondCalled).toBe(false)
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
+  it.each([
+    { previous_response_id: 'resp-original' },
+    { conversation: 'conv-original' },
+    { input: [{ type: 'function_call_output', call_id: 'call-original', output: '{}' }] },
+    { input: [{ type: 'item_reference', id: 'item-original' }] },
+  ])('旧客户端携带原渠道会话引用时不跨渠道重放：%j', async (state) => {
+    let secondCalled = false
+    const bad = await startUpstream((req, res) => res.writeHead(503).end('down'))
+    const second = await startUpstream((req, res) => {
+      secondCalled = true
+      res.writeHead(200).end(IMAGE_RESPONSE)
+    })
+    upstreams = [bad, second]
+    await setup([
+      { name: '主渠道', baseUrl: `${bad.url}/v1`, apiKey: 'k1', apiMode: 'responses' },
+      { name: '备用渠道', baseUrl: `${second.url}/v1`, apiKey: 'k2', apiMode: 'responses' },
+    ])
+
+    const response = await relay('ch-1/responses', { body: JSON.stringify({ model: 'gpt-image-2', tools: [{ type: 'image_generation' }], ...state }) })
+    expect(response.status).toBe(502)
+    expect(secondCalled).toBe(false)
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
+  it('旧客户端新的 Responses 生图仍可在兼容渠道间切换', async () => {
+    const bad = await startUpstream((req, res) => res.writeHead(503).end('down'))
+    const good = await startUpstream((req, res) => res.writeHead(200).end(JSON.stringify({ output: [{ type: 'image_generation_call', result: 'AAAA' }] })))
+    upstreams = [bad, good]
+    await setup([
+      { name: '主渠道', baseUrl: `${bad.url}/v1`, apiKey: 'k1', apiMode: 'responses' },
+      { name: '备用渠道', baseUrl: `${good.url}/v1`, apiKey: 'k2', apiMode: 'responses' },
+    ])
+
+    const response = await relay('ch-1/responses', { body: JSON.stringify({ model: 'gpt-image-2', input: 'cat', tools: [{ type: 'image_generation' }] }) })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ output: [{ result: 'AAAA' }] })
+    expect(getBalance(USER_ID)).toBe(99)
+  })
+
+  it('超过缓冲上限的上传只发送一次，不能把残缺请求重放给备用渠道', async () => {
+    let receivedBytes = 0
+    let secondCalled = false
+    const bad = await startUpstream((req, res, body) => {
+      receivedBytes = body.length
+      res.writeHead(503).end('down')
+    })
+    const second = await startUpstream((req, res) => {
+      secondCalled = true
+      res.writeHead(200).end(IMAGE_RESPONSE)
+    })
+    upstreams = [bad, second]
+    await setup([
+      { name: '主渠道', baseUrl: `${bad.url}/v1`, apiKey: 'k1' },
+      { name: '备用渠道', baseUrl: `${second.url}/v1`, apiKey: 'k2' },
+    ])
+
+    const body = Buffer.alloc(33 * 1024 * 1024, 'x')
+    const response = await relay('ch-1/images/edits', { body, headers: { 'Content-Type': 'application/octet-stream' } })
+    expect(response.status).toBe(502)
+    expect(receivedBytes).toBe(body.length)
+    expect(secondCalled).toBe(false)
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
+  it.each([
+    ['text/html', '<html>Gateway temporarily unavailable</html>'],
+    ['text/plain', '{"error":{"message":"upstream unavailable"}}'],
+    ['application/json', '{"data":[{"b64_json":"unfinished'],
+    ['application/json', '{"prompt":{"url":"https://example.com/reference.png","task_id":"echoed-prompt"}}'],
+  ])('HTTP 200 的无效 %s 响应不被当作出图成功', async (contentType, body) => {
+    const bad = await startUpstream((req, res) => res.writeHead(200, { 'Content-Type': contentType }).end(body))
+    const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
+    upstreams = [bad, good]
+    await setup([
+      { name: '错误页面', baseUrl: `${bad.url}/v1`, apiKey: 'k1' },
+      { name: '备用渠道', baseUrl: `${good.url}/v1`, apiKey: 'k2' },
+    ])
+
+    const response = await relay('ch-1/images/generations')
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(JSON.parse(IMAGE_RESPONSE))
+    expect(usageSummary().events.find((item) => item.channelId === 'ch-1')).toMatchObject({ ok: false })
+    expect(getBalance(USER_ID)).toBe(99)
+    expect(userCreditsView(USER_ID).ledger.filter((item) => item.type === 'spend')).toHaveLength(1)
+  })
+
+  it('图片正文尚未完整收到就断流时不误扣费，并能转到备用渠道', async () => {
+    const bad = await startUpstream((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.write('{"data":[{"b64_json":"AAAA')
+      setTimeout(() => res.destroy(), 10)
+    })
+    const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
+    upstreams = [bad, good]
+    await setup([
+      { name: '中断渠道', baseUrl: `${bad.url}/v1`, apiKey: 'k1' },
+      { name: '备用渠道', baseUrl: `${good.url}/v1`, apiKey: 'k2' },
+    ])
+
+    const response = await relay('ch-1/images/generations')
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(JSON.parse(IMAGE_RESPONSE))
+    expect(getBalance(USER_ID)).toBe(99)
+    expect(getReserved(USER_ID)).toBe(0)
+    expect(userCreditsView(USER_ID).ledger.filter((item) => item.type === 'spend')).toHaveLength(1)
   })
 })
 
@@ -756,6 +1102,7 @@ describe('按张扣费', () => {
     expect(response.status).toBe(402)
     const payload = await response.json()
     expect(payload).toMatchObject({ code: 'insufficient-credits', required: 5, available: 3 })
+    expect(response.headers.get('x-gip-failover')).toBe('stop')
     expect(called).toBe(false)
     expect(getBalance(USER_ID)).toBe(3)
   })
@@ -798,11 +1145,29 @@ describe('按张扣费', () => {
     })
     // wechat 模式下没 cookie 就是没登录，网关先拦下来。
     expect(response.status).toBe(401)
+    expect(response.headers.get('x-gip-failover')).toBe('stop')
     expect(getBalance(USER_ID)).toBe(100)
   })
 })
 
 describe('中继的基本防护', () => {
+  it('本站并发限制返回停止切换信号，不把用户额度限制扩散到其他渠道', async () => {
+    await setup([{ name: '渠道', baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'k1' }])
+    const first = generationGate.acquire(USER_ID)
+    const second = generationGate.acquire(USER_ID)
+    try {
+      const response = await relay('ch-1/images/generations', { headers: { 'X-GIP-Failover': 'client' } })
+      expect(response.status).toBe(429)
+      expect(response.headers.get('x-gip-failover')).toBe('stop')
+      expect(await response.json()).toMatchObject({ code: 'generation-busy' })
+      expect(usageSummary().events).toHaveLength(0)
+      expect(getBalance(USER_ID)).toBe(100)
+    } finally {
+      first.release()
+      second.release()
+    }
+  })
+
   it('停用或未配置密钥的渠道直接被拒，不会尝试转发', async () => {
     await setup([{ name: '停用渠道', baseUrl: 'https://example.com/v1', apiKey: '' }])
     const response = await relay('ch-1/images/generations')

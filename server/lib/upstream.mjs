@@ -62,6 +62,8 @@ const DROPPED_REQUEST_HEADERS = new Set([
   'x-forwarded-host',
   'x-forwarded-proto',
   'x-real-ip',
+  'x-gip-failover',
+  'x-gip-keepalive',
 ])
 
 const DROPPED_RESPONSE_HEADERS = new Set([
@@ -76,6 +78,7 @@ const DROPPED_RESPONSE_HEADERS = new Set([
   'access-control-allow-credentials',
   'content-encoding',
   'content-length',
+  'x-gip-failover',
 ])
 
 function pickRequestHeaders(req, upstreamUrl, options) {

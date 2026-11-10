@@ -4,6 +4,7 @@ import { canCopyImageToClipboard, copyImageSourceToClipboard, getClipboardFailur
 import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getImageZipEntries } from '../lib/downloadImages'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
 import { ensureImageCached } from '../lib/imageCache'
+import { isNativeGifTask } from '../lib/nativeGif'
 import { CopyIcon, DownloadIcon, EditIcon } from './icons'
 import WatermarkDownloadOption from './WatermarkDownloadOption'
 
@@ -84,6 +85,8 @@ export default function ImageContextMenu() {
   }, [menuInfo])
 
   if (!menuInfo) return null
+  const matchedTask = menuInfo.imageId ? useStore.getState().tasks.find((task) => task.outputImages.includes(menuInfo.imageId!)) : undefined
+  const nativeGif = Boolean(matchedTask && isNativeGifTask(matchedTask)) || menuInfo.src.startsWith('data:image/gif')
 
   const getOriginalImageSrc = async () => {
     if (!menuInfo.imageId) return menuInfo.src
@@ -95,7 +98,7 @@ export default function ImageContextMenu() {
     setMenuInfo(null)
     try {
       await copyImageSourceToClipboard(getOriginalImageSrc())
-      showToast('图片已复制', 'success')
+      showToast(nativeGif ? '动图首帧已复制，完整动图请下载 GIF' : '图片已复制', 'success')
     } catch (err) {
       console.error(err)
       showToast(getClipboardFailureMessage('复制失败', err), 'error')
@@ -201,7 +204,7 @@ export default function ImageContextMenu() {
   // 保证菜单在视口内
   let left = menuInfo.x
   let top = menuInfo.y
-  const generated = Boolean(menuInfo.imageId && useStore.getState().tasks.some((task) => task.outputImages.includes(menuInfo.imageId!)))
+  const generated = Boolean(matchedTask) && !nativeGif
   const MENU_WIDTH = generated ? 220 : 120
   const showDownloadAll = menuInfo.outputImageIds.length > 1
   const menuItemCount = (menuInfo.canCopyImage ? 1 : 0) + 1 + (showDownloadAll ? 1 : 0) + 1
@@ -228,7 +231,7 @@ export default function ImageContextMenu() {
           className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2 transition-colors"
         >
           <CopyIcon className="w-4 h-4 flex-shrink-0" />
-          复制
+          {nativeGif ? '复制首帧' : '复制'}
         </button>
       )}
       <button

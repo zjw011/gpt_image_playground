@@ -117,7 +117,8 @@ async function getImageBlob(imageIdOrUrl: string, options: DownloadImageOptions)
   const res = await fetch(src)
   if (!res.ok && !src.startsWith('data:')) throw new Error(`读取图片失败：${imageIdOrUrl}`)
   const blob = await res.blob()
-  if (!options.removeWatermark) return blob
+  // GIF 必须保留所有帧，静态图片清理服务无法处理动图。
+  if (!options.removeWatermark || blob.type.toLowerCase() === 'image/gif') return blob
   try {
     const result = await cleanVisibleWatermark(blob)
     options.onCleanup?.(result.status)

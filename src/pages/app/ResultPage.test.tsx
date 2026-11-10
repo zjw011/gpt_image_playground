@@ -58,6 +58,7 @@ vi.mock('../../components/QuickMotionPlayer', () => ({
   default: () => <div aria-label="快速运镜预览" />,
 }))
 vi.mock('../../components/LivePhotoPlayer', () => ({ default: ({ frames }: { frames: string[] }) => <div aria-label="AI 连续帧" data-frames={JSON.stringify(frames)} /> }))
+vi.mock('../../components/GeneratingQuote', () => ({ default: () => null }))
 vi.mock('../../lib/livePhoto', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../lib/livePhoto')>(),
   exportLiveFrames: vi.fn(),
@@ -106,6 +107,28 @@ describe('ResultPage', () => {
     vi.useRealTimers()
   })
 
+  it('原生 GIF 直接预览和下载原始字节，编辑回到动图专用页且不自动重试', async () => {
+    state.backend = true
+    state.user = { id: 'gif-user' }
+    state.fullSrc = 'data:image/gif;base64,R0lGODlh'
+    state.tasks = [task({ professionalPreset: 'live-gif', params: { ...DEFAULT_PARAMS, output_format: 'gif', frame_count: 9, frame_duration_ms: 200 } })]
+    const links: Array<{ href: string, filename: string }> = []
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { links.push({ href: this.href, filename: this.download }) })
+    await act(async () => root.render(<MemoryRouter initialEntries={['/result?task=partial-task']}><ResultPage /><Location /></MemoryRouter>))
+    expect(container.querySelector('img[data-image-id="frame-1"]')?.getAttribute('src')).toBe(state.fullSrc)
+    expect(container.textContent).toContain('AI 原生 GIF · 动图预览')
+    expect(container.textContent).not.toContain('发布广场')
+    expect(container.querySelector('input[type="checkbox"]')).toBeNull()
+    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '下载 GIF')?.click())
+    expect(links).toEqual([{ href: state.fullSrc, filename: '绘想-partial-task.gif' }])
+    expect(exportLiveFrames).not.toHaveBeenCalled()
+    expect(exportQuickMotion).not.toHaveBeenCalled()
+    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '编辑动图')?.click())
+    expect(container.querySelector('output')?.textContent).toBe('/tools?tool=live&liveMode=gif&task=partial-task')
+    expect(submitTask).not.toHaveBeenCalled()
+    expect(reuseConfig).not.toHaveBeenCalled()
+  })
+
   it('无图片的失败仍显示错误详情与明确的重新生成入口，不会自动提交', async () => {
     state.tasks = [task({ status: 'error', outputImages: [], error: '生成请求中断' })]
     await act(async () => root.render(<MemoryRouter initialEntries={['/result?task=partial-task']}><ResultPage /><Location /></MemoryRouter>))
@@ -122,6 +145,18 @@ describe('ResultPage', () => {
     expect(reuseConfig).toHaveBeenCalledWith(state.tasks[0], undefined)
     expect(submitTask).toHaveBeenCalledOnce()
     expect(container.querySelector('output')?.textContent).toBe('/result?task=partial-task')
+  })
+
+  it.each(['falRecoverable', 'customRecoverable'] as const)('%s 查询恢复期间不展示终态失败或重复生成入口', async (flag) => {
+    state.tasks = [task({ status: 'error', [flag]: true, outputImages: [], error: 'HTTP 503 查询暂时失败' })]
+    await act(async () => root.render(<MemoryRouter initialEntries={['/result?task=partial-task']}><ResultPage /><Location /></MemoryRouter>))
+    expect(container.textContent).toContain('恢复查询中')
+    expect(container.textContent).toContain('系统会继续查询原任务')
+    expect(container.textContent).not.toContain('这次没有生成成功')
+    expect(container.textContent).not.toContain('查看错误详情')
+    expect(Array.from(container.querySelectorAll('button')).some((button) => /再次生成|重新生成/.test(button.textContent ?? ''))).toBe(false)
+    expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '删除')).toBeTruthy()
+    expect(submitTask).not.toHaveBeenCalled()
   })
 
   it('失败但保存了图片时保留查看、缩略切换和下载，不会冒充全失败或自动发布重试', async () => {

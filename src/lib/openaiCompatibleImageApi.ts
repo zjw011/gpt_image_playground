@@ -5,11 +5,10 @@ import {
   assertImageInputPayloadSize,
   assertMaskEditFileSize,
   appendStreamingFormatHint,
-  maybeAppendStreamingHint,
   type CallApiOptions,
   type CallApiResult,
   fetchImageUrlAsDataUrl,
-  getApiErrorMessage,
+  getApiResponseError,
   getDataUrlDecodedByteSize,
   getDataUrlEncodedByteSize,
   getResponsesImageResultBase64,
@@ -26,6 +25,7 @@ import { isEventStreamResponse, readJsonServerSentEvents } from './serverSentEve
 import { prependCodexCliSizePrompt } from './size'
 import { fetchCredits } from './backend'
 import { classifyGenerationError, formatGenerationError, getGenerationResponseError } from './generationError.mjs'
+import { isImageDownloadError } from './taskFailure'
 
 /** 托管中继由服务端负责最终超时，浏览器不能沿用 IndexedDB 里遗留的十几秒配置。 */
 export function getImageRequestTimeoutMs(profile: ApiProfile) {
@@ -95,10 +95,11 @@ function normalizeImageApiPayload(value: unknown): ImageApiResponse {
   return { data: [] }
 }
 
-function createRequestHeaders(profile: ApiProfile): Record<string, string> {
+function createRequestHeaders(profile: ApiProfile, clientFailover = false): Record<string, string> {
   return {
     Authorization: `Bearer ${profile.apiKey}`,
     ...(profile.baseUrl.includes('/api/relay/') ? { 'X-GIP-Keepalive': '1' } : {}),
+    ...(clientFailover && profile.baseUrl.includes('/api/relay/') ? { 'X-GIP-Failover': 'client' } : {}),
   }
 }
 
@@ -124,6 +125,17 @@ function getPayloadErrorMessage(payload: unknown): string | null {
     return payload.error.message
   }
   return typeof payload.message === 'string' && payload.message.trim() ? payload.message : null
+}
+
+function createImagePayloadError(message: string, payload: unknown): Error {
+  const record = isRecordValue(payload) ? payload : {}
+  const sources = [record, ...(isRecordValue(record.data) ? [record.data] : [])]
+  const accepted = sources.some((item) => ['task_id', 'request_id'].some((key) => typeof item[key] === 'string' && item[key].trim()))
+  // 同步渠道意外返回异步受理信息时，无法可靠查询，但也不能当作未提交而重新生图。
+  return Object.assign(new Error(message), {
+    rawResponsePayload: JSON.stringify(payload, null, 2),
+    ...(accepted ? { retryable: false } : {}),
+  })
 }
 
 async function syncHeartbeatCredits(response: Response) {
@@ -222,10 +234,7 @@ function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime:
   const output = payload.output
   if (!Array.isArray(output) || !output.length) {
     const failure = getPayloadErrorMessage(payload)
-    if (failure) throw new Error(failure)
-    const err = new Error('接口未返回图片数据')
-    ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
-    throw err
+    throw createImagePayloadError(failure || '接口未返回图片数据', payload)
   }
 
   const results: Array<{ image: string; actualParams?: Partial<TaskParams>; revisedPrompt?: string }> = []
@@ -251,10 +260,7 @@ function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime:
 
   if (!results.length) {
     const failure = getPayloadErrorMessage(payload)
-    if (failure) throw new Error(failure)
-    const err = new Error('接口没有返回可识别的图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。')
-    ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
-    throw err
+    throw createImagePayloadError(failure || '接口没有返回可识别的图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。', payload)
   }
 
   const failure = getGenerationResponseError({ ...payload, output: undefined })
@@ -272,12 +278,9 @@ function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime:
 
 async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
   const payloadError = getPayloadErrorMessage({ ...payload, data: undefined })
-  if (payloadError) throw new Error(payloadError)
   const data = payload.data
   if (!Array.isArray(data) || !data.length) {
-    const err = new Error('接口没有返回图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。')
-    ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
-    throw err
+    throw createImagePayloadError(payloadError || '接口没有返回图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。', payload)
   }
 
   const images: string[] = []
@@ -308,12 +311,16 @@ async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, s
   }
 
   if (!images.length) {
-    const err = errors.find((error) => classifyGenerationError(error) === 'content_policy')
+    const cause = payloadError ? new Error(payloadError) : errors.find((error) => classifyGenerationError(error) === 'content_policy')
       ?? errors.find((error) => classifyGenerationError(error) === 'cancelled')
       ?? errors[0]
+    const err = Object.assign(createImagePayloadError(cause.message, payload), { name: cause.name })
     if (rawImageUrls.length) (err as any).rawImageUrls = rawImageUrls
-    ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
     throw err
+  }
+
+  if (payloadError && !failedRequests.some((item) => item.error === payloadError)) {
+    failedRequests.push({ requestIndex: data.length, error: payloadError })
   }
 
   const actualParams = mergeActualParams(
@@ -406,6 +413,7 @@ async function parseResponsesApiStreamResponse(
   response: Response,
   mime: string,
   onPartialImage?: CallApiOptions['onPartialImage'],
+  signal?: AbortSignal,
 ): Promise<CallApiResult> {
   let completedPayload: ResponsesApiResponse | null = null
   const outputItems: ResponsesOutputItem[] = []
@@ -435,6 +443,7 @@ async function parseResponsesApiStreamResponse(
 
       if (type !== 'response.output_item.added') completedPayload = payload
     }, {
+      signals: [signal],
       formatErrorMessage: appendStreamingFormatHint,
       getEventErrorMessage: (event) => {
         // 单个工具失败不能提前截断其余图片，最终统一保留成功结果和失败原因。
@@ -528,11 +537,11 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
-  const requestHeaders = createRequestHeaders(profile)
+  const requestHeaders = createRequestHeaders(profile, opts.clientFailover)
   const paths = createOpenAICompatiblePaths()
 
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), getImageRequestTimeoutMs(profile))
+  const timeoutId = setTimeout(() => controller.abort(new DOMException('等待生成结果超时', 'TimeoutError')), getImageRequestTimeoutMs(profile))
 
   try {
     let response: Response
@@ -545,6 +554,11 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         formData.append('size', params.size)
       }
       formData.append('output_format', params.output_format)
+      if (params.output_format === 'gif') {
+        formData.append('frame_count', String(params.frame_count))
+        formData.append('frame_duration_ms', String(params.frame_duration_ms))
+        formData.append('n', '1')
+      }
       formData.append('moderation', params.moderation)
       if (opts.nativeTransparentBackground) {
         formData.append('background', 'transparent')
@@ -610,6 +624,11 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         output_format: params.output_format,
         moderation: params.moderation,
       }
+      if (params.output_format === 'gif') {
+        body.frame_count = params.frame_count
+        body.frame_duration_ms = params.frame_duration_ms
+        body.n = 1
+      }
 
       if (opts.nativeTransparentBackground) {
         body.background = 'transparent'
@@ -650,17 +669,19 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
     }
 
     if (!response.ok) {
-      const errorMessage = await getApiErrorMessage(response)
-      throw new Error(maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages))
+      throw await getApiResponseError(response, profile.streamImages)
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
-      return parseImagesApiStreamResponse(response, mime, opts.onPartialImage, controller.signal)
+      return await parseImagesApiStreamResponse(response, mime, opts.onPartialImage, controller.signal)
     }
 
     const result = await parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
     await syncHeartbeatCredits(response)
     return result
+  } catch (err) {
+    if (controller.signal.aborted && err instanceof Error && err.name === 'AbortError') throw controller.signal.reason
+    throw err
   } finally {
     clearTimeout(timeoutId)
   }
@@ -672,11 +693,15 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
       reject(new DOMException('Aborted', 'AbortError'))
       return
     }
-    const timer = setTimeout(resolve, ms)
-    signal.addEventListener('abort', () => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', abort)
+      resolve()
+    }, ms)
+    const abort = () => {
       clearTimeout(timer)
-      reject(new DOMException('Aborted', 'AbortError'))
-    }, { once: true })
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', abort, { once: true })
   })
 }
 
@@ -691,6 +716,7 @@ function getTaskState(payload: unknown, poll: CustomProviderPollMapping): 'succe
 function isRecoverablePollingError(err: unknown): boolean {
   const kind = classifyGenerationError(err)
   if (kind === 'content_policy' || kind === 'cancelled') return false
+  if (kind === 'timeout') return true
   if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return true
   const message = err instanceof Error ? err.message : String(err)
   return /abort|network|failed to fetch|fetch failed|load failed|timeout|连接|断开|中断/i.test(message)
@@ -804,40 +830,48 @@ async function createCustomMultipartBody(mapping: CustomProviderSubmitMapping, o
   return formData
 }
 
-async function extractCustomImages(payload: unknown, result: CustomProviderResultMapping, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
-  const failure = getGenerationResponseError(payload)
-  if (failure) throw new Error(failure)
+async function extractCustomImages(payload: unknown, result: CustomProviderResultMapping, mime: string, signal?: AbortSignal, mappedFailure?: string | null): Promise<CallApiResult> {
+  const failure = mappedFailure || getGenerationResponseError(payload)
   const images: string[] = []
   const imageUrls = (result.imageUrlPaths ?? []).flatMap((path) =>
     getAllByPath(payload, path).filter((value): value is string => isHttpUrl(value) || isDataUrl(value)),
   )
   const rawImageUrls = imageUrls.filter(isHttpUrl)
-  try {
-    for (const path of result.b64JsonPaths ?? []) {
-      for (const value of getAllByPath(payload, path)) {
-        if (typeof value === 'string' && value.trim()) images.push(normalizeBase64Image(value, mime))
-      }
+  const failedRequests: NonNullable<CallApiResult['failedRequests']> = []
+  const errors: Error[] = []
+  for (const path of result.b64JsonPaths ?? []) {
+    for (const value of getAllByPath(payload, path)) {
+      if (typeof value === 'string' && value.trim()) images.push(normalizeBase64Image(value, mime))
     }
-    for (const url of imageUrls) {
+  }
+  const base64Count = images.length
+  for (const [idx, url] of imageUrls.entries()) {
+    try {
       images.push(await fetchImageUrlAsDataUrl(url, mime, signal))
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err))
+      errors.push(error)
+      failedRequests.push({ requestIndex: base64Count + idx, error: error.message })
     }
-  } catch (err) {
-    if (rawImageUrls.length > 0 && err instanceof Error) {
-      (err as any).rawImageUrls = rawImageUrls
-    }
-    throw err
+  }
+  if (failure && !failedRequests.some((item) => item.error === failure)) {
+    errors.push(new Error(failure))
+    failedRequests.push({ requestIndex: base64Count + imageUrls.length, error: failure })
   }
 
   if (!images.length) {
-    const err = new Error('接口没有返回可识别的图片数据，请查看原始响应内容确认接口实际返回的数据结构，并根据 API 文档调整「自定义服务商」配置中的结果提取路径。')
+    const err = errors.find((error) => classifyGenerationError(error) === 'content_policy')
+      ?? errors[0]
+      ?? new Error('接口没有返回可识别的图片数据，请查看原始响应内容确认接口实际返回的数据结构，并根据 API 文档调整「自定义服务商」配置中的结果提取路径。')
+    if (rawImageUrls.length) (err as any).rawImageUrls = rawImageUrls
     ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
     throw err
   }
-  return { images, ...(rawImageUrls.length ? { rawImageUrls } : {}) }
+  return { images, ...(rawImageUrls.length ? { rawImageUrls } : {}), ...(failedRequests.length ? { failedRequests } : {}) }
 }
 
 async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: CallApiOptions, profile: ApiProfile, controller: AbortController, proxyConfig: ReturnType<typeof readClientDevProxyConfig>, useApiProxy: boolean): Promise<unknown> {
-  const requestHeaders = createRequestHeaders(profile)
+  const requestHeaders = createRequestHeaders(profile, opts.clientFailover)
   const context = createCustomProviderContext(opts, profile)
   const method = mapping.method ?? 'POST'
   const contentType = mapping.contentType ?? 'json'
@@ -875,13 +909,9 @@ async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: C
   })
 
   if (!response.ok) {
-    const errorMessage = await getApiErrorMessage(response)
-    throw new Error(maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages))
+    throw await getApiResponseError(response, profile.streamImages)
   }
-  const payload = await response.json()
-  const failure = getGenerationResponseError(payload)
-  if (failure) throw new Error(failure)
-  return payload
+  return await response.json()
 }
 
 async function pollCustomTaskResult(
@@ -892,39 +922,64 @@ async function pollCustomTaskResult(
   signal?: AbortSignal,
 ): Promise<CallApiResult> {
   const proxyConfig = readClientDevProxyConfig()
-  const requestHeaders = createRequestHeaders(profile)
+  const requestHeaders = createRequestHeaders(profile, true)
+  const interval = Math.min(60_000, Math.max(1000, (poll.intervalSeconds ?? 5) * 1000))
+  let delay = interval
+  let failures = 0
   let isFirstPoll = true
 
   while (true) {
     if (isFirstPoll) {
       isFirstPoll = false
     } else if (signal) {
-      await sleep((poll.intervalSeconds ?? 5) * 1000, signal)
+      await sleep(delay, signal)
     } else {
-      await new Promise((resolve) => setTimeout(resolve, (poll.intervalSeconds ?? 5) * 1000))
+      await new Promise((resolve) => setTimeout(resolve, delay))
     }
 
     const taskPath = appendQuery(buildTaskPath(poll.path, taskId), poll.query)
     let taskPayload: unknown
+    const controller = new AbortController()
+    const abort = () => controller.abort(signal?.reason)
+    if (signal?.aborted) abort()
+    else signal?.addEventListener('abort', abort, { once: true })
+    // 任务可长期排队，但单次查询不能一直占住连接；失败后只查询同一任务。
+    const timeout = setTimeout(() => controller.abort(new DOMException('异步任务查询超时', 'TimeoutError')), Math.min(60_000, Math.max(10_000, getImageRequestTimeoutMs(profile))))
     try {
       const taskResponse = await fetch(buildApiUrl(profile.baseUrl, taskPath, proxyConfig, false), {
         method: poll.method ?? 'GET',
         headers: requestHeaders,
         cache: 'no-store',
-        signal,
+        signal: controller.signal,
       })
 
       if (!taskResponse.ok) {
-        const message = await getApiErrorMessage(taskResponse)
-        const kind = classifyGenerationError(message)
-        if (isRetryablePollingStatus(taskResponse.status) && kind !== 'content_policy' && kind !== 'cancelled') continue
-        throw new Error(message)
+        const error = await getApiResponseError(taskResponse) as Error & { retryable?: boolean }
+        const kind = classifyGenerationError(error)
+        if (error.retryable !== false && isRetryablePollingStatus(taskResponse.status) && kind !== 'content_policy' && kind !== 'cancelled') {
+          const retryAfter = taskResponse.headers.get('retry-after')
+          const seconds = retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) : 0
+          delay = Math.min(120_000, Math.max(interval * 2 ** failures, seconds * 1000))
+          if (++failures < 3) continue
+          throw Object.assign(new Error(`异步任务查询暂时失败：HTTP ${taskResponse.status}，${error.message}`), { pollingExhausted: true })
+        }
+        throw error
       }
 
       taskPayload = await taskResponse.json()
+      failures = 0
+      delay = interval
     } catch (err) {
-      if (!signal?.aborted && isRecoverablePollingError(err)) continue
+      const stopped = err && typeof err === 'object' && (('retryable' in err && err.retryable === false) || ('pollingExhausted' in err && err.pollingExhausted))
+      if (!stopped && !signal?.aborted && isRecoverablePollingError(err)) {
+        delay = Math.min(60_000, interval * 2 ** failures)
+        if (++failures < 3) continue
+        throw new Error(`异步任务查询暂时失败：${controller.signal.aborted ? '查询超时' : err instanceof Error ? err.message : String(err)}`)
+      }
       throw err
+    } finally {
+      clearTimeout(timeout)
+      signal?.removeEventListener('abort', abort)
     }
 
     const state = getTaskState(taskPayload, poll)
@@ -934,15 +989,10 @@ async function pollCustomTaskResult(
       throw new Error(maybeAppendTransparentBackgroundHint(errorMessage))
     }
     const failure = getGenerationResponseError({ error: getByPath(taskPayload, poll.errorPath), status: getByPath(taskPayload, poll.statusPath), response: taskPayload })
-    if (failure) throw new Error(failure)
     if (state === 'success') {
-      try {
-        return await extractCustomImages(taskPayload, poll.result, mime, signal)
-      } catch (err) {
-        if (!signal?.aborted && isRecoverablePollingError(err)) continue
-        throw err
-      }
+      return await extractCustomImages(taskPayload, poll.result, mime, signal, failure)
     }
+    if (failure) throw new Error(failure)
   }
 }
 
@@ -962,7 +1012,7 @@ async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile,
   const isEdit = inputImageDataUrls.length > 0
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const controller = new AbortController()
-  let timeoutId: ReturnType<typeof setTimeout> | null = setTimeout(() => controller.abort(), getImageRequestTimeoutMs(profile))
+  let timeoutId: ReturnType<typeof setTimeout> | null = setTimeout(() => controller.abort(new DOMException('等待生成结果超时', 'TimeoutError')), getImageRequestTimeoutMs(profile))
 
   try {
     const proxyConfig = readClientDevProxyConfig()
@@ -977,19 +1027,24 @@ async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile,
     const submitPayload = await submitCustomRequest(submitMapping, opts, profile, controller, proxyConfig, useApiProxy)
     const taskIdValue = submitMapping.taskIdPath ? getByPath(submitPayload, submitMapping.taskIdPath) : undefined
     const taskId = typeof taskIdValue === 'string' ? taskIdValue.trim() : String(taskIdValue ?? '').trim()
+    if (taskId) opts.onCustomTaskEnqueued?.({ taskId })
+    const failure = getGenerationResponseError(submitPayload)
+    if (failure && submitMapping.taskIdPath) throw new Error(failure)
     if (submitMapping.taskIdPath && !taskId) {
-      const err = new Error('无法从响应中提取异步任务 ID，请查看原始响应内容确认接口实际返回的数据结构，并根据 API 文档调整「自定义服务商」配置中的 taskIdPath。')
+      const err = Object.assign(new Error('无法从响应中提取异步任务 ID，请查看原始响应内容确认接口实际返回的数据结构，并根据 API 文档调整「自定义服务商」配置中的 taskIdPath。'), { retryable: false })
       ;(err as any).rawResponsePayload = JSON.stringify(submitPayload, null, 2)
       throw err
     }
-    if (!taskId) return extractCustomImages(submitPayload, submitMapping.result ?? {}, mime, controller.signal)
+    if (!taskId) return await extractCustomImages(submitPayload, submitMapping.result ?? {}, mime, controller.signal)
     if (!customProvider.poll) throw new Error('异步接口返回了 task_id，但服务商配置缺少 poll')
-    opts.onCustomTaskEnqueued?.({ taskId })
     if (timeoutId) {
       clearTimeout(timeoutId)
       timeoutId = null
     }
     return pollCustomTaskResult(profile, customProvider.poll, taskId, mime, controller.signal)
+  } catch (err) {
+    if (controller.signal.aborted && err instanceof Error && err.name === 'AbortError') throw controller.signal.reason
+    throw err
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
   }
@@ -1003,6 +1058,7 @@ function mergeConcurrentApiResults(results: PromiseSettledResult<CallApiResult>[
     const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
     const firstError = failures.find((result) => classifyGenerationError(result.reason) === 'content_policy')
       ?? failures.find((result) => classifyGenerationError(result.reason) === 'cancelled')
+      ?? failures.find((result) => result.reason?.retryable === false || isImageDownloadError(result.reason))
       ?? failures[0]
     throw firstError.reason
   }
@@ -1068,9 +1124,9 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
-  const requestHeaders = createRequestHeaders(profile)
+  const requestHeaders = createRequestHeaders(profile, opts.clientFailover)
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), getImageRequestTimeoutMs(profile))
+  const timeoutId = setTimeout(() => controller.abort(new DOMException('等待生成结果超时', 'TimeoutError')), getImageRequestTimeoutMs(profile))
 
   try {
     if (opts.maskDataUrl) {
@@ -1105,18 +1161,20 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
     })
 
     if (!response.ok) {
-      const errorMessage = await getApiErrorMessage(response)
-      throw new Error(maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages))
+      throw await getApiResponseError(response, profile.streamImages)
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
-      return parseResponsesApiStreamResponse(response, mime, opts.onPartialImage)
+      return await parseResponsesApiStreamResponse(response, mime, opts.onPartialImage, controller.signal)
     }
 
     const payload = await response.json() as ResponsesApiResponse
     const result = parseResponsesImageResults(payload, mime)
     await syncHeartbeatCredits(response)
     return result
+  } catch (err) {
+    if (controller.signal.aborted && err instanceof Error && err.name === 'AbortError') throw controller.signal.reason
+    throw err
   } finally {
     clearTimeout(timeoutId)
   }

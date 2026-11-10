@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createFailoverAttempt, formatFailoverError, getFailoverCandidates, getFailoverTimeoutBudget, isFailoverableError, withFailoverStreamingDisabled } from './failover'
 import { DEFAULT_SETTINGS } from './apiProfiles'
 import type { ApiProfile, AppSettings } from '../types'
+import { DEFAULT_PARAMS } from '../types'
 
 function createProfile(id: string, patch: Partial<ApiProfile> = {}): ApiProfile {
   return {
@@ -50,6 +51,11 @@ describe('isFailoverableError', () => {
     expect(isFailoverableError(new Error('HTTP 400: file too large'))).toBe(true)
   })
 
+  it('服务端明确停止重试的账号或积分错误不换渠道', () => {
+    const err = Object.assign(new Error('HTTP 429: 同时生成任务过多'), { retryable: false })
+    expect(isFailoverableError(err)).toBe(false)
+  })
+
   it.each(['content_policy_violation', 'safety rejected', 'upstream task cancelled', '图片结果下载失败：HTTP 403'])('明确请求终止或取图失败不再次生成：%s', (message) => {
     expect(isFailoverableError(new Error(message))).toBe(false)
   })
@@ -79,6 +85,20 @@ describe('getFailoverCandidates', () => {
     const broken = createProfile('broken', { apiKey: '' })
     const candidates = getFailoverCandidates(createSettings([first, broken, third]), first)
     expect(candidates.map((profile) => profile.id)).toEqual(['a', 'c'])
+  })
+
+  it('重复配置不会重复请求同一渠道或占用尝试次数', () => {
+    const candidates = getFailoverCandidates(createSettings([first, second, { ...second }, third], { channelFailoverMaxAttempts: 3 }), first)
+    expect(candidates.map((profile) => profile.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('原生 GIF 先排除静态与异协议渠道，再限制尝试次数', () => {
+    const gif = createProfile('gif', { model: 'gpt-image-2.6-flare' })
+    const fallback = createProfile('backup', { model: 'gif-alias', supportsNativeGif: true })
+    const profiles = [gif, first, createProfile('responses', { ...fallback, id: 'responses', apiMode: 'responses' }), fallback]
+    expect(getFailoverCandidates(createSettings(profiles, { channelFailoverMaxAttempts: 2 }), gif, { ...DEFAULT_PARAMS, output_format: 'gif' }).map((profile) => profile.id)).toEqual(['gif', 'backup'])
+    expect(getFailoverCandidates(createSettings([first, fallback]), first, { ...DEFAULT_PARAMS, output_format: 'gif' }).map((profile) => profile.id)).toEqual(['backup'])
+    expect(getFailoverCandidates(createSettings([first], { channelFailover: false }), first, { ...DEFAULT_PARAMS, output_format: 'gif' })).toEqual([])
   })
 })
 

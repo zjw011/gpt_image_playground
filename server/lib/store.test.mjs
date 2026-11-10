@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { generateInviteCode, generatePasscode, getConfig, initStore, inviteStatus, isValidUsername, normalizeInviteCode, toAdminUser, toPublicChannel, updateConfig } from './store.mjs'
+import { generateInviteCode, generatePasscode, getConfig, initStore, inviteStatus, isValidUsername, normalizeChannel, normalizeInviteCode, toAdminUser, toPublicChannel, updateConfig } from './store.mjs'
 
 /** 用给定配置内容初始化一个临时数据目录。传 null 表示不写配置文件（首次启动）。 */
 function initWith(config) {
@@ -169,9 +169,34 @@ describe('toAdminUser', () => {
 })
 
 describe('toPublicChannel', () => {
+  it('公开 GIF 能力，但不公开渠道地址和密钥', () => {
+    const channel = normalizeChannel({ model: 'gpt-image-2.6-flare', baseUrl: 'https://private.test', apiKey: 'secret-key' }, 'gif')
+    const projected = toPublicChannel(channel)
+    expect(projected.supportsNativeGif).toBe(true)
+    expect(projected).not.toHaveProperty('apiKey')
+    expect(projected).not.toHaveProperty('baseUrl')
+  })
+
   it('给旧前端下发的同步生图超时至少为 5 分钟', () => {
     expect(toPublicChannel({ timeout: 15 }).timeout).toBe(300)
     expect(toPublicChannel({ timeout: 900 }).timeout).toBe(900)
+  })
+})
+
+describe('原生 GIF 渠道能力', () => {
+  it.each(['gpt-image-2.6-sunburst', 'gpt-image-2.6-flare', 'gpt-image-2.6-flare-2026-11-04'])('识别已知模型 %s', (model) => {
+    expect(normalizeChannel({ model }, 'gif').supportsNativeGif).toBe(true)
+  })
+
+  it('允许别名显式开启，也保留已知模型的显式关闭', () => {
+    expect(normalizeChannel({ model: 'gateway-animation', supportsNativeGif: true }, 'gif').supportsNativeGif).toBe(true)
+    expect(normalizeChannel({ model: 'gpt-image-2.6-flare', supportsNativeGif: false }, 'gif').supportsNativeGif).toBe(false)
+    expect(normalizeChannel({ model: 'gpt-image-2' }, 'gif').supportsNativeGif).toBe(false)
+  })
+
+  it('Responses 与非 OpenAI 服务商不具有原生 GIF 能力', () => {
+    expect(normalizeChannel({ model: 'gpt-image-2.6-flare', apiMode: 'responses', supportsNativeGif: true }, 'gif').supportsNativeGif).toBe(false)
+    expect(normalizeChannel({ model: 'gpt-image-2.6-flare', provider: 'fal', supportsNativeGif: true }, 'gif').supportsNativeGif).toBe(false)
   })
 })
 

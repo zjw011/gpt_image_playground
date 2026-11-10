@@ -23,7 +23,9 @@
     "audit:image-paste": "node scripts/audit-image-paste.mjs",
     "audit:image-size": "node scripts/audit-image-size.mjs",
     "audit:generation-errors": "node scripts/audit-generation-errors.mjs",
-    "audit:task-progress": "node scripts/audit-task-progress.mjs"
+    "audit:task-progress": "node scripts/audit-task-progress.mjs",
+    "audit:failover": "node scripts/audit-failover.mjs",
+    "audit:native-gif": "node scripts/audit-native-gif.mjs"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.0",

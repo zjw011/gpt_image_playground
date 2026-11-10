@@ -21,6 +21,17 @@ describe('下载与 ZIP 水印选项', () => {
     expect(cleanVisibleWatermark).not.toHaveBeenCalled()
     expect(createObjectURL).toHaveBeenCalledWith(original)
   })
+  it('GIF 即使带有批量水印选项也直接下载原始动图并使用 gif 扩展名', async () => {
+    const { createObjectURL } = prepare()
+    const original = new Blob(['GIF89a-original-frames'], { type: 'image/gif' })
+    vi.mocked(fetch).mockResolvedValue({ ok: true, blob: async () => original } as Response)
+    const filenames: string[] = []
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { filenames.push(this.download) })
+    expect(await downloadImageIds(['gif-image'], 'animation', { removeWatermark: true })).toEqual({ successCount: 1, failCount: 0 })
+    expect(cleanVisibleWatermark).not.toHaveBeenCalled()
+    expect(createObjectURL).toHaveBeenCalledWith(original)
+    expect(filenames).toEqual(['animation.gif'])
+  })
   it('勾选后下载副本，处理失败下载原图并报告，不隐藏失败', async () => {
     const { original, createObjectURL } = prepare()
     vi.mocked(cleanVisibleWatermark).mockRejectedValueOnce(new Error('offline'))

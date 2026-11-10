@@ -4,6 +4,11 @@ type TaskLifecyclePatch = Pick<TaskRecord, 'status' | 'error' | 'finishedAt' | '
 type ActualParams = Partial<TaskParams>
 type ImageSize = { width?: number; height?: number }
 
+/** 异步任务暂时断线仍会查询原任务，不能当作已结束；完成记录忽略残留恢复标记。 */
+export function isTaskInProgress(task: Pick<TaskRecord, 'status' | 'falRecoverable' | 'customRecoverable'>): boolean {
+  return task.status === 'running' || (task.status === 'error' && Boolean(task.falRecoverable || task.customRecoverable))
+}
+
 export function createTaskDonePatch(task: Pick<TaskRecord, 'createdAt'>, now: number): TaskLifecyclePatch {
   return {
     status: 'done',

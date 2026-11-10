@@ -156,6 +156,34 @@ try {
   await waitFor('document.querySelectorAll(\'[aria-label="生成任务进度"] a[data-task-id]\').length === 3')
   report('删除运行任务后相应蝴蝶同步消失', await browser.evaluate('!document.querySelector(\'a[data-task-id^="butterfly-extra-"]\')'))
   await browser.evaluate(`(async () => { const { useStore } = await import('/src/store.ts'); useStore.getState().setTasks([
+    { ...window.progressAuditActive[0], status: 'error', error: '查询暂时失败', falRecoverable: true, finishedAt: Date.now(), elapsed: 64000 },
+    { ...window.progressAuditActive[1], status: 'error', error: '查询超时', customRecoverable: true, finishedAt: Date.now(), elapsed: 9000 },
+    window.progressAuditActive[2], ...window.progressAuditHistory,
+  ]) })()`)
+  await waitFor('document.querySelector(\'a[data-task-id="butterfly-first"]\')?.textContent.includes("恢复查询中")')
+  report('Fal 和自定义异步恢复仍显示运行蝴蝶', await browser.evaluate(`['butterfly-first', 'butterfly-second'].every((id) => { const el = document.querySelector('[aria-label="生成任务进度"] a[data-task-id="' + id + '"]'); return el.dataset.state === 'running' && el.textContent.includes('恢复查询中') })`))
+  await navigate('/result?task=butterfly-first')
+  await waitFor(`document.querySelector('main')?.textContent.includes('正在恢复查询生成结果')`)
+  report('恢复中的结果页继续等待，不显示最终失败或重复生成入口', await browser.evaluate(`document.querySelector('main').textContent.includes('系统会继续查询原任务') && !document.querySelector('main').textContent.includes('这次没有生成成功') && !Array.from(document.querySelectorAll('main button')).some((button) => /再次生成|重新生成/.test(button.textContent)) && Array.from(document.querySelectorAll('main button')).some((button) => button.textContent === '删除')`))
+  report('查看恢复结果不会让运行蝴蝶退场', await browser.evaluate('!!document.querySelector(\'a[data-task-id="butterfly-first"]\')'))
+  await navigate('/me?tab=works')
+  await waitFor(`document.querySelector('main a[href="/result?task=butterfly-first"]')?.textContent.includes('恢复查询中')`)
+  report('我的作品保留恢复中卡片和等待计时', await browser.evaluate(`['butterfly-first', 'butterfly-second'].every((id) => { const el = document.querySelector('main a[href="/result?task=' + id + '"]'); return el?.textContent.includes('恢复查询中') && el.textContent.includes('已等待') })`))
+  await navigate('/me?tab=works&filter=failed')
+  await waitFor(`!!document.querySelector('main a[aria-current="page"][href="/me?tab=works&filter=failed"]')`)
+  report('恢复中任务不进入失败筛选', await browser.evaluate(`!document.querySelector('main a[href="/result?task=butterfly-first"]') && !document.querySelector('main a[href="/result?task=butterfly-second"]')`))
+  await navigate('/me?tab=works')
+  await browser.evaluate(`(() => { window.progressAuditDateNow = Date.now; Date.now = () => window.progressAuditDateNow() + 21000; document.dispatchEvent(new Event('visibilitychange')) })()`)
+  await waitFor(`document.querySelector('a[data-task-id="butterfly-first"] [role="timer"]').textContent !== '1:04'`)
+  report('恢复超过结束通知时限仍保持运行且计时继续', await browser.evaluate(`(() => { const el = document.querySelector('a[data-task-id="butterfly-first"]'); const time = el.querySelector('[role="timer"]').textContent.split(':').map(Number); return el.dataset.state === 'running' && time[0] * 60 + time[1] >= 85 && document.querySelectorAll('[aria-label="生成任务进度"] a[data-task-id]').length === 3 })()`))
+  await browser.evaluate('Date.now = window.progressAuditDateNow; document.dispatchEvent(new Event("visibilitychange"))')
+  await waitFor(`(() => { const parts = document.querySelector('a[data-task-id="butterfly-first"] [role="timer"]').textContent.split(':').map(Number); return Math.abs(parts[0] * 60 + parts[1] - (Date.now() - window.progressAuditActive[0].createdAt) / 1000) < 2 })()`)
+  await browser.setViewport(320, 844)
+  await waitFor('document.querySelector(\'[aria-label="生成任务进度"]\').dataset.expanded === "false"')
+  report('手机折叠显示恢复查询及运行数量', await browser.evaluate(`document.querySelector('.task-progress-compact-label').textContent === '恢复查询中' && document.querySelector('.task-progress-count').textContent === '3' && document.documentElement.scrollWidth <= innerWidth + 1`))
+  await browser.setViewport(1440, 900)
+  await waitFor('document.querySelector(\'[aria-label="生成任务进度"]\').dataset.expanded === "true"')
+  await browser.evaluate(`(async () => { const { useStore } = await import('/src/store.ts'); useStore.getState().setTasks([
     { ...window.progressAuditActive[0], status: 'done', outputImages: [window.progressAuditImages[0]], finishedAt: Date.now(), elapsed: 70000 },
     { ...window.progressAuditActive[1], status: 'error', error: '内容安全审核未通过', finishedAt: Date.now(), elapsed: 18000 },
     { ...window.progressAuditActive[2], status: 'done', outputImages: [window.progressAuditImages[1]], outputErrors: [{ requestIndex: 1, error: '上游取消' }], finishedAt: Date.now(), elapsed: 40000 },

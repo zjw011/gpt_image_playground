@@ -39,6 +39,23 @@ describe('parameter compatibility', () => {
     expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, n: 8 }, settings).n).toBe(4)
   })
 
+  it('原生 GIF 保留自动尺寸并移除不兼容的静态图选项', () => {
+    const profile = createDefaultOpenAIProfile({ model: 'gpt-image-2.6-sunburst', apiKey: 'test-key' })
+    const settings = normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile], activeProfileId: profile.id })
+    const params = normalizeParamsForSettings({
+      ...DEFAULT_PARAMS,
+      output_format: 'gif',
+      n: 6,
+      transparent_output: true,
+      output_compression: 50,
+      frame_count: 12,
+      frame_duration_ms: 350,
+    }, settings)
+
+    expect(params).toMatchObject({ size: 'auto', n: 1, output_compression: null, transparent_output: false, frame_count: 12, frame_duration_ms: 350 })
+    expect(normalizeParamsForSettings({ ...params, size: '1024x1536' }, settings).size).toBe('1024x1536')
+  })
+
   it('keeps OpenAI streaming output count so the request can disable streaming', () => {
     const openAIProfile = createDefaultOpenAIProfile({ apiKey: 'test-key', streamImages: true })
     const settings = normalizeSettings({

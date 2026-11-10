@@ -22,6 +22,8 @@ export interface AdminChannel {
   provider: string
   baseUrl?: string
   model?: string
+  apiMode?: 'images' | 'responses'
+  supportsNativeGif?: boolean
   enabled: boolean
   apiKeyMask?: string
   hasApiKey: boolean

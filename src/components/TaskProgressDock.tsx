@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useStore } from '../store'
+import { isTaskInProgress } from '../lib/taskState'
 import { BrandMark } from '../pages/theme'
 
 // 只短暂保留亲眼观察到结束的任务，导入作品和刷新页面不会刷出历史通知。
@@ -25,7 +26,7 @@ export default function TaskProgressDock({ children }: { children?: ReactNode })
     setTracked((previous) => {
       const next: Record<string, number | null> = {}
       for (const task of tasks) {
-        if (task.status === 'running') {
+        if (isTaskInProgress(task)) {
           next[task.id] = null
           continue
         }
@@ -38,10 +39,10 @@ export default function TaskProgressDock({ children }: { children?: ReactNode })
     })
   }, [tasks, now])
 
-  const visible = tasks.filter((task) => task.status === 'running' || (task.id in tracked && (tracked[task.id] === null || now - tracked[task.id]! < COMPLETION_VISIBLE_MS)))
+  const visible = tasks.filter((task) => isTaskInProgress(task) || (task.id in tracked && (tracked[task.id] === null || now - tracked[task.id]! < COMPLETION_VISIBLE_MS)))
     .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
   const active = visible.length > 0
-  const runningCount = visible.filter((task) => task.status === 'running').length
+  const runningCount = visible.filter(isTaskInProgress).length
   const currentTask = location.pathname === '/result' ? new URLSearchParams(location.search).get('task') : null
 
   useEffect(() => {
@@ -58,11 +59,11 @@ export default function TaskProgressDock({ children }: { children?: ReactNode })
   }, [active])
 
   const times = visible.map((task) => {
-    const ms = task.status === 'running' ? now - task.createdAt : task.elapsed ?? (task.finishedAt ?? tracked[task.id] ?? now) - task.createdAt
+    const ms = isTaskInProgress(task) ? now - task.createdAt : task.elapsed ?? (task.finishedAt ?? tracked[task.id] ?? now) - task.createdAt
     const seconds = Math.max(0, Math.floor(ms / 1000))
     return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
   })
-  const compactIndex = Math.max(0, visible.findIndex((task) => task.status === 'running'))
+  const compactIndex = Math.max(0, visible.findIndex(isTaskInProgress))
 
   return (
     <div className="task-progress-layout" data-dock-active={active}>
@@ -80,10 +81,11 @@ export default function TaskProgressDock({ children }: { children?: ReactNode })
           </div>
           <div id="task-progress-list" className="task-progress-list" data-task-list>
             {visible.map((task, idx) => {
-              const running = task.status === 'running'
+              const running = isTaskInProgress(task)
+              const recovering = running && Boolean(task.falRecoverable || task.customRecoverable)
               const partial = !running && task.outputImages.length > 0 && (task.status === 'error' || Boolean(task.outputErrors?.length))
               const state = running ? 'running' : partial ? 'partial' : task.status === 'done' ? 'done' : 'error'
-              const status = running ? task.liveFrameCount ? `${task.liveFramesCompleted ?? 0}/${task.liveFrameCount} 帧` : '生成中' : partial ? '部分完成' : task.status === 'done' ? '已完成' : '未完成'
+              const status = recovering ? '恢复查询中' : running ? task.liveFrameCount ? `${task.liveFramesCompleted ?? 0}/${task.liveFrameCount} 帧` : '生成中' : partial ? '部分完成' : task.status === 'done' ? '已完成' : '未完成'
               const elapsed = times[idx]
               return <Link
                 key={task.id}
@@ -119,7 +121,7 @@ export default function TaskProgressDock({ children }: { children?: ReactNode })
           <span className="task-progress-time" role="timer" aria-live="off" aria-label={`${runningCount ? '最早生成任务已等待' : '用时'} ${times[compactIndex]}`}>{times[compactIndex]}</span>
           <BrandMark className="task-progress-compact-mark" />
           <span className="task-progress-count">{runningCount || visible.length}</span>
-          <span className="task-progress-compact-label">{runningCount ? '创作中' : '查看结果'}</span>
+          <span className="task-progress-compact-label">{runningCount ? visible[compactIndex].falRecoverable || visible[compactIndex].customRecoverable ? '恢复查询中' : '创作中' : '查看结果'}</span>
         </button>}
       </section>}
     </div>

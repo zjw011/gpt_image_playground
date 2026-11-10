@@ -17,13 +17,15 @@ export function isImageDownloadError(error: unknown): boolean {
 }
 
 export function getTaskFailureHint(error: unknown): string {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  if (/图片已生成，但保存到浏览器失败/.test(message)) return '图片已生成，但未能保存到当前浏览器。请检查设备剩余空间和浏览器存储权限；系统已停止自动重试，避免重复生图。'
   const kind = classifyGenerationError(error)
   if (kind === 'content_policy') return '本次内容未通过绘图服务的安全审核，可能涉及成人、裸露或其他受限内容。请修改描述或更换参考图后再试。'
+  if (/原生 GIF 结果无效/.test(message)) return '绘图服务未返回有效的多帧 GIF，系统已停止自动重试，避免重复生成。请联系管理员检查动图渠道。'
   if (isImageSizeError(error)) return IMAGE_SIZE_ERROR_MESSAGE
   if (kind === 'cancelled') return '上游已取消本次生成，但未提供明确原因。请稍后重试；仅凭取消状态无法判断是否涉及内容限制。'
   if (isImageDownloadError(error)) return '未能取回有效图片，暂时无法确认生成结果。可能是图片链接失效、访问限制或网络异常，请稍后重试或联系管理员。'
   if (kind === 'timeout') return '等待生成结果超时，暂时无法确认上游是否仍在处理。请稍后查看结果，避免连续重复提交。'
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
   if (/insufficient[_\s-]*(account[_\s-]*)?balance|余额不足|欠费/i.test(message)) {
     return '绘图服务暂时不可用，请稍后重试或联系管理员。'
   }

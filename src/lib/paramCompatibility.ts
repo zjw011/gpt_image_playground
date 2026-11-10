@@ -1,5 +1,6 @@
 import { DEFAULT_PARAMS, type AppSettings, type TaskParams } from '../types'
 import { getActiveApiProfile, isOpenAICompatibleProvider } from './apiProfiles'
+import { normalizeNativeGifParams } from './nativeGif'
 import { normalizeCodexCliImageSize, normalizeImageSize } from './size'
 
 export const DEFAULT_FAL_IMAGE_SIZE = '1360x1024'
@@ -23,6 +24,9 @@ export function normalizeParamsForSettings(
     size: normalizeImageSize(params.size) || DEFAULT_PARAMS.size,
     n: Math.min(outputImageLimit, Math.max(1, params.n || DEFAULT_PARAMS.n)),
   }
+
+  // 动图由支持该能力的渠道处理，保留模型的自动尺寸并避免套用静态图参数。
+  if (nextParams.output_format === 'gif') return normalizeNativeGifParams(nextParams)
 
   if (isOpenAICompatibleProvider(settings, activeProfile.provider) && activeProfile.codexCli) {
     nextParams.size = normalizeCodexCliImageSize(nextParams.size)

@@ -108,6 +108,40 @@ describe('蝴蝶任务进度浮层', () => {
     expect(time('background')).toContain('1:39')
   })
 
+  it.each(['falRecoverable', 'customRecoverable'] as const)('%s 断线恢复仍显示运行蝴蝶，持续计时直到真正结束', async (flag) => {
+    const recovering = task('recovering', { status: 'error', [flag]: true, error: '查询暂时失败', finishedAt: Date.now(), elapsed: 9000 })
+    await update([recovering])
+    await render()
+    expect(link('recovering')?.textContent).toContain('恢复查询中')
+    expect(link('recovering')?.dataset.state).toBe('running')
+    await advance(30000)
+    expect(time('recovering')).toBe('0:39')
+    expect(vi.getTimerCount()).toBe(1)
+    await act(async () => link('recovering')!.click())
+    expect(link('recovering')).toBeDefined()
+    expect(el.querySelector('output')?.textContent).toBe('/result?task=recovering')
+    // 即使旧恢复标志残留，已完成也必须进入正常退场流程。
+    await update([{ ...recovering, status: 'done', finishedAt: Date.now(), elapsed: 39000, outputImages: ['saved'] }])
+    expect(link('recovering')?.textContent).toContain('已完成')
+    await advance(20000)
+    expect(dock()).toBeNull()
+  })
+
+  it('恢复结束且确认为失败后才冻结计时并开始退场', async () => {
+    const running = task('connection')
+    await update([running])
+    await render()
+    await update([{ ...running, status: 'error', customRecoverable: true, elapsed: 9000 }])
+    await advance(25000)
+    expect(time('connection')).toBe('0:34')
+    await update([{ ...running, status: 'error', customRecoverable: false, elapsed: 34000, finishedAt: Date.now() }])
+    expect(link('connection')?.textContent).toContain('未完成')
+    await advance(19000)
+    expect(time('connection')).toBe('0:34')
+    await advance(1000)
+    expect(dock()).toBeNull()
+  })
+
   it.each(['done', 'error'] as const)('观察到 %s 后冻结耗时并在 20 秒后退出，保留原任务记录', async (status) => {
     const running = task('finishing')
     await update([running])

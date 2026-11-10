@@ -9,6 +9,8 @@ import { copyTextToClipboard } from '../../lib/clipboard'
 import { pasteImages } from '../../lib/imagePaste'
 import ImagePasteButton from '../../components/ImagePasteButton'
 import { useCreditsStore } from '../../lib/creditsStore'
+import { isTaskInProgress } from '../../lib/taskState'
+import { isNativeGifTask } from '../../lib/nativeGif'
 import { prepareProfileAvatar } from '../../lib/profileImage'
 import { useCloseOnEscape } from '../../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../../hooks/usePreventBackgroundScroll'
@@ -44,20 +46,22 @@ function formatElapsed(ms: number) {
 function WorkCard({ task, streamPreview }: { task: TaskRecord, streamPreview?: string }) {
   const src = useThumbnail(task.outputImages[0])
   const [now, setNow] = useState(Date.now())
+  const running = isTaskInProgress(task)
+  const recovering = running && Boolean(task.falRecoverable || task.customRecoverable)
 
   useEffect(() => {
-    if (task.status !== 'running') return
+    if (!running) return
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
-  }, [task.status])
+  }, [running])
 
   return (
     <Link
       to={`/result?task=${task.id}`}
-      aria-label={task.status === 'error' ? `生成失败，查看并重试：${task.prompt}` : undefined}
+      aria-label={recovering ? `恢复查询中，查看进度：${task.prompt}` : !running && task.status === 'error' ? `生成失败，查看并重试：${task.prompt}` : undefined}
       className="group relative aspect-square overflow-hidden rounded-2xl border border-[#eceaf6] bg-[#faf9fe]"
     >
-      {task.status === 'running' ? (
+      {running ? (
         <>
           {streamPreview && <img src={streamPreview} alt="生成中的预览" className="absolute inset-0 h-full w-full object-cover opacity-55 blur-[1px]" />}
           <span className="absolute inset-0 bg-gradient-to-br from-[#f6f3ff]/95 via-[#eeeaff]/85 to-[#e4efff]/90" />
@@ -66,7 +70,7 @@ function WorkCard({ task, streamPreview }: { task: TaskRecord, streamPreview?: s
               <span className="absolute inset-0 animate-ping rounded-2xl bg-[#7c6cf6]/20" />
               <IconSparkle className="relative h-5 w-5 animate-pulse" />
             </span>
-            <strong className="mt-4 text-sm text-[#554c9d]">{task.liveFrameCount ? `连续帧 ${task.liveFramesCompleted ?? 0}/${task.liveFrameCount}` : '生成中'}</strong>
+            <strong className="mt-4 text-sm text-[#554c9d]">{recovering ? '恢复查询中' : task.liveFrameCount ? `连续帧 ${task.liveFramesCompleted ?? 0}/${task.liveFrameCount}` : '生成中'}</strong>
             <span className="mt-1 text-[11px] font-medium text-[#8d85bd]">已等待 {formatElapsed(now - task.createdAt)}</span>
             <span className="mt-2 line-clamp-2 text-[11px] leading-4 text-[#8f89aa]">{task.prompt}</span>
           </span>
@@ -82,8 +86,9 @@ function WorkCard({ task, streamPreview }: { task: TaskRecord, streamPreview?: s
           <IconStar className="h-3.5 w-3.5 text-[#f0b429]" filled />
         </span>
       )}
-      {task.status === 'error' && <span className="absolute bottom-2 left-2 rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-500">生成失败 · 查看并重试</span>}
+      {!running && task.status === 'error' && <span className="absolute bottom-2 left-2 rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-500">生成失败 · 查看并重试</span>}
       {task.quickMotion && task.status === 'done' && <span className="absolute bottom-2 left-2 rounded-full bg-[#6b5ce7]/90 px-3 py-1 text-[11px] font-semibold text-white shadow-sm">运镜 · {task.quickMotion.duration} 秒</span>}
+      {isNativeGifTask(task) && task.status === 'done' && <span className="absolute bottom-2 left-2 rounded-full bg-[#6b5ce7]/90 px-3 py-1 text-[11px] font-semibold text-white shadow-sm">GIF 动图 · 点击播放</span>}
       {task.tryOn && task.status === 'done' && <span className="absolute bottom-2 left-2 rounded-full bg-[#6b5ce7]/90 px-3 py-1 text-[11px] font-semibold text-white shadow-sm">{task.tryOn.mode === 'reference' ? '爆款参考' : task.tryOn.mode === 'wear' ? '人物换装' : '商品种草'}</span>}
     </Link>
   )
@@ -141,9 +146,9 @@ export default function MePage() {
   const workFilter = searchParams.get('filter') === 'failed' ? 'failed' : rawTab === 'favorites' || searchParams.get('fav') === '1' ? 'fav' : 'all'
   const name = user?.displayName || user?.username || '本地创作者'
   const doneCount = tasks.filter((task) => task.status === 'done' && task.outputImages.length > 0).length
-  const workTasks = tasks.filter((task) => task.status === 'running' || (task.status === 'done' && task.outputImages.length > 0))
+  const workTasks = tasks.filter((task) => isTaskInProgress(task) || (task.status === 'done' && task.outputImages.length > 0))
   const favoriteTasks = workTasks.filter((task) => task.isFavorite)
-  const failedTasks = tasks.filter((task) => task.status === 'error')
+  const failedTasks = tasks.filter((task) => task.status === 'error' && !isTaskInProgress(task))
 
   const openProfileEditor = () => {
     if (!user) return

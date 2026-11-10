@@ -1,13 +1,14 @@
-import { fal } from '@fal-ai/client'
+import { createFalClient } from '@fal-ai/client'
 import type { ApiProfile, FalApiResponse, TaskParams } from '../types'
 import { DEFAULT_FAL_BASE_URL } from './apiProfiles'
-import { getGenerationResponseError } from './generationError.mjs'
+import { classifyGenerationError, getGenerationResponseError } from './generationError.mjs'
 import {
   assertImageInputPayloadSize,
   assertMaskEditFileSize,
   type CallApiOptions,
   type CallApiResult,
   fetchImageUrlAsDataUrl,
+  getApiResponseError,
   getDataUrlDecodedByteSize,
   getDataUrlEncodedByteSize,
   isDataUrl,
@@ -37,14 +38,38 @@ function mapFalQuality(quality: TaskParams['quality']): 'low' | 'medium' | 'high
   return quality === 'auto' ? 'high' : quality
 }
 
-function configureFal(profile: ApiProfile) {
+function createProfileFalClient(profile: ApiProfile, clientFailover = false, onEnqueue?: (requestId: string) => void) {
   const baseUrl = profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
-  const config: Parameters<typeof fal.config>[0] = {
+  const config: NonNullable<Parameters<typeof createFalClient>[0]> = {
     credentials: profile.apiKey,
     suppressLocalCredentialsWarning: true,
+    fetch: async (input, init) => {
+      const headers = new Headers(init?.headers)
+      if (clientFailover && baseUrl.includes('/api/relay/')) headers.set('X-GIP-Failover', 'client')
+      const response = await fetch(input, { ...init, headers })
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (!response.ok) {
+        const error = await getApiResponseError(response.clone())
+        // SDK 的 queue.submit 会覆盖 retry 配置；普通 Error 阻止内部重复创建收费任务。
+        if (method !== 'GET' || ('retryable' in error && error.retryable === false) || classifyGenerationError(error)) throw error
+      } else if (method !== 'GET' || /\/status(?:\?|$)/.test(headers.get('x-fal-target-url') ?? String(input))) {
+        // 提交/状态接口的 HTTP 200 也可能是错误，不能带着空 ID 无限查询。
+        if (response.headers.get('content-type')?.includes('application/json')) {
+          const payload = await response.clone().json()
+          const failure = getGenerationResponseError(payload)
+          if (failure) {
+            const requestId = method !== 'GET' && typeof payload?.request_id === 'string' ? payload.request_id.trim() : ''
+            // 已受理的任务即使同时带错也要先保存 ID，不能把它当作提交失败再次收费生图。
+            if (requestId) onEnqueue?.(requestId)
+            throw Object.assign(new Error(failure), requestId ? { retryable: false } : {})
+          }
+        }
+      }
+      return response
+    },
   }
   if (baseUrl !== DEFAULT_FAL_BASE_URL) config.proxyUrl = baseUrl
-  fal.config(config)
+  return createFalClient(config)
 }
 
 async function createFalRequestInput(opts: CallApiOptions): Promise<Record<string, unknown>> {
@@ -92,13 +117,8 @@ function readFalImageSize(value: unknown): Partial<TaskParams> | undefined {
   return { size: `${Math.round(width)}x${Math.round(height)}` }
 }
 
-async function parseFalImageResults(payload: FalApiResponse, fallbackMime: string, customBaseUrlLabel: string | null, signal?: AbortSignal): Promise<Array<{
-  image: string
-  actualParams?: Partial<TaskParams>
-  rawImageUrl?: string
-}>> {
+async function parseFalImageResults(payload: FalApiResponse, fallbackMime: string, customBaseUrlLabel: string | null, signal?: AbortSignal) {
   const payloadError = getGenerationResponseError(payload)
-  if (payloadError) throw new Error(payloadError)
   const candidates: unknown[] = []
   if (Array.isArray(payload.images)) candidates.push(...payload.images)
   if (payload.image) candidates.push(payload.image)
@@ -106,49 +126,58 @@ async function parseFalImageResults(payload: FalApiResponse, fallbackMime: strin
 
   const results: Array<{ image: string; actualParams?: Partial<TaskParams>; rawImageUrl?: string }> = []
   const rawImageUrls: string[] = []
-  try {
-    for (const candidate of candidates) {
+  const errors: Error[] = []
+  const failedRequests: NonNullable<CallApiResult['failedRequests']> = []
+  for (const [requestIndex, candidate] of candidates.entries()) {
+    try {
+      const failure = getGenerationResponseError(candidate)
+      if (failure) throw new Error(failure)
       const value = readFalImageValue(candidate, fallbackMime)
-      if (!value) continue
+      if (!value) throw new Error('fal.ai 未返回可识别的图片数据')
       if (isHttpUrl(value)) rawImageUrls.push(value)
       results.push({
         image: isHttpUrl(value) ? await fetchImageUrlAsDataUrl(value, fallbackMime, signal) : value,
         actualParams: readFalImageSize(candidate),
         rawImageUrl: isHttpUrl(value) ? value : undefined,
       })
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err))
+      errors.push(error)
+      failedRequests.push({ requestIndex, error: error.message })
     }
-  } catch (err) {
-    if (rawImageUrls.length > 0 && err instanceof Error) {
-      (err as any).rawImageUrls = rawImageUrls
-    }
-    throw err
+  }
+  if (payloadError && !failedRequests.some((item) => item.error === payloadError)) {
+    errors.push(new Error(payloadError))
+    failedRequests.push({ requestIndex: candidates.length, error: payloadError })
   }
 
   if (!results.length) {
-    const err = new Error(
+    const err = errors.find((error) => classifyGenerationError(error) === 'content_policy')
+      ?? errors.find((error) => classifyGenerationError(error) === 'cancelled')
+      ?? errors[0] ?? new Error(
       customBaseUrlLabel
         ? `${customBaseUrlLabel} 没有返回可识别的图片数据，请查看原始响应内容确认实际返回的数据结构。如果当前接口与 fal.ai 格式不兼容，建议创建并使用「自定义服务商」配置。`
         : 'fal.ai 未返回可用图片数据',
     )
-    if (customBaseUrlLabel) {
-      ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
-    }
+    if (rawImageUrls.length) (err as Error & { rawImageUrls?: string[] }).rawImageUrls = rawImageUrls
+    ;(err as Error & { rawResponsePayload?: string }).rawResponsePayload = JSON.stringify(payload, null, 2)
     throw err
   }
-  return results
+  return { results, rawImageUrls, failedRequests }
 }
 
 async function parseFalResult(payload: FalApiResponse, params: TaskParams, customBaseUrlLabel: string | null, signal?: AbortSignal): Promise<CallApiResult> {
   const mime = MIME_MAP[params.output_format] || 'image/png'
-  const imageResults = await parseFalImageResults(payload, mime, customBaseUrlLabel, signal)
+  const parsed = await parseFalImageResults(payload, mime, customBaseUrlLabel, signal)
+  const imageResults = parsed.results
   const actualParams = mergeActualParams(imageResults[0]?.actualParams)
-  const rawImageUrls = imageResults.map((r) => r.rawImageUrl).filter((u): u is string => Boolean(u))
   return {
     images: imageResults.map((result) => result.image),
     actualParams,
     actualParamsList: imageResults.map((result) => result.actualParams),
     revisedPrompts: imageResults.map(() => undefined),
-    ...(rawImageUrls.length ? { rawImageUrls } : {}),
+    ...(parsed.rawImageUrls.length ? { rawImageUrls: parsed.rawImageUrls } : {}),
+    ...(parsed.failedRequests.length ? { failedRequests: parsed.failedRequests } : {}),
   }
 }
 
@@ -191,7 +220,7 @@ export async function getFalQueuedImageResult(
   requestId: string,
   params: TaskParams,
 ): Promise<CallApiResult> {
-  configureFal(profile)
+  const fal = createProfileFalClient(profile)
   try {
     await fal.queue.subscribeToStatus(endpoint, { requestId, logs: true })
     const result = await fal.queue.result(endpoint, { requestId })
@@ -214,21 +243,24 @@ export async function callFalAiImageApi(opts: CallApiOptions, profile: ApiProfil
         (opts.maskDataUrl ? getDataUrlEncodedByteSize(opts.maskDataUrl) : 0),
     )
 
-    // 使用当前配置保存的 API Key，避免 fal SDK 额外输出前端凭据警告。
-    configureFal(profile)
-
     const isEdit = opts.inputImageDataUrls.length > 0
     const endpoint = mapFalEndpoint(profile.model, isEdit)
     const input = await createFalRequestInput(opts)
+    const onEnqueue = (requestId: string) => {
+      if (typeof requestId !== 'string' || !requestId.trim()) {
+        throw Object.assign(new Error('fal.ai 未返回有效任务 ID，暂时无法确认是否已受理，请稍后核查结果，避免重复提交。'), { retryable: false })
+      }
+      opts.onFalRequestEnqueued?.({ requestId, endpoint })
+    }
+    // 每次调用独立配置，避免并发任务或恢复查询切换了另一个任务的渠道。
+    const fal = createProfileFalClient(profile, opts.clientFailover, onEnqueue)
     const result = await fal.subscribe(endpoint, {
       input,
       logs: true,
-      onEnqueue: (requestId) => {
-        opts.onFalRequestEnqueued?.({ requestId, endpoint })
-      },
+      onEnqueue,
     })
     const payload = result.data as FalApiResponse
-    opts.onFalRequestEnqueued?.({ requestId: result.requestId, endpoint })
+    if (result.requestId) opts.onFalRequestEnqueued?.({ requestId: result.requestId, endpoint })
     return parseFalResult(payload, opts.params, getFalCustomBaseUrlLabel(profile))
   } catch (err) {
     const falMessage = getFalErrorMessage(err)

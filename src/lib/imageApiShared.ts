@@ -8,6 +8,7 @@ export const MIME_MAP: Record<string, string> = {
   png: 'image/png',
   jpeg: 'image/jpeg',
   webp: 'image/webp',
+  gif: 'image/gif',
 }
 
 export const MAX_MASK_EDIT_FILE_BYTES = 50 * 1024 * 1024
@@ -23,6 +24,8 @@ export interface CallApiOptions {
   inputImageDataUrls: string[]
   maskDataUrl?: string
   skipCodexCliSizePrompt?: boolean
+  /** 当前调用由任务层统一切换渠道，中继只执行本次指定渠道。 */
+  clientFailover?: boolean
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
   onCustomTaskEnqueued?: (task: { taskId: string }) => void
   onPartialImage?: (partial: { image: string; partialImageIndex?: number; requestIndex?: number }) => void
@@ -141,13 +144,34 @@ export function maybeAppendStreamingHint(message: string, status: number, stream
 export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, signal?: AbortSignal): Promise<string> {
   if (isDataUrl(url)) return url
 
-  let response: Response
+  const controller = new AbortController()
+  const abort = () => controller.abort(signal?.reason)
+  if (signal?.aborted) abort()
+  else signal?.addEventListener('abort', abort, { once: true })
+  const timeout = setTimeout(() => controller.abort(new DOMException('图片结果下载超时', 'TimeoutError')), 60_000)
   try {
-    response = await fetch(url, {
+    const response = await fetch(url, {
       cache: 'no-store',
-      signal,
+      signal: controller.signal,
     })
+
+    const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+    if (!response.ok || /json|text\//.test(contentType)) {
+      const message = await getApiErrorMessage(response)
+      if (classifyGenerationError(message)) throw new Error(message)
+      throw new Error(`图片结果下载失败：HTTP ${response.status}，${response.ok ? '结果链接未返回图片' : message}`)
+    }
+
+    const blob = await response.blob()
+    if (!blob.size || (blob.type && !blob.type.startsWith('image/') && !blob.type.startsWith('application/octet-stream'))) {
+      throw new Error('图片结果下载失败：结果链接未返回有效图片')
+    }
+    return await blobToDataUrl(blob, fallbackMime)
   } catch (err) {
+    if (controller.signal.aborted) {
+      if (signal?.aborted && signal.reason?.name === 'AbortError') throw signal.reason
+      throw new Error('图片结果下载失败：下载超时或连接中断，请稍后取回结果')
+    }
     if (err instanceof TypeError) {
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
         throw new Error('图片链接下载失败：当前网络不可用，请恢复网络后重试。')
@@ -155,20 +179,19 @@ export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, 
       throw new Error(`图片链接下载失败。${IMAGE_FETCH_CORS_HINT}`)
     }
     throw err
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener('abort', abort)
   }
+}
 
-  const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-  if (!response.ok || /json|text\//.test(contentType)) {
-    const message = await getApiErrorMessage(response)
-    if (classifyGenerationError(message)) throw new Error(message)
-    throw new Error(`图片结果下载失败：HTTP ${response.status}，${response.ok ? '结果链接未返回图片' : message}`)
-  }
-
-  const blob = await response.blob()
-  if (!blob.size || (blob.type && !blob.type.startsWith('image/') && !blob.type.startsWith('application/octet-stream'))) {
-    throw new Error('图片结果下载失败：结果链接未返回有效图片')
-  }
-  return blobToDataUrl(blob, fallbackMime)
+/** 本站身份、积分或并发限制由中继标记，不能当作上游渠道故障继续提交。 */
+export async function getApiResponseError(response: Response, streamImages?: boolean): Promise<Error> {
+  const message = await getApiErrorMessage(response)
+  return Object.assign(new Error(maybeAppendStreamingHint(message, response.status, streamImages)), {
+    status: response.status,
+    ...(response.headers.get('x-gip-failover') === 'stop' ? { retryable: false } : {}),
+  })
 }
 
 export async function getApiErrorMessage(response: Response): Promise<string> {
@@ -216,12 +239,14 @@ export function pickActualParams(source: unknown): Partial<TaskParams> {
   if (record.quality === 'auto' || record.quality === 'low' || record.quality === 'medium' || record.quality === 'high') {
     actualParams.quality = record.quality
   }
-  if (record.output_format === 'png' || record.output_format === 'jpeg' || record.output_format === 'webp') {
+  if (record.output_format === 'png' || record.output_format === 'jpeg' || record.output_format === 'webp' || record.output_format === 'gif') {
     actualParams.output_format = record.output_format
   }
   if (typeof record.output_compression === 'number') actualParams.output_compression = record.output_compression
   if (record.moderation === 'auto' || record.moderation === 'low') actualParams.moderation = record.moderation
   if (typeof record.n === 'number') actualParams.n = record.n
+  if (typeof record.frame_count === 'number' && Number.isFinite(record.frame_count)) actualParams.frame_count = record.frame_count
+  if (typeof record.frame_duration_ms === 'number' && Number.isFinite(record.frame_duration_ms)) actualParams.frame_duration_ms = record.frame_duration_ms
 
   return actualParams
 }

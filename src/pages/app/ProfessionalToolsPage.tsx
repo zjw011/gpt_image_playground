@@ -10,10 +10,12 @@ import { createInputImageFromFile, submitTask, useStore } from '../../store'
 import { IconArrowLeft, IconArrowRight, IconMinus, IconPlus, IconSparkle, IconUpload, IconLayers, IconUser, IconImage, IconToolbox, IconCheck } from '../icons'
 import AppShell from './AppShell'
 import QuickMotionEditor from '../../components/QuickMotionEditor'
+import NativeGifEditor from '../../components/NativeGifEditor'
 import TryOnEditor from '../../components/TryOnEditor'
 import ProfessionalStep from '../../components/ProfessionalStep'
 import ImagePasteButton from '../../components/ImagePasteButton'
 import { pasteImages } from '../../lib/imagePaste'
+import { isNativeGifTask } from '../../lib/nativeGif'
 import './professionalTools.css'
 
 type ToolKey = 'ecommerce' | 'product-suite' | 'live' | 'try-on'
@@ -21,7 +23,7 @@ type ToolKey = 'ecommerce' | 'product-suite' | 'live' | 'try-on'
 const TOOLS: Array<{ key: ToolKey, title: string, eyebrow: string, description: string, image: string }> = [
   { key: 'ecommerce', title: '电商设计', eyebrow: '单图精修', description: '上传商品图，生成适合详情页、海报和营销场景的成品。', image: '/art/cover-commerce-v2.jpg' },
   { key: 'product-suite', title: '商品电商套图', eyebrow: '批量出图', description: '围绕同一商品，一次生成视觉统一的成套电商素材。', image: '/art/cover-suite-v2.jpg' },
-  { key: 'live', title: 'Live 实况图', eyebrow: '快速运镜 / AI 微动作', description: '单图轻微缩放、平移，或用 AI 创作微动作，预览并导出短视频。', image: '/art/work-seaside.jpg' },
+  { key: 'live', title: 'Live 实况图', eyebrow: '快速运镜 / AI 微动作 / GIF', description: '让单图轻轻动起来，创作 AI 微动作短视频，或直接生成 GIF 动图。', image: '/art/work-seaside.jpg' },
   { key: 'try-on', title: 'AI 换装与种草', eyebrow: '单品上身 / 爆款参考', description: '人物搭配商品或穿搭参考，支持自然手持、整套换装与随机姿势。', image: '/art/cover-try-on.svg' },
 ]
 
@@ -269,25 +271,25 @@ function AiLiveEditor({ saved }: { saved?: TaskRecord }) {
 
 function LiveEditor({ saved }: { saved?: TaskRecord }) {
   const [searchParams, setSearchParams] = useSearchParams()
-  const ai = searchParams.get('liveMode') === 'ai'
+  const mode = searchParams.get('liveMode') === 'gif' ? 'gif' : searchParams.get('liveMode') === 'ai' ? 'ai' : 'quick'
 
   return (
     <div>
-      <div role="tablist" aria-label="实况制作方式" className="mb-5 grid max-w-lg grid-cols-2 gap-2 rounded-2xl border border-[#e7e1f5] bg-white p-1.5">
-        {[{ key: 'quick', label: '快速运镜', note: '原图轻动 · 0 积分' }, { key: 'ai', label: 'AI 微动作', note: '眨眼 / 微风 / 呼吸' }].map((item) => (
-          <button key={item.key} id={`live-tab-${item.key}`} type="button" role="tab" aria-selected={ai === (item.key === 'ai')} aria-controls={`live-panel-${item.key}`} onClick={() => {
+      <div role="tablist" aria-label="实况制作方式" className="mb-5 grid max-w-2xl grid-cols-3 gap-1 rounded-2xl border border-[#e7e1f5] bg-white p-1.5 sm:gap-2">
+        {[{ key: 'quick', label: '快速运镜', note: '原图轻动 · 0 积分' }, { key: 'ai', label: 'AI 微动作', note: '眨眼 / 微风 / 呼吸' }, { key: 'gif', label: 'AI 原生 GIF', note: '文字 / 参考图生动图' }].map((item) => (
+          <button key={item.key} id={`live-tab-${item.key}`} type="button" role="tab" aria-selected={mode === item.key} aria-controls={`live-panel-${item.key}`} onClick={() => {
             const next = new URLSearchParams(searchParams)
             next.set('liveMode', item.key)
             next.delete('task')
             setSearchParams(next, { replace: true })
-          }} className={`rounded-xl px-3 py-3 text-left transition ${ai === (item.key === 'ai') ? 'bg-[#eee8ff] text-[#7352db] shadow-sm' : 'text-[#817695] hover:bg-[#f7f3ff]'}`}>
-            <span className="block text-sm font-bold">{item.label}</span>
-            <span className="mt-1 block text-[11px] opacity-80">{item.note}</span>
+          }} className={`rounded-xl px-2 py-3 text-left transition sm:px-3 ${mode === item.key ? 'bg-[#eee8ff] text-[#7352db] shadow-sm' : 'text-[#817695] hover:bg-[#f7f3ff]'}`}>
+            <span className="block text-xs font-bold sm:text-sm">{item.label}</span>
+            <span className="mt-1 block text-[10px] opacity-80 sm:text-[11px]">{item.note}</span>
           </button>
         ))}
       </div>
-      <div role="tabpanel" id={`live-panel-${ai ? 'ai' : 'quick'}`} aria-labelledby={`live-tab-${ai ? 'ai' : 'quick'}`}>
-        {ai ? <AiLiveEditor key={saved?.id ?? 'new'} saved={saved} /> : <QuickMotionEditor />}
+      <div role="tabpanel" id={`live-panel-${mode}`} aria-labelledby={`live-tab-${mode}`}>
+        {mode === 'gif' ? <NativeGifEditor key={saved?.id ?? 'new'} saved={saved} /> : mode === 'ai' ? <AiLiveEditor key={saved?.id ?? 'new'} saved={saved} /> : <QuickMotionEditor />}
       </div>
     </div>
   )
@@ -297,7 +299,7 @@ export default function ProfessionalToolsPage() {
   const [searchParams] = useSearchParams()
   const requestedTool = searchParams.get('tool')
   const tool = TOOLS.some((item) => item.key === requestedTool) ? requestedTool as ToolKey : null
-  const saved = useStore((s) => s.tasks.find((task) => task.id === searchParams.get('task') && task.professionalPreset?.startsWith(`${tool}-`)))
+  const saved = useStore((s) => s.tasks.find((task) => task.id === searchParams.get('task') && (task.professionalPreset?.startsWith(`${tool}-`) || (tool === 'live' && searchParams.get('liveMode') === 'gif' && isNativeGifTask(task)))))
 
   return (
     <AppShell title="专业工具" wide>

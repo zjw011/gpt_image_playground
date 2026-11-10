@@ -233,7 +233,10 @@ export async function handleGuestRoute(req, res, ctx) {
   if (ctx.path === '/api/image-cleanup') return handleImageCleanup(req, res, ctx)
 
   if (ctx.path.startsWith('/api/relay/')) {
-    if (!gateOpen) throw new HttpError(401, accessMode === 'accounts' || accessMode === 'wechat' ? '需要登录' : '需要访问口令')
+    if (!gateOpen) {
+      res.setHeader('X-GIP-Failover', 'stop')
+      throw new HttpError(401, accessMode === 'accounts' || accessMode === 'wechat' ? '需要登录' : '需要访问口令', { code: 'authentication-required' })
+    }
     return handleRelay(req, res, ctx)
   }
 

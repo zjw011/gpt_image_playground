@@ -105,6 +105,29 @@ describe('MePage work filters', () => {
     expect(container.textContent).not.toContain('生成失败 · 查看并重试')
   })
 
+  it('GIF 作品卡标记动图并打开能预览和编辑的结果页', async () => {
+    state.tasks = [task('gif-work', { params: { ...DEFAULT_PARAMS, output_format: 'gif' } })]
+    await renderPage()
+    expect(workLinks()[0].textContent).toContain('GIF 动图 · 点击播放')
+    await act(async () => workLinks()[0].click())
+    expect(container.querySelector('output')?.textContent).toBe('/result?task=gif-work')
+  })
+
+  it('异步恢复仍留在进行中作品，失败筛选不混入恢复任务', async () => {
+    state.tasks = [
+      task('fal-recovering', { status: 'error', outputImages: [], falRecoverable: true }),
+      task('custom-recovering', { status: 'error', outputImages: [], customRecoverable: true }),
+      task('terminal', { status: 'error', outputImages: [] }),
+    ]
+    await renderPage()
+    expect(tabs().map((link) => link.textContent)).toEqual(['全部 2', '收藏 0', '失败 1'])
+    expect(workLinks()).toHaveLength(2)
+    expect(workLinks().every((link) => link.textContent?.includes('恢复查询中'))).toBe(true)
+    expect(container.textContent).not.toContain('生成失败 · 查看并重试')
+    await clickTab('失败')
+    expect(workLinks().map((link) => link.getAttribute('href'))).toEqual(['/result?task=terminal'])
+  })
+
   it('filters favorites from normal works only and preserves running favorites', async () => {
     await renderPage()
     await clickTab('收藏')

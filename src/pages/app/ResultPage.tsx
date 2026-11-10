@@ -14,8 +14,10 @@ import WatermarkDownloadOption from '../../components/WatermarkDownloadOption'
 import { cleanVisibleWatermark, imageCleanupMessage } from '../../lib/imageCleanup'
 import { exportQuickMotion, normalizeQuickMotionOptions } from '../../lib/quickMotion'
 import { isQuickMotionTask } from '../../lib/quickMotionTask'
+import { isNativeGifTask } from '../../lib/nativeGif'
 import { isLiveProfessionalPreset } from '../../lib/professionalTools'
 import { getTaskFailureHint, isImageDownloadError, isImageSizeError } from '../../lib/taskFailure'
+import { isTaskInProgress } from '../../lib/taskState'
 import { classifyGenerationError, formatGenerationError } from '../../lib/generationError.mjs'
 import { isBackendMode, getBackendUser } from '../../lib/backend'
 import { publishWork } from '../../lib/galleryApi'
@@ -78,6 +80,7 @@ export default function ResultPage() {
     ? activeImageId
     : task?.outputImages[0] ?? null
   const fullSrc = useFullImage(imageId)
+  const nativeGif = Boolean(task && isNativeGifTask(task)) || Boolean(fullSrc?.startsWith('data:image/gif'))
   const liveTask = isLiveProfessionalPreset(task?.professionalPreset)
   const quickMotion = useMemo(() => task && isQuickMotionTask(task) ? normalizeQuickMotionOptions(task.quickMotion) : null, [task?.quickMotion, task?.professionalPreset])
   const outputKey = task?.outputImages.join('|') ?? ''
@@ -129,8 +132,9 @@ export default function ResultPage() {
     )
   }
 
-  const running = task.status === 'running'
-  const failedWithOutput = task.status === 'error' && task.outputImages.length > 0
+  const running = isTaskInProgress(task)
+  const recovering = running && Boolean(task.falRecoverable || task.customRecoverable)
+  const failedWithOutput = !running && task.status === 'error' && task.outputImages.length > 0
   const exportAsLive = liveTask && (!failedWithOutput || task.outputImages.length > 1)
   const errors = [
     task.error,
@@ -147,7 +151,7 @@ export default function ResultPage() {
   const downloadFailed = isImageDownloadError(failureError)
   const editBeforeRetry = imageTooLarge || contentBlocked
   const errorHint = getTaskFailureHint(failureError)
-  const retryLabel = contentBlocked ? '修改内容' : imageTooLarge ? '调整参考图' : quickMotion ? '编辑运镜' : task.tryOn ? '编辑换装' : '再次生成'
+  const retryLabel = contentBlocked ? '修改内容' : imageTooLarge ? '调整参考图' : nativeGif ? '编辑动图' : quickMotion ? '编辑运镜' : task.tryOn ? '编辑换装' : '再次生成'
   const showDiagnostics = !isBackendMode() || getBackendUser()?.role === 'admin'
 
   const download = async () => {
@@ -202,7 +206,7 @@ export default function ResultPage() {
       return
     }
     if (!fullSrc) return
-    if (removeWatermark) {
+    if (removeWatermark && !nativeGif) {
       const controller = new AbortController()
       cleanupController.current = controller
       setCleaning(true)
@@ -234,11 +238,17 @@ export default function ResultPage() {
     }
     const link = document.createElement('a')
     link.href = fullSrc
-    link.download = `绘想-${task.id}.png`
+    const extension = nativeGif ? 'gif' : fullSrc.startsWith('data:image/jpeg') ? 'jpg' : fullSrc.startsWith('data:image/webp') ? 'webp' : 'png'
+    link.download = `绘想-${task.id}.${extension}`
     link.click()
   }
 
   const regenerate = async () => {
+    if (recovering) return
+    if (nativeGif) {
+      navigate(`/tools?tool=live&liveMode=gif&task=${encodeURIComponent(task.id)}`)
+      return
+    }
     if (quickMotion) {
       navigate(`/tools?tool=live&task=${task.id}`)
       return
@@ -283,7 +293,7 @@ export default function ResultPage() {
 
   // 上传到作品广场：需要登录账号（托管模式）+ 已完成的作品。
   // 未上传的作品只存在这台浏览器里，上传后才会进服务器、公开给所有人看。
-  const canPublish = !quickMotion && isBackendMode() && Boolean(getBackendUser()) && task.status === 'done'
+  const canPublish = !nativeGif && !quickMotion && isBackendMode() && Boolean(getBackendUser()) && task.status === 'done'
 
   // 幸运免单：这张图完成的时间与最近一次免单命中相隔很近，就认定是这一单免的
   const luckyHit = !quickMotion && task.status === 'done'
@@ -321,7 +331,7 @@ export default function ResultPage() {
   }
 
   const ACTIONS: Array<{ icon: (props: { className?: string }) => React.ReactElement, label: string, onClick: () => void, disabled?: boolean, danger?: boolean }> = [
-    { icon: IconDownload, label: cleaning ? '处理中' : exportingLive ? '导出中' : quickMotion || exportAsLive ? '下载视频' : '下载', onClick: () => void download(), disabled: cleaning || exportingLive || (exportAsLive ? liveFrames.length < 2 : !fullSrc) },
+    { icon: IconDownload, label: cleaning ? '处理中' : exportingLive ? '导出中' : nativeGif ? '下载 GIF' : quickMotion || exportAsLive ? '下载视频' : '下载', onClick: () => void download(), disabled: cleaning || exportingLive || (exportAsLive ? liveFrames.length < 2 : !fullSrc) },
     { icon: IconHeart, label: '收藏', onClick: () => openFavoritePicker([task.id]) },
     ...(canPublish
       ? [{
@@ -335,7 +345,7 @@ export default function ResultPage() {
           disabled: publishing || published,
         }]
       : []),
-    { icon: IconRefresh, label: retryLabel, onClick: () => void regenerate() },
+    ...(!recovering ? [{ icon: IconRefresh, label: retryLabel, onClick: () => void regenerate() }] : []),
     ...(!quickMotion ? [{ icon: IconCopy, label: '复制提示词', onClick: () => void copyPrompt() }] : []),
     { icon: IconTrash, label: '删除', onClick: confirmDelete, danger: true },
   ]
@@ -358,10 +368,15 @@ export default function ResultPage() {
                 <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
                   running ? 'bg-[#e3f0ff] text-[#4f7ff0]' : task.status === 'done' ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-500'
                 }`}>
-                  {running ? '生成中' : task.status === 'done' ? '已完成' : '失败'}
+                  {recovering ? '恢复查询中' : running ? '生成中' : task.status === 'done' ? '已完成' : '失败'}
                 </span>
               </div>
             </div>
+
+            {nativeGif && !running && fullSrc && <div className="border-b border-[#eee9f8] bg-[#f7f4ff] px-5 py-3 text-xs leading-5 text-[#817695]">
+              <p className="font-semibold text-[#6b5ce7]">AI 原生 GIF · 动图预览</p>
+              <p className="mt-1">下载保留原始动画，可直接发送或用于支持 GIF 的平台。动图暂不支持发布到广场。</p>
+            </div>}
 
             {quickMotion && <div className="border-b border-[#eee9f8] bg-[#f7f4ff] px-5 py-3 text-xs leading-5 text-[#817695]">
               <p className="font-semibold text-[#6b5ce7]">快速运镜 · {quickMotion.duration} 秒 · {quickMotion.strength}% 幅度 · 0 积分</p>
@@ -402,7 +417,8 @@ export default function ResultPage() {
                       <IconSparkle className="h-6 w-6 animate-pulse" />
                     </span>
                   </span>
-                  <p className="mt-5 text-sm font-semibold">{liveTask ? `正在生成连续帧 ${task.liveFramesCompleted ?? 0}/${task.liveFrameCount ?? 1}` : '正在绘制你的想象…'}</p>
+                  <p className="mt-5 text-sm font-semibold">{recovering ? '正在恢复查询生成结果…' : liveTask ? `正在生成连续帧 ${task.liveFramesCompleted ?? 0}/${task.liveFrameCount ?? 1}` : '正在绘制你的想象…'}</p>
+                  {recovering && <p className="mt-2 max-w-sm text-xs leading-5 text-[#8a86ac]">连接暂时中断，系统会继续查询原任务。请稍候，无需重复生成。</p>}
                   <p className="mt-1.5 max-w-sm truncate text-xs text-[#a5a1c4]">{task.prompt}</p>
                   {liveTask && <div className="mt-4 h-1.5 w-56 overflow-hidden rounded-full bg-[#e5e1f5]"><div className="h-full rounded-full bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] transition-all" style={{ width: `${((task.liveFramesCompleted ?? 0) / Math.max(1, task.liveFrameCount ?? 1)) * 100}%` }} /></div>}
                   <GeneratingQuote />
@@ -470,7 +486,7 @@ export default function ResultPage() {
         </div>
       </div>
 
-      {!quickMotion && !exportAsLive && fullSrc && <div className="mt-4"><WatermarkDownloadOption checked={removeWatermark} onChange={setRemoveWatermark} disabled={cleaning} /></div>}
+      {!nativeGif && !quickMotion && !exportAsLive && fullSrc && <div className="mt-4"><WatermarkDownloadOption checked={removeWatermark} onChange={setRemoveWatermark} disabled={cleaning} /></div>}
 
       {publishOpen && (
         <div className="animate-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-[#33285f]/45 p-4 backdrop-blur-sm" onClick={() => !publishing && setPublishOpen(false)}>

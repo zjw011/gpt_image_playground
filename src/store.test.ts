@@ -8,7 +8,7 @@ import { hasActiveDataOperations } from './lib/dataOperations'
 import { deleteAgentRoundFromConversation, getActiveAgentRounds, getAgentConversationTaskIds, getAgentRoundTaskIds, remapAgentRoundMentionsForPathChange } from './lib/agentConversationState'
 import { cleanStaleAgentInputDrafts } from './lib/inputDraftState'
 import { normalizePersistedState } from './lib/persistedState'
-import { setPresetConfig } from './lib/presetConfig'
+import { setBackendManagedMode, setPresetConfig } from './lib/presetConfig'
 vi.mock('./lib/livePhoto', async () => {
   const actual = await vi.importActual<typeof import('./lib/livePhoto')>('./lib/livePhoto')
   return { ...actual, preloadLiveFrames: vi.fn(async () => [{ naturalWidth: 1024, naturalHeight: 1024 } as HTMLImageElement]) }
@@ -341,6 +341,152 @@ describe('quick motion store actions', () => {
     expect(useStore.getState().tasks[0].quickMotion).toEqual({ effect: 'pan-left', duration: 3, strength: 5 })
     expect((await getAllTasks())[0].quickMotion).toEqual({ effect: 'pan-left', duration: 3, strength: 5 })
     expect(callImageApi).not.toHaveBeenCalled()
+  })
+})
+
+describe('native GIF isolated task submission', () => {
+  const staticProfile = createDefaultOpenAIProfile({ id: 'static-channel', name: '静态生图', apiKey: 'test-key', model: 'gpt-image-2', apiMode: 'images' })
+  const gifProfile = createDefaultOpenAIProfile({ id: 'gif-channel', name: '原生动图', apiKey: 'test-key', model: 'gpt-image-2.6-sunburst', apiMode: 'images', streamImages: false })
+  const backupProfile = createDefaultOpenAIProfile({ id: 'gif-backup', name: '备用动图', apiKey: 'test-key', model: 'gpt-image-2.6-flare', apiMode: 'images', streamImages: false })
+  const params = { ...DEFAULT_PARAMS, output_format: 'gif' as const, frame_count: 12, frame_duration_ms: 150 }
+  const inputSnapshot = { prompt: '蝴蝶轻轻扇动翅膀', inputImages: [imageA], params }
+  const header = [71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 0x80, 0, 0, 0, 0, 0, 255, 255, 255]
+  const frame = [0x21, 0xf9, 4, 0, 15, 0, 0, 0, 0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0]
+  const output = `data:image/gif;base64,${btoa(String.fromCharCode(...header, ...frame, ...frame, 0x3b))}`
+  const result = { images: [output], actualParams: {}, actualParamsList: [], revisedPrompts: [] }
+
+  beforeEach(async () => {
+    await clearTasks()
+    await clearImages()
+    await clearAgentConversations()
+    setBackendManagedMode(false)
+    vi.mocked(callImageApi).mockReset().mockResolvedValue(result)
+    useStore.setState({
+      appMode: 'gallery',
+      settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [staticProfile, gifProfile, backupProfile], activeProfileId: staticProfile.id, clearInputAfterSubmit: true, clearInputImagesAfterSubmit: true, channelFailover: true }),
+      tasks: [],
+      inputImages: [imageB],
+      prompt: 'Studio 尚未提交的静态草稿',
+      params: { ...DEFAULT_PARAMS, n: 4, transparent_output: true },
+      galleryInputDraft: null,
+      agentConversations: [],
+      agentInputDrafts: {},
+      maskDraft: { targetImageId: imageB.id, maskDataUrl: 'data:image/png;base64,mask', updatedAt: 1 },
+      maskEditorImageId: imageB.id,
+      reusedTaskApiProfileId: 'unrelated-old-profile',
+      reusedTaskApiProfileMissing: true,
+      reusedTaskApiProfileName: '无关旧渠道',
+      confirmDialog: null,
+      showToast: vi.fn(),
+    })
+  })
+
+  afterEach(() => { setBackendManagedMode(false); vi.restoreAllMocks() })
+
+  it('uses the explicitly selected GIF channel and preserves all unrelated Studio inputs', async () => {
+    const before = useStore.getState()
+    expect(await submitTask({ apiProfileId: gifProfile.id, professionalPreset: 'live-gif', inputSnapshot })).toBe(true)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+    expect(callImageApi).toHaveBeenCalledOnce()
+    const request = vi.mocked(callImageApi).mock.calls[0][0]
+    expect(request.settings.activeProfileId).toBe(gifProfile.id)
+    expect(request.settings.model).toBe(gifProfile.model)
+    expect(request.params).toMatchObject(params)
+    expect(request.prompt).toBe(inputSnapshot.prompt)
+    expect(request.inputImageDataUrls).toEqual([imageA.dataUrl])
+    expect(request.maskDataUrl).toBeUndefined()
+    const current = useStore.getState()
+    expect(current.tasks[0]).toMatchObject({ apiProfileId: gifProfile.id, professionalPreset: 'live-gif', params, inputImageIds: [imageA.id], maskImageId: null })
+    expect(current.tasks[0].liveFrameCount).toBeUndefined()
+    expect(current.tasks[0].outputImages).toHaveLength(1)
+    expect((await getImage(current.tasks[0].outputImages[0]))?.dataUrl).toBe(output)
+    expect(current.settings.activeProfileId).toBe(staticProfile.id)
+    expect(current.prompt).toBe(before.prompt)
+    expect(current.inputImages).toBe(before.inputImages)
+    expect(current.params).toBe(before.params)
+    expect(current.maskDraft).toBe(before.maskDraft)
+    expect(current.reusedTaskApiProfileId).toBe(before.reusedTaskApiProfileId)
+    expect(current.confirmDialog).toBeNull()
+  })
+
+  it('normalizes incompatible static options to one native GIF without sequential frame requests', async () => {
+    expect(await submitTask({ apiProfileId: gifProfile.id, professionalPreset: 'live-gif', liveFrameCount: 8, inputSnapshot: { ...inputSnapshot, inputImages: [], params: { ...params, n: 7, transparent_output: true, output_compression: 80, frame_count: 30, frame_duration_ms: 234 } } })).toBe(true)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+    expect(callImageApi).toHaveBeenCalledOnce()
+    expect(vi.mocked(callImageApi).mock.calls[0][0].params).toMatchObject({ output_format: 'gif', n: 1, transparent_output: false, output_compression: null, frame_count: 16, frame_duration_ms: 230 })
+    expect(useStore.getState().tasks[0].liveFrameCount).toBeUndefined()
+  })
+
+  it.each([staticProfile.id, 'missing-channel'])('rejects incompatible or removed selected channel %s before creating a task', async (apiProfileId) => {
+    expect(await submitTask({ apiProfileId, professionalPreset: 'live-gif', inputSnapshot })).toBe(false)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks).toEqual([])
+    expect(useStore.getState().showToast).toHaveBeenCalledWith(expect.stringMatching(/不支持原生 GIF|渠道已不可用/), 'error')
+  })
+
+  it.each([
+    [imageA, imageB],
+    [{ id: 'animated-input', dataUrl: output }],
+  ])('rejects unsupported reference input %# before submission', async (...inputImages) => {
+    expect(await submitTask({ apiProfileId: gifProfile.id, professionalPreset: 'live-gif', inputSnapshot: { ...inputSnapshot, inputImages } })).toBe(false)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks).toEqual([])
+  })
+
+  it('fails over only among GIF-capable channels and retains original animation parameters', async () => {
+    vi.mocked(callImageApi).mockRejectedValueOnce(new Error('HTTP 503: upstream unavailable')).mockResolvedValueOnce(result)
+    expect(await submitTask({ apiProfileId: gifProfile.id, professionalPreset: 'live-gif', inputSnapshot })).toBe(true)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+    expect(vi.mocked(callImageApi).mock.calls.map(([request]) => request.settings.activeProfileId)).toEqual([gifProfile.id, backupProfile.id])
+    for (const [request] of vi.mocked(callImageApi).mock.calls) {
+      expect(request.params).toMatchObject(params)
+      expect(request.inputImageDataUrls).toEqual([imageA.dataUrl])
+    }
+    expect(useStore.getState().tasks[0]).toMatchObject({ apiProfileId: backupProfile.id, params, failoverAttempts: [expect.objectContaining({ profileId: gifProfile.id })] })
+    expect(useStore.getState().settings.activeProfileId).toBe(staticProfile.id)
+  })
+
+  it.each([gifProfile.id, 'removed-gif-channel'])('retries with restored references and a valid GIF channel when original is %s', async (apiProfileId) => {
+    await putImage(imageA)
+    const before = useStore.getState()
+    const source = task({ professionalPreset: 'live-gif', apiProfileId, apiProvider: 'openai', params, inputImageIds: [imageA.id], prompt: inputSnapshot.prompt })
+    await retryTask(source)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+    expect(callImageApi).toHaveBeenCalledOnce()
+    expect(vi.mocked(callImageApi).mock.calls[0][0]).toMatchObject({ prompt: inputSnapshot.prompt, params, inputImageDataUrls: [imageA.dataUrl], settings: { activeProfileId: gifProfile.id } })
+    expect(useStore.getState().inputImages).toBe(before.inputImages)
+    expect(useStore.getState().prompt).toBe(before.prompt)
+    expect(useStore.getState().settings.activeProfileId).toBe(staticProfile.id)
+  })
+
+  it('preserves an existing non-default GIF channel when retrying', async () => {
+    await retryTask(task({ professionalPreset: 'live-gif', apiProfileId: backupProfile.id, apiProvider: 'openai', params }))
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+    expect(vi.mocked(callImageApi).mock.calls[0][0].settings.activeProfileId).toBe(backupProfile.id)
+  })
+
+  it('refuses retries with missing references and leaves existing drafts untouched', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const before = useStore.getState()
+    await retryTask(task({ professionalPreset: 'live-gif', apiProfileId: gifProfile.id, params, inputImageIds: ['missing-reference'] }))
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks).toEqual([])
+    expect(useStore.getState().showToast).toHaveBeenCalledWith('原始参考图片已不存在，请重新上传后再试', 'error')
+    expect(useStore.getState().inputImages).toBe(before.inputImages)
+    expect(useStore.getState().params).toBe(before.params)
+  })
+
+  it('reuse of imported GIF tasks without a preset keeps Studio draft and mask intact', async () => {
+    const before = useStore.getState()
+    await reuseConfig(task({ params, inputImageIds: [imageA.id] }), { editOnly: true })
+    expect(callImageApi).not.toHaveBeenCalled()
+    const current = useStore.getState()
+    expect(current.prompt).toBe(before.prompt)
+    expect(current.inputImages).toBe(before.inputImages)
+    expect(current.params).toBe(before.params)
+    expect(current.maskDraft).toBe(before.maskDraft)
+    expect(current.reusedTaskApiProfileId).toBe(before.reusedTaskApiProfileId)
+    expect(current.showToast).toHaveBeenCalledWith(expect.stringContaining('原生 GIF'), 'info')
   })
 })
 
@@ -1847,6 +1993,25 @@ describe('fal task recovery', () => {
     const originalImage = await getImage(recovered!.transparentOriginalImages![0])
     expect(outputImage?.dataUrl).toBe('transparent:data:image/png;base64,fal-recovered')
     expect(originalImage?.dataUrl).toBe('data:image/png;base64,fal-recovered')
+  })
+
+  it('恢复部分成功时保留失败记录和取图地址', async () => {
+    const falTask = task({
+      id: 'fal-partial', apiProvider: 'fal', apiProfileId: 'fal-profile', status: 'error',
+      error: '等待恢复', falRequestId: 'request-partial', falEndpoint: 'endpoint', falRecoverable: true,
+    })
+    await putDbTask(falTask)
+    const failedRequests = [{ requestIndex: 1, error: '图片结果下载失败：HTTP 403' }]
+    vi.mocked(getFalQueuedImageResult).mockResolvedValueOnce({
+      images: ['data:image/png;base64,1024x1024'], actualParams: {}, actualParamsList: [], revisedPrompts: [],
+      failedRequests, rawImageUrls: ['https://example.invalid/result.png'],
+    })
+    await initStore()
+    await vi.waitFor(() => expect(useStore.getState().tasks.find((item) => item.id === falTask.id)?.status).toBe('done'))
+    expect(useStore.getState().tasks.find((item) => item.id === falTask.id)).toMatchObject({
+      outputErrors: failedRequests, rawImageUrls: ['https://example.invalid/result.png'], falRecoverable: false,
+    })
+    expect(useStore.getState().showToast).toHaveBeenCalledWith('fal.ai 任务已恢复：成功 1 张，失败 1 张', 'error')
   })
 
   it('deletes a normalized error round with an in-flight recoverable task without reviving it', async () => {
@@ -6018,6 +6183,11 @@ describe('channel failover', () => {
     })
   })
 
+  afterEach(() => {
+    setBackendManagedMode(false)
+    vi.restoreAllMocks()
+  })
+
   it('switches to the next channel and succeeds without leaving an error state', async () => {
     vi.mocked(callImageApi)
       .mockRejectedValueOnce(new Error('上游 500：渠道一挂了'))
@@ -6054,6 +6224,154 @@ describe('channel failover', () => {
     expect(state.tasks[0].error).toContain('1. 渠道一：渠道一：额度不足')
     expect(state.tasks[0].error).toContain('2. 渠道二：渠道二：模型不存在')
     expect(state.tasks[0].failoverAttempts).toHaveLength(2)
+  })
+
+  it('托管模式按备用渠道重新设置协议和模型，任务保持运行且不暴露内部名称', async () => {
+    const fallback = { ...secondProfile, apiMode: 'responses' as const, model: 'gpt-5-image', baseUrl: 'https://site.example/api/relay/channel-2/' }
+    setBackendManagedMode(true)
+    useStore.setState({ settings: normalizeSettings({
+      ...useStore.getState().settings,
+      profiles: [{ ...firstProfile, baseUrl: 'https://site.example/api/relay/channel-1/' }, fallback],
+      channelFailover: true,
+    }) })
+    const states: string[] = []
+    const unsubscribe = useStore.subscribe((state) => {
+      if (state.tasks[0]) states.push(state.tasks[0].status)
+    })
+    vi.mocked(callImageApi)
+      .mockRejectedValueOnce(new Error('HTTP 503: upstream unavailable'))
+      .mockImplementationOnce(async (opts) => {
+        expect(opts.settings.activeProfileId).toBe(fallback.id)
+        expect(opts.settings.apiMode).toBe('responses')
+        expect(opts.settings.model).toBe(fallback.model)
+        expect(opts.settings.baseUrl).toBe(fallback.baseUrl)
+        expect(opts.prompt).toBe('prompt')
+        expect(useStore.getState().tasks[0].status).toBe('running')
+        return { images: ['data:image/png;base64,1024x1024'], actualParams: {}, actualParamsList: [], revisedPrompts: [] }
+      })
+
+    try {
+      await submitTask()
+      await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+      expect(callImageApi).toHaveBeenCalledTimes(2)
+      expect(states).not.toContain('error')
+      expect(useStore.getState().tasks[0].outputImages).toHaveLength(1)
+      expect(useStore.getState().showToast).toHaveBeenCalledWith('当前绘图服务暂时不可用，正在自动切换备用服务', 'info')
+      expect(useStore.getState().showToast).not.toHaveBeenCalledWith(expect.stringContaining('渠道一'), 'info')
+    } finally {
+      unsubscribe()
+    }
+  })
+
+  it('站点的登录、积分或并发拒绝不会在备用渠道重复请求', async () => {
+    vi.mocked(callImageApi).mockRejectedValueOnce(Object.assign(new Error('HTTP 429: 当前同时生成任务过多'), { retryable: false }))
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+    expect(useStore.getState().tasks[0].failoverAttempts).toBeUndefined()
+  })
+
+  it('生成成功后本地保存失败不重新生成，也不误报渠道故障', async () => {
+    vi.mocked(callImageApi).mockResolvedValueOnce({ images: ['data:image/png;base64,1024x1024'], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    vi.spyOn(db, 'storeImageWithSize').mockRejectedValueOnce(new Error('IndexedDB 空间不足'))
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+    expect(useStore.getState().tasks[0].error).toBe('图片已生成，但保存到浏览器失败：IndexedDB 空间不足')
+    expect(useStore.getState().tasks[0].failoverAttempts).toBeUndefined()
+  })
+
+  it.each([
+    { from: 'api' as const, to: 'local' as const, prompt: 'transparent:prompt', native: false },
+    { from: 'local' as const, to: 'api' as const, prompt: 'prompt', native: true },
+  ])('切换透明背景方式 $from → $to 时同步请求和后处理', async ({ from, to, prompt, native }) => {
+    useStore.setState({
+      settings: normalizeSettings({ ...useStore.getState().settings, profiles: [
+        { ...firstProfile, transparentBackgroundMethod: from },
+        { ...secondProfile, transparentBackgroundMethod: to },
+      ] }),
+      params: { ...DEFAULT_PARAMS, output_format: 'png', transparent_output: true },
+    })
+    vi.mocked(callImageApi)
+      .mockRejectedValueOnce(new Error('HTTP 503'))
+      .mockImplementationOnce(async (opts) => {
+        expect(opts.prompt).toBe(prompt)
+        expect(opts.nativeTransparentBackground).toBe(native)
+        return { images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] }
+      })
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+    expect(callImageApi).toHaveBeenCalledTimes(2)
+    expect(useStore.getState().tasks[0].prompt).toBe('prompt')
+    expect(Boolean(useStore.getState().tasks[0].transparentOutput)).toBe(!native)
+  })
+
+  it('已推送中间图片后连接出错不再提交备用生图', async () => {
+    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
+      opts.onPartialImage?.({ image: 'data:image/png;base64,1024x1024', requestIndex: 0 })
+      throw new Error('HTTP 502: stream closed')
+    })
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+    expect(useStore.getState().tasks[0].failoverAttempts).toBeUndefined()
+  })
+
+  it.each(['fal', 'custom-async'])('%s 已受理任务后失败不自动提交另一笔生图', async (provider) => {
+    const profile = provider === 'fal'
+      ? createDefaultFalProfile({ id: 'queued', apiKey: 'key' })
+      : { ...firstProfile, provider }
+    useStore.setState({ settings: normalizeSettings({
+      ...useStore.getState().settings,
+      profiles: [profile, secondProfile],
+      activeProfileId: profile.id,
+      customProviders: provider === 'fal' ? [] : [{ id: provider, name: '异步测试', submit: { path: 'images/generations', taskIdPath: 'task_id' }, poll: { path: 'tasks/$taskId', statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], intervalSeconds: 1 } }],
+    }) })
+    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
+      if (provider === 'fal') opts.onFalRequestEnqueued?.({ requestId: 'accepted-1', endpoint: 'fal-ai/image' })
+      else opts.onCustomTaskEnqueued?.({ taskId: 'accepted-1' })
+      throw new Error('上游任务执行失败')
+    })
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+    expect(useStore.getState().tasks[0]).toMatchObject({ apiProfileId: profile.id, error: '上游任务执行失败' })
+    expect(useStore.getState().tasks[0].failoverAttempts).toBeUndefined()
+  })
+
+  it('轮询服务暂时返回 503 时保留原任务等待恢复，不切备用生图', async () => {
+    const profile = createDefaultFalProfile({ id: 'queued', apiKey: 'key' })
+    useStore.setState({ settings: normalizeSettings({ ...useStore.getState().settings, profiles: [profile, secondProfile], activeProfileId: profile.id }) })
+    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
+      opts.onFalRequestEnqueued?.({ requestId: 'accepted-503', endpoint: 'fal-ai/image' })
+      throw new Error('HTTP 503: temporarily unavailable')
+    })
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.falRecoverable).toBe(true))
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+    expect(useStore.getState().tasks[0]).toMatchObject({ apiProfileId: profile.id, falRequestId: 'accepted-503', falEndpoint: 'fal-ai/image' })
+    await removeTask(useStore.getState().tasks[0])
+  })
+
+  it.each([
+    { message: '异步任务查询暂时失败：查询超时', stop: false, recoverable: true },
+    { message: 'HTTP 503: 站点停止本次查询', stop: true, recoverable: false },
+  ])('自定义查询恢复尊重超时与明确停止标记：$message', async ({ message, stop, recoverable }) => {
+    const profile = { ...firstProfile, provider: 'custom-async' }
+    useStore.setState({ settings: normalizeSettings({
+      ...useStore.getState().settings,
+      profiles: [profile, secondProfile],
+      customProviders: [{ id: profile.provider, name: '异步测试', submit: { path: 'images/generations', taskIdPath: 'task_id' }, poll: { path: 'tasks/$taskId', statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], intervalSeconds: 1 } }],
+    }) })
+    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
+      opts.onCustomTaskEnqueued?.({ taskId: 'accepted-timeout' })
+      throw stop ? Object.assign(new Error(message), { retryable: false }) : new Error(message)
+    })
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+    expect(useStore.getState().tasks[0]).toMatchObject({ customTaskId: 'accepted-timeout', customRecoverable: recoverable, apiProfileId: profile.id })
+    await removeTask(useStore.getState().tasks[0])
   })
 
   it('does not retry another channel for local validation failures', async () => {

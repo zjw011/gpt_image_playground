@@ -46,6 +46,12 @@ function site(overrides = {}) {
 }
 
 describe('parseImageCount', () => {
+  it('原生 GIF 按成品数量计费，不按动画帧数重复计费', () => {
+    expect(parseImageCount(Buffer.from(JSON.stringify({ n: 1, output_format: 'gif', frame_count: 16 })), 'application/json')).toBe(1)
+    expect(parseImageCount(Buffer.from(JSON.stringify({ n: 2, output_format: 'gif', frame_count: 16 })), 'application/json')).toBe(2)
+    expect(parseImageCount(multipart({ n: 1, output_format: 'gif', frame_count: 16 }), 'multipart/form-data')).toBe(1)
+  })
+
   it('JSON 请求体里没有 n 就是 1 张——前端只在 n>1 时才带上这个字段', () => {
     const body = JSON.stringify({ model: 'gpt-image-2', prompt: '一只猫', size: '1024x1024' })
     expect(parseImageCount(Buffer.from(body), 'application/json')).toBe(1)

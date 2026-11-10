@@ -22,6 +22,7 @@ import {
   validateApiProfile,
 } from './apiProfiles'
 import { CUSTOM_PROVIDER_LLM_PROMPT, DEFAULT_CUSTOM_PROVIDER_JSON } from './settingsCustomProvider'
+import { supportsNativeGif } from './nativeGif'
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -48,6 +49,23 @@ describe('validateApiProfile', () => {
 })
 
 describe('normalizeApiProfile', () => {
+  it('保留原生 GIF 显式配置，旧配置根据当前模型判断能力', () => {
+    expect(supportsNativeGif(normalizeApiProfile({ model: 'gateway-gif', supportsNativeGif: true }))).toBe(true)
+    expect(supportsNativeGif(normalizeApiProfile({ model: 'gpt-image-2.6-flare', supportsNativeGif: false }))).toBe(false)
+    const legacy = normalizeApiProfile({ model: 'gpt-image-2' })
+    expect(legacy.supportsNativeGif).toBeUndefined()
+    expect(supportsNativeGif({ ...legacy, model: 'gpt-image-2.6-sunburst' })).toBe(true)
+  })
+
+  it('切换服务商时隔离 GIF 能力，并在切回 OpenAI 时恢复显式配置', () => {
+    const openai = normalizeApiProfile({ model: 'gateway-gif', supportsNativeGif: true })
+    const fal = switchApiProfileProvider(openai, 'fal')
+    expect(supportsNativeGif(fal)).toBe(false)
+    const restored = switchApiProfileProvider(normalizeApiProfile(fal), 'openai')
+    expect(restored.supportsNativeGif).toBe(true)
+    expect(restored.model).toBe('gateway-gif')
+  })
+
   it('uses provider defaults and preserves explicit transparent background methods', () => {
     expect(normalizeApiProfile({}).transparentBackgroundMethod).toBe('api')
     expect(normalizeApiProfile({ transparentBackgroundMethod: 'local' }).transparentBackgroundMethod).toBe('local')
@@ -545,6 +563,13 @@ describe('mergeImportedSettings', () => {
 })
 
 describe('mergePresetImportedSettings', () => {
+  it('后台能力开关变化会更新已导入的渠道，不遗留旧 GIF 能力', () => {
+    const profile = createDefaultOpenAIProfile({ id: 'backend-gif', model: 'gif-alias', supportsNativeGif: true })
+    const initial = mergeDefaultImportedSettings(DEFAULT_SETTINGS, { profiles: [profile] })
+    const updated = mergeDefaultImportedSettings(initial.settings, { profiles: [{ ...profile, supportsNativeGif: false }] }, { previousPresetConfig: initial.presetConfig })
+    expect(updated.settings.profiles.find((item) => item.id === profile.id)?.supportsNativeGif).toBe(false)
+  })
+
   const createConfig = (model: string, path: string) => ({
     customProviders: [{
       id: 'source-provider',

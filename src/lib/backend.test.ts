@@ -81,6 +81,12 @@ describe('getRelayBaseUrl', () => {
 })
 
 describe('backendChannelToApiProfile', () => {
+  it('把原生 GIF 的开启和显式关闭传到前端渠道', () => {
+    expect(backendChannelToApiProfile(createChannel({ supportsNativeGif: true })).supportsNativeGif).toBe(true)
+    expect(backendChannelToApiProfile(createChannel({ model: 'gpt-image-2.6-flare', supportsNativeGif: false })).supportsNativeGif).toBe(false)
+    expect(backendChannelToApiProfile(createChannel()).supportsNativeGif).toBeUndefined()
+  })
+
   it('密钥用占位值，地址指向同源中继', () => {
     const profile = backendChannelToApiProfile(createChannel())
     expect(profile.id).toBe('backend-ch-1')
@@ -186,6 +192,19 @@ describe('积分字段的解析与本地覆盖', () => {
       headers: { 'Content-Type': 'application/json' },
     })))
   }
+
+  it('引导数据清洗保留 GIF 开关，并忽略无效的能力值', async () => {
+    stubBootstrap({
+      backendMode: true,
+      channels: [
+        createChannel({ id: 'gif', supportsNativeGif: true }),
+        createChannel({ id: 'disabled', model: 'gpt-image-2.6-flare', supportsNativeGif: false }),
+        { ...createChannel({ id: 'legacy' }), supportsNativeGif: 'true' },
+      ],
+    })
+    const data = await loadBackendBootstrap()
+    expect(data?.channels.map((channel) => channel.supportsNativeGif)).toEqual([true, false, undefined])
+  })
 
   it('未登录时只有配置没有余额，界面不该显示一个假的 0', async () => {
     stubBootstrap({ backendMode: true, accessMode: 'wechat', authenticated: false, credits: { enabled: true, costPerImage: 2, luckyEnabled: true, luckyRate: 12 } })

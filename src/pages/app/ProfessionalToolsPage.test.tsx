@@ -18,6 +18,7 @@ vi.mock('../../store', () => ({
   useStore: (selector: (value: unknown) => unknown) => selector({
     inputImages: state.inputImages,
     tasks: state.tasks,
+    settings: { profiles: [], activeProfileId: '' },
     params: DEFAULT_PARAMS,
     setInputImages: (images: InputImage[]) => { state.inputImages = images },
     showToast: state.toast,
@@ -80,6 +81,28 @@ describe('专业工具快速运镜', () => {
     expect(el.textContent).toContain('自然眨眼')
     expect(el.textContent).not.toContain('保存作品与预览')
     expect(state.save).not.toHaveBeenCalled()
+  })
+
+  it('原生 GIF 使用独立页签与单层编辑地址，切换时清除旧任务', async () => {
+    await render('/tools?tool=live&liveMode=ai&task=old-task')
+    await click('AI 原生 GIF')
+    expect(el.querySelector('output')?.textContent).toBe('/tools?tool=live&liveMode=gif')
+    expect(el.querySelector('#live-tab-gif')?.getAttribute('aria-selected')).toBe('true')
+    expect(el.querySelector('#live-panel-gif')).not.toBeNull()
+    expect(el.textContent).toContain('暂无可用的原生 GIF 渠道')
+    expect(el.querySelector('[aria-label="GIF 动作描述"]')).not.toBeNull()
+    await click('快速运镜')
+    expect(el.querySelector('output')?.textContent).toBe('/tools?tool=live&liveMode=quick')
+    expect(el.querySelector('[aria-label="GIF 动作描述"]')).toBeNull()
+  })
+
+  it('没有专用预设的导入 GIF 记录也能恢复到原生 GIF 编辑器', async () => {
+    state.tasks = [{ id: 'imported-gif', prompt: '蝴蝶轻轻飞过花丛', params: { ...DEFAULT_PARAMS, output_format: 'gif', frame_count: 12, frame_duration_ms: 150 }, inputImageIds: [], outputImages: [], status: 'error', error: 'timeout', createdAt: 1, finishedAt: 2, elapsed: 1 }]
+    await render('/tools?tool=live&liveMode=gif&task=imported-gif')
+    expect(el.querySelector<HTMLTextAreaElement>('[aria-label="GIF 动作描述"]')?.value).toBe('蝴蝶轻轻飞过花丛')
+    expect(el.querySelector<HTMLSelectElement>('[aria-label="GIF 动画帧数"]')?.value).toBe('12')
+    expect(el.querySelector<HTMLSelectElement>('[aria-label="GIF 每帧时长"]')?.value).toBe('150')
+    expect(el.querySelector('output')?.textContent).toBe('/tools?tool=live&liveMode=gif&task=imported-gif')
   })
 
   it('选择效果、时长和幅度后保存本地作品并打开结果', async () => {

@@ -55,6 +55,28 @@ function fallback() {
 }
 
 describe('persisted state codec', () => {
+  it('原生 GIF 配置重载后保留格式、帧数和播放速度', () => {
+    const state = source()
+    state.params = { ...DEFAULT_PARAMS, output_format: 'gif', frame_count: 12, frame_duration_ms: 350 }
+    const saved = createPersistedState(state)
+    const restored = normalizePersistedState(JSON.parse(JSON.stringify(saved)), fallback(), 100)!
+
+    expect(restored.state.params).toEqual(state.params)
+  })
+
+  it('恢复旧或无效 GIF 参数时补齐动画默认值，清除不支持的静态图选项', () => {
+    const result = normalizePersistedState({ params: {
+      output_format: 'gif',
+      frame_count: '12',
+      frame_duration_ms: Number.NaN,
+      n: 4,
+      transparent_output: true,
+      output_compression: 70,
+    } }, fallback(), 100)!
+
+    expect(result.state.params).toEqual({ ...DEFAULT_PARAMS, output_format: 'gif', frame_count: 9, frame_duration_ms: 200 })
+  })
+
   it('rejects non-record unknown data and falls back field-by-field for an invalid record', () => {
     class ExternalState {}
 

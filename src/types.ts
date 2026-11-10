@@ -87,8 +87,10 @@ export interface ApiProfile {
   responseFormatB64Json?: boolean
   streamImages?: boolean
   streamPartialImages?: number
+  /** 渠道已支持 Images API 原生 GIF；未配置时按官方模型名识别。 */
+  supportsNativeGif?: boolean
   transparentBackgroundMethod: 'api' | 'local'
-  providerDrafts?: Partial<Record<ApiProvider, Partial<Pick<ApiProfile, 'baseUrl' | 'model' | 'apiMode' | 'reasoningEffort' | 'codexCli' | 'apiProxy' | 'responseFormatB64Json' | 'streamImages' | 'streamPartialImages' | 'transparentBackgroundMethod'>>>>
+  providerDrafts?: Partial<Record<ApiProvider, Partial<Pick<ApiProfile, 'baseUrl' | 'model' | 'apiMode' | 'reasoningEffort' | 'codexCli' | 'apiProxy' | 'responseFormatB64Json' | 'streamImages' | 'streamPartialImages' | 'supportsNativeGif' | 'transparentBackgroundMethod'>>>>
 }
 
 export interface AppSettings {
@@ -133,7 +135,10 @@ export interface AppSettings {
 export interface TaskParams {
   size: string
   quality: 'auto' | 'low' | 'medium' | 'high'
-  output_format: 'png' | 'jpeg' | 'webp'
+  output_format: 'png' | 'jpeg' | 'webp' | 'gif'
+  /** 原生 GIF 的帧数和单帧时长，只在 GIF 请求中发送。 */
+  frame_count?: number
+  frame_duration_ms?: number
   output_compression: number | null
   moderation: 'auto' | 'low'
   n: number

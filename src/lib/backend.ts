@@ -17,6 +17,7 @@ export interface BackendChannel {
   provider: string
   model: string
   apiMode: ApiMode
+  supportsNativeGif?: boolean
   timeout: number
   codexCli: boolean
   responseFormatB64Json: boolean
@@ -310,6 +311,7 @@ function normalizeChannel(input: unknown, idx: number): BackendChannel | null {
     provider: typeof input.provider === 'string' && input.provider.trim() ? input.provider : 'openai',
     model: typeof input.model === 'string' && input.model.trim() ? input.model : 'gpt-image-2',
     apiMode: input.apiMode === 'responses' ? 'responses' : 'images',
+    supportsNativeGif: typeof input.supportsNativeGif === 'boolean' ? input.supportsNativeGif : undefined,
     timeout: typeof input.timeout === 'number' && Number.isFinite(input.timeout)
       ? Math.max(BACKEND_IMAGE_MIN_TIMEOUT, input.timeout)
       : 600,
@@ -517,6 +519,7 @@ export function backendChannelToApiProfile(channel: BackendChannel): ApiProfile 
     model: channel.model,
     timeout: Math.max(BACKEND_IMAGE_MIN_TIMEOUT, channel.timeout),
     apiMode: channel.apiMode,
+    supportsNativeGif: channel.supportsNativeGif,
     reasoningEffort: channel.reasoningEffort as ApiProfile['reasoningEffort'],
     codexCli: channel.codexCli,
     apiProxy: false,
