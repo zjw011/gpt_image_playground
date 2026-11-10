@@ -14,6 +14,7 @@ import ConfirmDialog from './components/ConfirmDialog'
 import Toast from './components/Toast'
 import MaskEditorModal from './components/MaskEditorModal'
 import ImageContextMenu from './components/ImageContextMenu'
+import TaskProgressDock from './components/TaskProgressDock'
 import RedeemCardModal from './components/RedeemCardModal'
 import { FavoriteCollectionPickerModal, ManageCollectionsModal } from './components/FavoriteCollections'
 import { PageLoading } from './pages/theme'
@@ -219,7 +220,7 @@ export default function App() {
 
   return (
     <>
-      <Outlet />
+      <TaskProgressDock><Outlet /></TaskProgressDock>
       <Lightbox />
       <ConfirmDialog />
       <RedeemCardModal />

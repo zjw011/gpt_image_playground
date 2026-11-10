@@ -241,7 +241,7 @@ export default function AppShell({ title, children, wide }: { title?: string, ch
   return (
     <div className="flex min-h-screen bg-[#f5f4fb] text-[#37335c]">
       <SideNav />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="app-shell-content flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 flex h-14 items-center justify-between gap-2 border-b border-[#eceaf6] bg-[#f5f4fb]/85 px-3 backdrop-blur-xl md:h-16 md:gap-4 md:px-6">
           <div className="flex min-w-0 items-center gap-1">
             <button type="button" aria-label="打开手机菜单" onClick={() => drawer.current?.showModal()} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[#6b5ce7] md:hidden"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg></button>
