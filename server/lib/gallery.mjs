@@ -7,7 +7,7 @@
 // - 点赞记 userId（一人一票，可取消）；未登录只能看。
 // - 数量上限是防滥用的兜底（配合 rateLimit），满了先拒绝发布并提示清理。
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
@@ -36,6 +36,7 @@ const EXT_BY_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'we
 let rootDir = ''
 let imagesDir = ''
 let items = []
+let committedItems = []
 let byId = new Map()
 let byHash = new Map()
 // 发布频率：内存滑窗计数即可，重启清零是可接受的（限流不是记账）
@@ -59,7 +60,14 @@ function file() {
 
 function commit() {
   const payload = { version: 1, items }
-  writeDurableJson(file(), payload)
+  try {
+    writeDurableJson(file(), payload)
+    committedItems = structuredClone(items)
+  } catch (err) {
+    items = structuredClone(committedItems)
+    index()
+    throw err
+  }
 }
 
 function index() {
@@ -84,10 +92,21 @@ export function initGallery(dir) {
   mkdirSync(imagesDir, { recursive: true })
   const target = file()
   let recovered = false
-  if (existsSync(target)) {
-    const loaded = readDurableJson(target, '作品广场元数据')
+  if (existsSync(target) || existsSync(`${target}.bak`)) {
+    const loaded = readDurableJson(target, '作品广场元数据', (value) => {
+      if (!isRecord(value) || !Array.isArray(value.items)) return false
+      const ids = new Set()
+      return value.items.every((item) => {
+        if (!isRecord(item) || typeof item.id !== 'string' || !item.id || ids.has(item.id) || !Array.isArray(item.likedBy)) return false
+        if (typeof item.file !== 'string' || (!item.file && typeof item.staticPath !== 'string')) return false
+        if (item.file && !/^w-[a-z0-9-]+\.(png|jpg|webp)$/.test(item.file)) return false
+        ids.add(item.id)
+        return true
+      })
+    })
     recovered = loaded.recovered
-    items = Array.isArray(loaded.value.items) ? loaded.value.items.filter(isRecord) : []
+    items = loaded.value.items
+    committedItems = structuredClone(items)
   } else {
     // 首次启动：播种精选作品，广场一上线就有内容、对所有人可见
     const now = Date.now()
@@ -121,21 +140,11 @@ export function initGallery(dir) {
     if (!recovered) commit()
   }
   index()
-  // 备份可能比图片文件落后一个提交；恢复启动时保留孤儿，交给管理员核对后处理。
-  if (recovered) return
-  // 只有元数据成功载入后才清孤儿；解析失败会在上面终止启动，绝不拿空索引删图片。
-  const known = new Set(items.map((item) => item.file).filter(Boolean))
-  for (const name of readdirSync(imagesDir)) {
-    // 只清理"我们生成的图片文件"这一种形态：名字对不上的一律不碰。
-    // 否则元数据文件、.tmp 临时文件都会被它顺手删掉（这正是之前丢数据的原因之一）。
-    if (!/^w-[a-z0-9-]+\.(png|jpg|webp)$/.test(name)) continue
-    if (known.has(name)) continue
-    try { unlinkSync(join(imagesDir, name)) } catch { /* 并发清理时可能已被删 */ }
-  }
+  // 未被索引引用的文件也可能来自未完成的提交或较新备份，启动不自动删除用户原图。
 }
 
 function isRecord(value) {
-  return value && typeof value === 'object'
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 /** 公开投影：给列表/详情用，绝不含 ownerId 之外的隐私（本来也没有）。 */
@@ -255,8 +264,8 @@ export function removeWork(itemId, { userId, isAdmin }) {
   if (!isAdmin && item.ownerId !== userId) return { ok: false, error: '只能删除自己的作品' }
   items = items.filter((candidate) => candidate.id !== itemId)
   index()
-  try { unlinkSync(join(imagesDir, item.file)) } catch { /* 文件已不在就当删掉 */ }
   commit()
+  try { unlinkSync(join(imagesDir, item.file)) } catch { /* 文件已不在就当删掉 */ }
   removeCommentsForWork(itemId)
   return { ok: true }
 }

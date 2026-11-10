@@ -27,11 +27,11 @@ export function createTaskErrorPatch(task: Pick<TaskRecord, 'createdAt'>, error:
   }
 }
 
-export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now: number) {
+export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now: number, ownedTaskIds: ReadonlySet<string> = new Set()) {
   const interruptedTasks: TaskRecord[] = []
   const updatedTasks = tasks.map((task) => {
     const isOpenAITask = (task.apiProvider ?? 'openai') !== 'fal'
-    if (task.status !== 'running' || !isOpenAITask || task.customTaskId) return task
+    if (task.status !== 'running' || !isOpenAITask || task.customTaskId || ownedTaskIds.has(task.id)) return task
 
     const updated: TaskRecord = {
       ...task,

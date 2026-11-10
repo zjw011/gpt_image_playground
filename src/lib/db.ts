@@ -13,10 +13,16 @@ const THUMBNAIL_VERSION = 2
 
 export const CURRENT_THUMBNAIL_VERSION = THUMBNAIL_VERSION
 
+const connections = new Map<string, Promise<IDBDatabase>>()
+
 function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  const name = scopeStorageName(DB_NAME)
+  const cached = connections.get(name)
+  if (cached) return cached
+  const connection = new Promise<IDBDatabase>((resolve, reject) => {
     // 多用户模式下每个账号一个独立数据库，彼此看不到对方的图片与任务。
-    const req = indexedDB.open(scopeStorageName(DB_NAME), DB_VERSION)
+    const req = indexedDB.open(name, DB_VERSION)
+    let blocked = false
     req.onupgradeneeded = (e) => {
       const db = (e.target as IDBOpenDBRequest).result
       if (!db.objectStoreNames.contains(STORE_TASKS)) {
@@ -32,9 +38,32 @@ function openDB(): Promise<IDBDatabase> {
         db.createObjectStore(STORE_AGENT_CONVERSATIONS, { keyPath: 'id' })
       }
     }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
+    req.onsuccess = () => {
+      const db = req.result
+      if (blocked) {
+        db.close()
+        return
+      }
+      db.onversionchange = () => {
+        db.close()
+        connections.delete(name)
+      }
+      db.onclose = () => connections.delete(name)
+      resolve(db)
+    }
+    req.onerror = () => {
+      connections.delete(name)
+      reject(req.error ?? new Error('浏览器数据库打开失败'))
+    }
+    req.onblocked = () => {
+      blocked = true
+      connections.delete(name)
+      reject(new Error('浏览器数据库升级被其他页面阻止，请关闭旧版本页面后重试'))
+    }
   })
+  connections.set(name, connection)
+  void connection.catch(() => { if (connections.get(name) === connection) connections.delete(name) })
+  return connection
 }
 
 function dbTransaction<T>(
@@ -48,8 +77,10 @@ function dbTransaction<T>(
         const tx = db.transaction(storeName, mode)
         const store = tx.objectStore(storeName)
         const req = fn(store)
-        req.onsuccess = () => resolve(req.result)
-        req.onerror = () => reject(req.error)
+        // 请求成功不代表事务已提交；磁盘不足或随后 abort 仍会回滚写入。
+        tx.oncomplete = () => resolve(req.result)
+        tx.onerror = () => reject(tx.error ?? req.error ?? new Error('浏览器数据库事务失败'))
+        tx.onabort = () => reject(tx.error ?? req.error ?? new Error('浏览器数据库事务已取消'))
       }),
   )
 }
@@ -79,8 +110,8 @@ export function commitTaskDeletion(deletedTaskIds: string[], updatedTasks: TaskR
         for (const task of updatedTasks) taskStore.put(task)
         for (const conversation of updatedConversations) conversationStore.put(conversation)
         tx.oncomplete = () => resolve(undefined)
-        tx.onerror = () => reject(tx.error)
-        tx.onabort = () => reject(tx.error)
+        tx.onerror = () => reject(tx.error ?? new Error('浏览器数据库事务失败'))
+        tx.onabort = () => reject(tx.error ?? new Error('浏览器数据库事务已取消'))
       }),
   )
 }
@@ -112,8 +143,8 @@ export function replaceAgentConversations(conversations: AgentConversation[]): P
         store.clear()
         for (const conversation of conversations) store.put(conversation)
         tx.oncomplete = () => resolve(undefined)
-        tx.onerror = () => reject(tx.error)
-        tx.onabort = () => reject(tx.error)
+        tx.onerror = () => reject(tx.error ?? new Error('浏览器数据库事务失败'))
+        tx.onabort = () => reject(tx.error ?? new Error('浏览器数据库事务已取消'))
       }),
   )
 }
@@ -137,17 +168,17 @@ export function putImageThumbnail(thumbnail: StoredImageThumbnail): Promise<IDBV
   return dbTransaction(STORE_THUMBNAILS, 'readwrite', (s) => s.put(thumbnail))
 }
 
-export async function getImageThumbnail(id: string): Promise<StoredImageThumbnail | undefined> {
+export async function getImageThumbnail(id: string, sourceImage?: StoredImage): Promise<StoredImageThumbnail | undefined> {
   const existingThumbnail = await getStoredImageThumbnail(id)
   if (existingThumbnail?.thumbnailVersion === THUMBNAIL_VERSION) {
-    const image = await getImage(id)
+    const image = sourceImage ?? await getImage(id)
     if (image && (!image.width || !image.height) && existingThumbnail.width && existingThumbnail.height) {
       await putImage({ ...image, width: existingThumbnail.width, height: existingThumbnail.height })
     }
     return existingThumbnail
   }
 
-  const image = await getImage(id)
+  const image = sourceImage ?? await getImage(id)
   if (!image) return undefined
   const legacyImage = image as StoredImage & Partial<StoredImageThumbnail>
   if (legacyImage.thumbnailDataUrl && legacyImage.thumbnailVersion === THUMBNAIL_VERSION) {
@@ -203,7 +234,8 @@ export function deleteImage(id: string): Promise<undefined> {
         tx.objectStore(STORE_IMAGES).delete(id)
         tx.objectStore(STORE_THUMBNAILS).delete(id)
         tx.oncomplete = () => resolve(undefined)
-        tx.onerror = () => reject(tx.error)
+        tx.onerror = () => reject(tx.error ?? new Error('浏览器数据库事务失败'))
+        tx.onabort = () => reject(tx.error ?? new Error('浏览器数据库事务已取消'))
       }),
   )
 }
@@ -216,7 +248,8 @@ export function clearImages(): Promise<undefined> {
         tx.objectStore(STORE_IMAGES).clear()
         tx.objectStore(STORE_THUMBNAILS).clear()
         tx.oncomplete = () => resolve(undefined)
-        tx.onerror = () => reject(tx.error)
+        tx.onerror = () => reject(tx.error ?? new Error('浏览器数据库事务失败'))
+        tx.onabort = () => reject(tx.error ?? new Error('浏览器数据库事务已取消'))
       }),
   )
 }

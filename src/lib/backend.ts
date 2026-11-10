@@ -1,3 +1,4 @@
+import { fetchWithDeadline } from './requestDeadline'
 // 后端托管模式：渠道与密钥由服务端后台管理，前端只拿到渠道 id 与显示信息。
 // 请求打到同源 /api/relay/<channelId>/，由服务端补上真实地址与 Authorization。
 
@@ -477,7 +478,7 @@ function normalizeBootstrap(input: unknown): BackendBootstrap | null {
 /** 拉取后端引导信息。不存在后端（纯静态部署）时返回 null，前端退回自带配置模式。 */
 export async function loadBackendBootstrap(): Promise<BackendBootstrap | null> {
   try {
-    const response = await fetch('/api/bootstrap', { headers: { Accept: 'application/json' } })
+    const response = await fetchWithDeadline('/api/bootstrap', { headers: { Accept: 'application/json' } })
     if (!response.ok) {
       // 5xx / 502 是"服务端暂时不可用"（部署重建窗口就长这样），要重试并明确报错；
       // 404 则说明这个站点根本没有后端，是纯前端部署，不该当成故障。
@@ -555,7 +556,7 @@ export function backendAgentSettings(data: BackendBootstrap) {
 
 /** 前台登录：passcode 模式只需口令，accounts 模式还要用户名。 */
 export async function submitFrontLogin(credentials: { username?: string, password: string }) {
-  const response = await fetch('/api/session', {
+  const response = await fetchWithDeadline('/api/session', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(credentials),
@@ -566,12 +567,12 @@ export async function submitFrontLogin(credentials: { username?: string, passwor
 }
 
 export async function submitFrontLogout() {
-  await fetch('/api/session', { method: 'DELETE' }).catch(() => {})
+  await fetchWithDeadline('/api/session', { method: 'DELETE' }).catch(() => {})
 }
 
 /** 修改当前账号资料，并同步更新内存中的 bootstrap，让顶栏无需刷新立即生效。 */
 export async function submitUserProfile(input: { displayName: string, avatar: string }) {
-  const response = await fetch('/api/profile', {
+  const response = await fetchWithDeadline('/api/profile', {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -593,7 +594,7 @@ export async function submitRegister(input: {
   /** 邀请链接里的推荐人 id（?ref=）。 */
   ref?: string
 }) {
-  const response = await fetch('/api/register', {
+  const response = await fetchWithDeadline('/api/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -611,7 +612,7 @@ export async function submitRegister(input: {
  * 前端倒计时只是别让用户白点。
  */
 export async function requestEmailCode(input: { email: string, purpose?: 'register' | 'reset' }) {
-  const response = await fetch('/api/auth/email-code', {
+  const response = await fetchWithDeadline('/api/auth/email-code', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -628,7 +629,7 @@ export async function requestEmailCode(input: { email: string, purpose?: 'regist
 
 /** 用邮箱验证码重置密码。成功后不自动登录，用户拿新密码再登一次。 */
 export async function submitResetPassword(input: { email: string, code: string, password: string }) {
-  const response = await fetch('/api/auth/reset-password', {
+  const response = await fetchWithDeadline('/api/auth/reset-password', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -721,7 +722,7 @@ function toRequestError(payload: Record<string, unknown>, status: number): Backe
 
 /** 发起一次微信登录。返回的 pollToken 拿去轮询，剩下的字段决定界面怎么画。 */
 export async function startWechatLogin(): Promise<BackendWechatLoginStart> {
-  const response = await fetch('/api/wechat/login', { method: 'POST' })
+  const response = await fetchWithDeadline('/api/wechat/login', { method: 'POST' })
   const payload = await readErrorPayload(response)
   if (!response.ok) throw toRequestError(payload, response.status)
 
@@ -742,7 +743,7 @@ export async function startWechatLogin(): Promise<BackendWechatLoginStart> {
 
 /** 轮询登录结果。pending / expired 都是正常的业务状态，不该当异常抛。 */
 export async function pollWechatLogin(pollToken: string): Promise<BackendWechatPoll> {
-  const response = await fetch(`/api/wechat/login?t=${encodeURIComponent(pollToken)}`, {
+  const response = await fetchWithDeadline(`/api/wechat/login?t=${encodeURIComponent(pollToken)}`, {
     headers: { Accept: 'application/json' },
   })
   const payload = await readErrorPayload(response)
@@ -772,7 +773,7 @@ export async function pollWechatLogin(pollToken: string): Promise<BackendWechatP
 
 /** 拉一次余额与流水。redeem 之后其实不需要它——兑换接口已经把新余额一起回了。 */
 export async function fetchCredits(): Promise<BackendCreditsView> {
-  const response = await fetch('/api/credits', { headers: { Accept: 'application/json' } })
+  const response = await fetchWithDeadline('/api/credits', { headers: { Accept: 'application/json' } })
   const payload = await readErrorPayload(response)
   if (!response.ok) throw toRequestError(payload, response.status)
 
@@ -794,7 +795,7 @@ export interface RedeemResult extends BackendCreditsView {
  * 前端不重复维护一套文案表——两处都写必然有一天会对不上。
  */
 export async function redeemCardCode(code: string): Promise<RedeemResult> {
-  const response = await fetch('/api/credits/redeem', {
+  const response = await fetchWithDeadline('/api/credits/redeem', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code }),

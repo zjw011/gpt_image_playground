@@ -49,7 +49,7 @@ describe('parseImageCount', () => {
   it('原生 GIF 按成品数量计费，不按动画帧数重复计费', () => {
     expect(parseImageCount(Buffer.from(JSON.stringify({ n: 1, output_format: 'gif', frame_count: 16 })), 'application/json')).toBe(1)
     expect(parseImageCount(Buffer.from(JSON.stringify({ n: 2, output_format: 'gif', frame_count: 16 })), 'application/json')).toBe(2)
-    expect(parseImageCount(multipart({ n: 1, output_format: 'gif', frame_count: 16 }), 'multipart/form-data')).toBe(1)
+    expect(parseImageCount(multipart({ n: 1, output_format: 'gif', frame_count: 16 }), 'multipart/form-data; boundary=----WebKitFormBoundaryTest123')).toBe(1)
   })
 
   it('JSON 请求体里没有 n 就是 1 张——前端只在 n>1 时才带上这个字段', () => {
@@ -67,10 +67,9 @@ describe('parseImageCount', () => {
     expect(parseImageCount(Buffer.from(body), 'application/json')).toBe(3)
   })
 
-  it('请求体被首块截断（JSON 不完整）时退回正则，仍能读对', () => {
-    // 真实场景：后面还跟着几 MB 的图片数据，首块只切到中途。
-    const head = Buffer.from('{"model":"gpt-image-2","n":4,"image":["data:image/png;base64,iVBORw0KGgoAAAANSU', 'utf-8')
-    expect(parseImageCount(head, 'application/json')).toBe(4)
+  it('完整读取长提示词后的张数，不从提示词或嵌套 metadata 猜数量', () => {
+    expect(parseImageCount(Buffer.from(JSON.stringify({ prompt: 'x'.repeat(70000), n: 4, metadata: { num_images: 16 } })), 'application/json')).toBe(4)
+    expect(() => parseImageCount(Buffer.from('{"n":4,"prompt":"incomplete'), 'application/json')).toThrow('JSON')
   })
 
   it('multipart 里读得出 n', () => {
@@ -80,33 +79,27 @@ describe('parseImageCount', () => {
 
   it('multipart 里没有 n 就是 1 张', () => {
     const body = multipart({ model: 'gpt-image-2', prompt: '改成蓝色', size: '1024x1024' })
-    expect(parseImageCount(body, 'multipart/form-data; boundary=x')).toBe(1)
+    expect(parseImageCount(body, 'multipart/form-data; boundary=----WebKitFormBoundaryTest123')).toBe(1)
   })
 
   it('multipart 里 n 出现在后面的字段也读得到——不能依赖字段顺序', () => {
     const body = multipart({ model: 'gpt-image-2', prompt: '猫', size: '1024x1024', n: 4 })
-    expect(parseImageCount(body, 'multipart/form-data; boundary=x')).toBe(4)
+    expect(parseImageCount(body, 'multipart/form-data; boundary=----WebKitFormBoundaryTest123')).toBe(4)
   })
 
-  it('同一请求体里出现两个 n 时取最大值，避免用小值蒙混', () => {
+  it('同一表单出现重复 n 必须拒绝', () => {
     const body = Buffer.from(
       '--B\r\nContent-Disposition: form-data; name="n"\r\n\r\n1\r\n'
       + '--B\r\nContent-Disposition: form-data; name="n"\r\n\r\n4\r\n--B--\r\n',
       'utf-8',
     )
-    expect(parseImageCount(body, 'multipart/form-data')).toBe(4)
+    expect(() => parseImageCount(body, 'multipart/form-data; boundary=B')).toThrow('重复')
   })
 
-  it('Content-Type 缺失或不规范时两条路都试', () => {
+  it('JSON 缺省 Content-Type 仍兼容，畸形或超限张数拒绝而不静默夹断', () => {
     expect(parseImageCount(Buffer.from('{"n":3}'), '')).toBe(3)
-    expect(parseImageCount(multipart({ n: 2 }), 'text/plain')).toBe(2)
-  })
-
-  it('畸形或超大张数被夹到安全范围，不会把余额直接扣穿', () => {
-    expect(parseImageCount(Buffer.from('{"n":999999}'), 'application/json')).toBe(16)
-    expect(parseImageCount(Buffer.from('{"n":0}'), 'application/json')).toBe(1)
-    expect(parseImageCount(Buffer.from('{"n":-5}'), 'application/json')).toBe(1)
-    expect(parseImageCount(Buffer.from('{"n":"abc"}'), 'application/json')).toBe(1)
+    for (const n of [999999, 0, -5, 'abc', 1.5]) expect(() => parseImageCount(Buffer.from(JSON.stringify({ n })), 'application/json')).toThrow('1–16')
+    expect(() => parseImageCount(Buffer.from('{"n":1,"num_images":4}'), 'application/json')).toThrow('冲突')
   })
 
   it('空请求体返回 1 张而不是报错', () => {

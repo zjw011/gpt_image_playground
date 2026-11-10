@@ -27,6 +27,25 @@ let defaultConfigImportStarted = false
 // 慢服务器上就是用户看到的「点一下菜单卡一下、整屏正在进入绘想」。
 // 这里把整条链缓存成 Promise，重进 App 时直接复用现成结果，同步给组件状态，秒开。
 let appBootstrapPromise: Promise<BackendBootstrap | null> | null = null
+let backendRefreshRunning = false
+let lastBackendRefresh = 0
+let appliedBackendConfig = ''
+
+async function applyBackendConfig(data: BackendBootstrap) {
+  const config = backendBootstrapToPresetConfig(data)
+  const signature = JSON.stringify([config, data.site.failoverEnabled, data.site.failoverMaxAttempts, backendAgentSettings(data)])
+  if (signature === appliedBackendConfig) return
+  setPresetConfig(config)
+  await useStore.getState().setPresetImportedSettings(config)
+  const state = useStore.getState()
+  state.setSettings(normalizeSettings({
+    ...state.settings,
+    channelFailover: data.site.failoverEnabled,
+    channelFailoverMaxAttempts: data.site.failoverMaxAttempts,
+    ...backendAgentSettings(data),
+  }))
+  appliedBackendConfig = signature
+}
 
 function startAppBootstrap(setBackend: (b: BackendBootstrap | null) => void, setFailure: (message: string | null) => void) {
   if (appBootstrapPromise) return appBootstrapPromise
@@ -97,18 +116,7 @@ function startAppBootstrap(setBackend: (b: BackendBootstrap | null) => void, set
         return initStore().then(async () => {
           // 后端托管模式：渠道全部来自服务端，跳过 URL / 内嵌配置那套导入逻辑。
           if (data) {
-            const backendConfig = backendBootstrapToPresetConfig(data)
-            setPresetConfig(backendConfig)
-            await useStore.getState().setPresetImportedSettings(backendConfig)
-            const state = useStore.getState()
-            state.setSettings(normalizeSettings({
-              ...state.settings,
-              // 新客户端按各渠道协议重新构造请求，中继收到协商头后只执行当前候选。
-              channelFailover: data.site.failoverEnabled,
-              channelFailoverMaxAttempts: data.site.failoverMaxAttempts,
-              // Agent 也由后台总控：用户不需要（也无法）自己挑文本/图像渠道。
-              ...backendAgentSettings(data),
-            }))
+            await applyBackendConfig(data)
             clearAppliedUrlSettings()
             return data
           }
@@ -164,6 +172,10 @@ function startAppBootstrap(setBackend: (b: BackendBootstrap | null) => void, set
       })
       .catch((error) => {
         console.warn('Failed to import preset config:', error)
+        if (announced) {
+          setFailure('配置或本地数据加载失败，请刷新重试；现有数据已保留')
+          return announced
+        }
         setBackend(announced ?? null)
         setPresetConfig(null)
         const state = useStore.getState()
@@ -193,6 +205,44 @@ export default function App() {
       setBackend(data)
     })
   }, [])
+
+  useEffect(() => {
+    if (!backend) return
+    let disposed = false
+    const refresh = async () => {
+      if (document.visibilityState === 'hidden' || backendRefreshRunning || Date.now() - lastBackendRefresh < 15_000) return
+      backendRefreshRunning = true
+      lastBackendRefresh = Date.now()
+      try {
+        await appBootstrapPromise
+        const data = await loadBackendBootstrap()
+        // 短暂断网不清空仍可用的渠道；身份改变则先切换工作区。
+        if (!data || disposed) return
+        if (syncWorkspaceId(data.workspaceId)) {
+          window.location.reload()
+          return
+        }
+        await applyBackendConfig(data)
+        appBootstrapPromise = Promise.resolve(data)
+        setBackend(data)
+      } catch (error) {
+        console.warn('刷新托管渠道失败', error)
+      } finally {
+        backendRefreshRunning = false
+      }
+    }
+    const onFocus = () => { void refresh() }
+    const timer = setInterval(onFocus, 60_000)
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    onFocus()
+    return () => {
+      disposed = true
+      clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+  }, [Boolean(backend)])
 
   useEffect(() => {
     const preventPageImageDrag = (e: DragEvent) => {

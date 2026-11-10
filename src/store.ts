@@ -25,6 +25,7 @@ import { DEFAULT_SETTINGS, getActiveApiProfile, getAgentImageApiProfile, getAgen
 import { enforcePresetConfigPolicy, getPresetConfig, getPresetProfileIds, getPresetProviderIds, isBackendManagedMode, isPresetConfigDeletionPrevented, isPresetConfigOnlyEnabled, isPresetConfigParamsLocked, isPresetProfile, isPresetProviderDeletionPrevented } from './lib/presetConfig'
 import { scopeStorageName } from './lib/workspace'
 import { isAgentAvailable } from './lib/backend'
+import { refreshCreditsAfterGeneration } from './lib/creditsSync'
 import { dismissAllTooltips } from './lib/tooltipDismiss'
 import { remapImageMentionsForOrder, replaceImageMentionsForApi } from './lib/promptImageMentions'
 import {
@@ -53,7 +54,9 @@ import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSin
 import { buildAgentApiInput, buildAgentContinuationInput } from './lib/agentInputBuilder'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
-import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
+import { IMAGE_FETCH_CORS_HINT, fetchImageUrlAsDataUrl, MIME_MAP } from './lib/imageApiShared'
+import { forgetPendingTaskImage, getPendingTaskImage, storeGeneratedImage } from './lib/pendingTaskImages'
+import { claimTask, getOwnedTaskIds, notifyTaskChanges, observeTaskChanges, ownsTask, reconcileTaskSnapshot, releaseTask } from './lib/taskCoordination'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
@@ -72,10 +75,10 @@ import { deleteAgentRoundFromConversation, getActiveAgentRounds, getAgentRoundPa
 import { canonicalizeBatchFunctionCallArguments, countResponseToolCalls, createReadyAgentRecoveredToolState, getAgentFunctionOutputCallIds, getAgentRecoveredFailureError, getAgentRecoveredToolCallCount, getPersistableAgentConversations, getPersistableRawResponsePayload, mergeResponseOutputItems, scrubResponseOutputForDeletedAgentTasks, scrubTaskRawResponsePayloadForDeletedTasks } from './lib/agentResponseState'
 import { cleanStaleAgentInputDrafts, clearInputDraftState, isEmptyAgentInputDraft, normalizeAgentInputDrafts, remapAgentInputDraftMentionsForPathChange, restoreAgentInputDraftState, restoreGalleryInputDraftState, saveActiveAgentInputDrafts, saveGalleryInputDraft, syncActiveInputDraft, updateInputDraftImages } from './lib/inputDraftState'
 import { ALL_FAVORITES_COLLECTION_ID, DEFAULT_FAVORITE_COLLECTION_ID, createDefaultFavoriteCollection, deleteFavoriteCollectionState, ensureDefaultFavoriteCollection, getTaskFavoriteCollectionIds, mergeFavoriteCollections, normalizeFavoriteCollectionIds, normalizeFavoriteCollectionName, normalizeFavoriteCollections, normalizeFavoritePatch, normalizeLoadedFavoriteState, resolveDefaultFavoriteCollectionId, sameFavoriteCollectionIds } from './lib/favoriteState'
-import { createPersistedState, mergePersistedAgentConversations, migratePersistedState, normalizePersistedState } from './lib/persistedState'
-import { addImageSizeParam, createTaskDonePatch, createTaskErrorPatch, deriveAgentImageActualParams, deriveGalleryActualParams, firstActualParams, hasActualParams, hasActualSizeParam, mapActualParamsByImage, mapRevisedPromptsByImage, markInterruptedOpenAIRunningTasks } from './lib/taskState'
-import { createFailoverAttempt, formatFailoverError, getFailoverCandidates, getFailoverTimeoutBudget, isFailoverableError, withFailoverStreamingDisabled } from './lib/failover'
-import { isNativeGifTask, normalizeNativeGifParams, supportsNativeGif } from './lib/nativeGif'
+import { createPersistedStateSelector, createSettingsStorage, mergePersistedAgentConversations, migratePersistedState, normalizePersistedState } from './lib/persistedState'
+import { addImageSizeParam, createTaskDonePatch, createTaskErrorPatch, deriveAgentImageActualParams, deriveGalleryActualParams, firstActualParams, hasActualParams, hasActualSizeParam, mapActualParamsByImage, mapRevisedPromptsByImage } from './lib/taskState'
+import { clearChannelFailure, createFailoverAttempt, formatFailoverError, getFailoverCandidates, getFailoverTimeoutBudget, isFailoverableError, recordChannelFailure, withFailoverStreamingDisabled } from './lib/failover'
+import { inspectNativeGif, isNativeGifTask, normalizeNativeGifParams, supportsNativeGif } from './lib/nativeGif'
 import { stripInjectedCodexCliSizePrompt } from './lib/size'
 import { appendStylePreset } from './lib/stylePresets'
 import { appendProfessionalPreset, isLiveProfessionalPreset } from './lib/professionalTools'
@@ -93,7 +96,6 @@ const agentRecoveryContinuations = new Set<string>()
 const deletedActiveAgentTasks = new Map<string, { task: TaskRecord; controller: AbortController }>()
 const pendingTryOnImageReferences = new Map<string, number>()
 const initializationUploadedImageIds = new Set<Set<string>>()
-let pendingInputImageUploads = 0
 let agentConversationPersistenceReady = false
 let agentConversationMigrationPending = false
 const AGENT_STOPPED_MESSAGE = '已停止生成。'
@@ -216,8 +218,10 @@ function getLatestAgentConversation(conversations: AgentConversation[]) {
   }, null)
 }
 
+const selectPersistedState = createPersistedStateSelector()
+
 export function getPersistedState(state: AppState) {
-  return createPersistedState(state, agentConversationMigrationPending && !agentConversationPersistenceReady)
+  return selectPersistedState(state, agentConversationMigrationPending && !agentConversationPersistenceReady)
 }
 
 async function replaceStoredAgentConversations(conversations: AgentConversation[]) {
@@ -440,6 +444,7 @@ async function deleteStoredImageIfUnreferenced(imageId: string) {
   await deleteImage(imageId)
   if (!isImageReferencedByState(useStore.getState(), imageId)) {
     deleteImageCacheEntry(imageId)
+    forgetPendingTaskImage(imageId)
     return
   }
 
@@ -951,6 +956,7 @@ export const useStore = create<AppState>()(
     }),
     {
       name: scopeStorageName('gpt-image-playground'),
+      storage: createSettingsStorage(),
       version: 3,
       migrate: migratePersistedState,
       partialize: getPersistedState,
@@ -1004,8 +1010,20 @@ function getPersistableTask(task: TaskRecord): TaskRecord {
   return rawResponsePayload === normalized.rawResponsePayload ? normalized : { ...normalized, rawResponsePayload }
 }
 
+const taskWrites = new Map<string, Promise<IDBValidKey>>()
+
 function putTask(task: TaskRecord): Promise<IDBValidKey> {
-  return dbPutTask(getPersistableTask(task))
+  const previous = taskWrites.get(task.id) ?? Promise.resolve()
+  const writing = previous.catch(() => {}).then(async () => {
+    const key = await dbPutTask(getPersistableTask(task))
+    notifyTaskChanges()
+    return key
+  })
+  taskWrites.set(task.id, writing)
+  void writing.finally(() => {
+    if (taskWrites.get(task.id) === writing) taskWrites.delete(task.id)
+  }).catch(() => {})
+  return writing
 }
 
 export function getCodexCliPromptKey(settings: AppSettings): string {
@@ -1331,7 +1349,7 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
     return
   }
 
-  updateTaskInStore(task.id, {
+  const saved = await updateTaskInStore(task.id, {
     outputImages: outputIds,
     transparentOriginalImages: transparentOriginalImageIds,
     outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
@@ -1342,6 +1360,7 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
     ...createTaskDonePatch(task, Date.now()),
     falRecoverable: false,
   })
+  if (!saved) return
   useStore.getState().showToast(result.failedRequests?.length
     ? `fal.ai 任务已恢复：成功 ${outputIds.length} 张，失败 ${result.failedRequests.length} 张`
     : `fal.ai 任务已恢复，共 ${outputIds.length} 张图片`, result.failedRequests?.length ? 'error' : 'success')
@@ -1350,6 +1369,15 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
 }
 
 async function recoverFalTask(taskId: string) {
+  if (ownsTask(taskId) || !await claimTask(taskId)) return
+  try {
+    await recoverFalTaskOwned(taskId)
+  } finally {
+    releaseTask(taskId)
+  }
+}
+
+async function recoverFalTaskOwned(taskId: string) {
   const { settings, tasks } = useStore.getState()
   const task = tasks.find((item) => item.id === taskId)
   if (!task || task.apiProvider !== 'fal' || !task.falRequestId || !task.falEndpoint || task.status === 'done') return
@@ -1384,8 +1412,40 @@ async function recoverFalTask(taskId: string) {
   }
 }
 
-/** 初始化：从 IndexedDB 加载任务，按需恢复输入图片，并清理孤立图片 */
+let sharedTaskSyncVersion = 0
+let taskPageEventsInstalled = false
+
+/** 初始化：从 IndexedDB 加载任务并按需恢复输入图片。 */
 export async function initStore() {
+  if (typeof window !== 'undefined' && !taskPageEventsInstalled) {
+    taskPageEventsInstalled = true
+    window.addEventListener('beforeunload', (event) => {
+      if (!useStore.getState().tasks.some((task) => task.saveError)) return
+      event.preventDefault()
+      event.returnValue = ''
+    })
+  }
+  observeTaskChanges(() => {
+    const version = ++sharedTaskSyncVersion
+    void getAllTasks().then(async (snapshot) => {
+      const stored = await reconcileTaskSnapshot(snapshot, getAllTasks, putTask)
+      if (version !== sharedTaskSyncVersion) return
+      const current = useStore.getState().tasks
+      const storedIds = new Set(stored.map((task) => task.id))
+      const storedById = new Map(stored.map((task) => [task.id, task]))
+      for (const task of current) if (ownsTask(task.id) && !storedIds.has(task.id) && !task.saveError && !taskWrites.has(task.id)) releaseTask(task.id)
+      const protectedTasks = current.filter((task) => taskWrites.has(task.id) || (ownsTask(task.id) && storedIds.has(task.id)) || task.saveError || (task.status === 'done' && storedById.get(task.id)?.status === 'running'))
+      const protectedIds = new Set(protectedTasks.map((task) => task.id))
+      useStore.getState().setTasks([...protectedTasks, ...stored.filter((task) => !protectedIds.has(task.id))].sort((a, b) => b.createdAt - a.createdAt))
+      const owned = await getOwnedTaskIds(stored)
+      if (version !== sharedTaskSyncVersion) return
+      for (const task of stored) {
+        if (owned.has(task.id) || task.status === 'done') continue
+        if (task.apiProvider === 'fal' && task.falRequestId && task.falEndpoint && (task.status === 'running' || task.falRecoverable)) scheduleFalRecovery(task.id)
+        if (task.customTaskId && (task.status === 'running' || task.customRecoverable)) scheduleCustomRecovery(task.id)
+      }
+    }).catch((err) => console.warn('同步其他页面的任务失败', err))
+  })
   const uploadedImageIds = new Set<string>()
   initializationUploadedImageIds.add(uploadedImageIds)
   try {
@@ -1434,8 +1494,8 @@ async function hydrateStore() {
   if (shouldRewritePersistedLocalState) {
     useStore.setState({})
   }
-  const { tasks: markedTasks, interruptedTasks } = markInterruptedOpenAIRunningTasks(storedTasks, Date.now())
-  const interruptedTaskIds = new Set(interruptedTasks.map((task) => task.id))
+  const markedTasks = await reconcileTaskSnapshot(storedTasks, getAllTasks, putTask)
+  const ownedTaskIds = await getOwnedTaskIds(markedTasks)
   const favoriteState = useStore.getState()
   const normalizedFavorites = normalizeLoadedFavoriteState(markedTasks.map(getPersistableTask), favoriteState.favoriteCollections, favoriteState.defaultFavoriteCollectionId)
   const tasks = normalizedFavorites.tasks
@@ -1446,7 +1506,7 @@ async function hydrateStore() {
     useStore.getState().setDefaultFavoriteCollectionId(normalizedFavorites.defaultFavoriteCollectionId)
   }
   await Promise.all(tasks
-    .filter((task, index) => normalizedFavorites.changed || interruptedTaskIds.has(task.id) || task.rawResponsePayload !== markedTasks[index]?.rawResponsePayload || task.quickMotion !== markedTasks[index]?.quickMotion || task.tryOn !== markedTasks[index]?.tryOn)
+    .filter((task, index) => normalizedFavorites.changed || task.rawResponsePayload !== markedTasks[index]?.rawResponsePayload || task.quickMotion !== markedTasks[index]?.quickMotion || task.tryOn !== markedTasks[index]?.tryOn)
     .map((task) => putTask(task)))
   const latestTasks = useStore.getState().tasks
   const initialTaskIds = new Set(initialTasks.map((task) => task.id))
@@ -1456,7 +1516,7 @@ async function hydrateStore() {
     ? tasks
     : [...latestTasks, ...tasks.filter((task) => !initialTaskIds.has(task.id) && !latestTaskIds.has(task.id))])
   for (const task of useStore.getState().tasks) {
-    if (task.quickMotion) continue
+    if (task.quickMotion || ownedTaskIds.has(task.id)) continue
     if (
       task.apiProvider === 'fal' &&
       task.falRequestId &&
@@ -1496,20 +1556,12 @@ async function hydrateStore() {
     addTaskReferencedImageIds(referencedIds, t)
   }
 
-  // 只枚举 key 清理孤立图片，避免启动时把所有 4K 原图读进内存。
+  // 其他标签页的编辑器可能只在组件中持有原图；启动不能据本页引用删除它们。
   const referencedImageIds: string[] = []
   for (const imgId of initialImageIds) {
     const latestState = useStore.getState()
     if (referencedIds.has(imgId) || isImageReferencedByState(latestState, imgId)) {
       referencedImageIds.push(imgId)
-    } else if (
-      pendingInputImageUploads === 0 &&
-      latestState.tasks === state.tasks && latestState.inputImages === persistedInputImages &&
-      latestState.galleryInputDraft === galleryInputDraft && latestState.agentInputDrafts === agentInputDrafts &&
-      latestState.agentConversations === agentConversations
-    ) {
-      // 任何引用集合发生变化都跳过本轮清理，宁可暂留孤立图，不能删刚被恢复/上传的原图。
-      await deleteImage(imgId)
     }
   }
   scheduleThumbnailBackfill(referencedImageIds)
@@ -1624,8 +1676,24 @@ async function hydrateStore() {
   }
 }
 
-/** 提交新任务 */
-export async function submitTask(options: { apiProfileId?: string; allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; stylePreset?: string; professionalPreset?: string; liveFrameCount?: number; tryOn?: TryOnOptions; inputSnapshot?: { prompt: string; inputImages: InputImage[]; params: TaskParams } } = {}): Promise<boolean> {
+let submittingTask = false
+
+/** 提交阶段串行化；任务受理后即可继续创建下一项。 */
+export async function submitTask(options: Parameters<typeof submitTaskInternal>[0] = {}): Promise<boolean> {
+  if (submittingTask) return false
+  submittingTask = true
+  try {
+    return await submitTaskInternal(options)
+  } catch (err) {
+    console.warn('任务提交失败', err)
+    useStore.getState().showToast(err instanceof Error ? err.message : '任务保存失败，请重试', 'error')
+    return false
+  } finally {
+    submittingTask = false
+  }
+}
+
+async function submitTaskInternal(options: { apiProfileId?: string; allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean; stylePreset?: string; professionalPreset?: string; liveFrameCount?: number; tryOn?: TryOnOptions; inputSnapshot?: { prompt: string; inputImages: InputImage[]; params: TaskParams } } = {}): Promise<boolean> {
   const state = useStore.getState()
   const { settings, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, showToast, setConfirmDialog } = state
   const prompt = options.inputSnapshot?.prompt ?? state.prompt
@@ -1800,13 +1868,13 @@ export async function submitTask(options: { apiProfileId?: string; allowFullMask
     elapsed: null,
   }
 
-  if (options.inputSnapshot) {
+  if (!await claimTask(taskId)) return false
+  try {
     await putTask(task)
     useStore.setState((state) => ({ tasks: [task, ...state.tasks] }))
-  } else {
-    const latestTasks = useStore.getState().tasks
-    useStore.getState().setTasks([task, ...latestTasks])
-    await putTask(task)
+  } catch (err) {
+    releaseTask(taskId)
+    throw err
   }
   useStore.getState().showToast('任务已提交', 'success')
 
@@ -2120,7 +2188,7 @@ async function storeTaskOutputImages(task: TaskRecord, images: string[]) {
     for (const dataUrl of images) {
       let outputDataUrl = dataUrl
       if (task.transparentOutput) {
-        const original = await storeImageWithSize(dataUrl, 'generated')
+        const original = await storeGeneratedImage(dataUrl)
         storedImageIds.push(original.id)
         cacheImage(original.id, dataUrl)
 
@@ -2139,7 +2207,7 @@ async function storeTaskOutputImages(task: TaskRecord, images: string[]) {
         }
       }
 
-      const stored = await storeImageWithSize(outputDataUrl, 'generated')
+      const stored = await storeGeneratedImage(outputDataUrl)
       storedImageIds.push(stored.id)
       cacheImage(stored.id, outputDataUrl)
       outputIds.push(stored.id)
@@ -2269,6 +2337,9 @@ function scrubAgentOutputPayloadsForDeletedTasks(deletedTasks: TaskRecord[]) {
 }
 
 async function persistTaskDeletionCleanup(deletedTaskIds: string[], cleanup: ReturnType<typeof scrubAgentOutputPayloadsForDeletedTasks>) {
+  // 删除必须排在已提交的进度/完成写入之后，避免迟到写入复活作品。
+  const pendingWrites = deletedTaskIds.map((id) => taskWrites.get(id)).filter((write) => write !== undefined)
+  if (pendingWrites.length) await Promise.all(pendingWrites.map((write) => write.catch(() => {})))
   const tasks = cleanup.updatedTasks.map(getPersistableTask)
   const conversations = cleanup.updatedConversations.map(getPersistableAgentConversation)
   try {
@@ -2668,6 +2739,7 @@ async function executeAgentRound(
   const controller = new AbortController()
   const controllerKey = getAgentRoundControllerKey(conversationId, roundId)
   agentRoundControllers.set(controllerKey, controller)
+  const ownedAgentTaskIds = new Set<string>()
   try {
     const latestState = useStore.getState()
     const conversation = latestState.agentConversations.find((item) => item.id === conversationId)
@@ -2778,6 +2850,8 @@ async function executeAgentRound(
       taskByToolCallId.set(toolCallId, task)
       useStore.getState().setTasks([task, ...useStore.getState().tasks])
       attachTaskToAgentRound(task.id)
+      if (!await claimTask(task.id)) throw new Error('此任务正在其他页面执行')
+      ownedAgentTaskIds.add(task.id)
       await putTask(task)
       return task.id
     }
@@ -2788,7 +2862,7 @@ async function executeAgentRound(
       const latestTask = useStore.getState().tasks.find((task) => task.id === taskId)
       if (latestTask?.status === 'done' && latestTask.outputImages.length > 0) return { taskId, committed: true }
 
-      const stored = await storeImageWithSize(image.dataUrl, 'generated')
+      const stored = await storeGeneratedImage(image.dataUrl)
       cacheImage(stored.id, image.dataUrl)
       const latestBeforeUpdate = useStore.getState().tasks.find((task) => task.id === taskId)
       if (!latestBeforeUpdate) {
@@ -2796,7 +2870,7 @@ async function executeAgentRound(
         return { taskId, committed: false }
       }
       const actualParams = deriveAgentImageActualParams(image.actualParams, stored)
-      updateTaskInStore(taskId, {
+      const saved = await updateTaskInStore(taskId, {
         prompt: image.revisedPrompt ?? latestBeforeUpdate.prompt,
         outputImages: [stored.id],
         actualParams,
@@ -2807,7 +2881,7 @@ async function executeAgentRound(
         agentToolAction: image.action,
       })
       useStore.getState().setTaskStreamPreview(taskId)
-      return { taskId, committed: true }
+      return { taskId, committed: saved }
     }
 
     const failAgentImageTask = (toolCallId: string, error: string, rawResponsePayload?: string) => {
@@ -3326,7 +3400,7 @@ async function executeAgentRound(
         }
         const promptRefIds = uniqueIds(extractAgentReferenceIds(image.revisedPrompt ?? ''))
         const promptRefs = await resolveReferenceImages(promptRefIds)
-        const stored = await storeImageWithSize(image.dataUrl, 'generated')
+        const stored = await storeGeneratedImage(image.dataUrl)
         cacheImage(stored.id, image.dataUrl)
         const actualParams = deriveAgentImageActualParams(image.actualParams, stored)
         const task: TaskRecord = {
@@ -3358,9 +3432,9 @@ async function executeAgentRound(
           agentToolCallId: image.toolCallId,
           agentToolAction: image.action,
         }
-        useStore.getState().setTasks([task, ...useStore.getState().tasks])
+        useStore.getState().setTasks([{ ...task, status: 'running', finishedAt: null, elapsed: null }, ...useStore.getState().tasks])
         attachTaskToAgentRound(task.id)
-        await putTask(task)
+        await updateTaskInStore(task.id, task)
       }
 
       if (result.rawResponsePayload && streamingTaskIds.length > 0) {
@@ -3536,6 +3610,10 @@ async function executeAgentRound(
         : [...current.messages, assistantMessage],
     }))
 
+    if (useStore.getState().tasks.some((task) => taskIds.includes(task.id) && task.saveError)) {
+      useStore.getState().showToast('Agent 已生成图片，部分结果待保存，请先保存或下载原图', 'error')
+      return
+    }
     useStore.getState().showToast(outputIds.length > 0 ? 'Agent 已生成图片' : 'Agent 已回复', 'success')
     showTaskCompletionNotification(
       outputIds.length > 0 ? 'Agent 已生成图片' : 'Agent 已回复',
@@ -3598,6 +3676,7 @@ async function executeAgentRound(
     })
     useStore.getState().showToast(`Agent 请求失败：${message}`, 'error')
   } finally {
+    for (const taskId of ownedAgentTaskIds) releaseTask(taskId)
     if (agentRoundControllers.get(controllerKey) === controller) {
       agentRoundControllers.delete(controllerKey)
     }
@@ -3618,6 +3697,15 @@ async function executeAgentRound(
 }
 
 async function executeTask(taskId: string) {
+  if (!await claimTask(taskId)) return
+  try {
+    await executeOwnedTask(taskId)
+  } finally {
+    releaseTask(taskId)
+  }
+}
+
+async function executeOwnedTask(taskId: string) {
   const { settings } = useStore.getState()
   const task = useStore.getState().tasks.find((t) => t.id === taskId)
   if (!task || isQuickMotionTask(task)) return
@@ -3669,7 +3757,7 @@ async function executeTask(taskId: string) {
 
     const outcome = await runTaskWithProfile(taskId, withFailoverStreamingDisabled(candidate, hasNextCandidate), {
       // 看门狗按整条候选链的总预算计时，否则换渠道后剩余时间会被算成负数而立刻超时。
-      totalTimeoutBudget: getFailoverTimeoutBudget(candidates),
+      totalTimeoutBudget: getFailoverTimeoutBudget(candidates) * Math.max(1, task.liveFrameCount ?? 1),
       attempts,
       isFinalCandidate: !hasNextCandidate,
     })
@@ -3769,21 +3857,27 @@ async function runTaskWithProfile(
         void persistTaskStreamPartialImage(taskId, partial.image)
       },
     }
+    if (!useStore.getState().tasks.some((item) => item.id === taskId && item.status === 'running')) return { kind: 'settled' }
     const result = isLiveProfessionalPreset(task.professionalPreset) && task.liveFrameCount
-      ? await generateLiveFrameSequence(apiOptions, task.liveFrameCount, (progress) => {
+      ? await generateLiveFrameSequence(apiOptions, task.liveFrameCount, async (progress) => {
           outputReceived = true
           const latest = useStore.getState().tasks.find((item) => item.id === taskId)
           if (!latest || latest.status !== 'running') return
           useStore.getState().setTaskStreamPreview(taskId, progress.image, progress.completed - 1)
-          updateTaskInStore(taskId, { liveFramesCompleted: progress.completed })
-        })
+          const image = await storeGeneratedImage(progress.image)
+          cacheImage(image.id, progress.image)
+          const current = useStore.getState().tasks.find((item) => item.id === taskId)
+          if (!current) return
+          await updateTaskInStore(taskId, { outputImages: [...current.outputImages, image.id], liveFramesCompleted: progress.completed })
+        }, callImageApi, () => useStore.getState().tasks.some((item) => item.id === taskId && item.status === 'running'))
       : await callImageApi(apiOptions)
     generationCompleted = true
+    clearChannelFailure(activeProfile)
     // 上游已完成后只剩本地处理，不能再被生图超时或故障转移重复提交。
     clearOpenAIWatchdogTimer(taskId)
 
     const latestBeforeSuccess = useStore.getState().tasks.find((t) => t.id === taskId)
-    if (!latestBeforeSuccess || latestBeforeSuccess.status !== 'running') {
+    if (!latestBeforeSuccess || (latestBeforeSuccess.status !== 'running' && !(task.liveFrameCount && result.images.length && latestBeforeSuccess.error !== AGENT_STOPPED_MESSAGE))) {
       useStore.getState().setTaskStreamPreview(taskId)
       return { kind: 'settled' }
     }
@@ -3817,15 +3911,15 @@ async function runTaskWithProfile(
 
     // 更新任务
     const latestBeforeUpdate = useStore.getState().tasks.find((t) => t.id === taskId)
-    if (!latestBeforeUpdate || latestBeforeUpdate.status !== 'running') {
+    if (!latestBeforeUpdate || (latestBeforeUpdate.status !== 'running' && !(task.liveFrameCount && result.images.length && latestBeforeUpdate.error !== AGENT_STOPPED_MESSAGE))) {
       useStore.getState().setTaskStreamPreview(taskId)
       await deleteUnreferencedImageIds([...outputIds, ...(transparentOriginalImageIds ?? [])])
       return { kind: 'settled' }
     }
-    const partialImageIdsToClean = latestBeforeUpdate.streamPartialImageIds || []
+    const partialImageIdsToClean = [...(latestBeforeUpdate.streamPartialImageIds ?? []), ...(task.liveFrameCount ? latestBeforeUpdate.outputImages : [])]
     clearOpenAIWatchdogTimer(taskId)
     useStore.getState().setTaskStreamPreview(taskId)
-    updateTaskInStore(taskId, {
+    const saved = await updateTaskInStore(taskId, {
       outputImages: outputIds,
       transparentOriginalImages: transparentOriginalImageIds,
       outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
@@ -3842,6 +3936,7 @@ async function runTaskWithProfile(
     })
     void deleteUnreferencedImageIds(partialImageIdsToClean)
 
+    if (!saved) return { kind: 'settled' }
     const failedCount = result.failedRequests?.length ?? 0
     const completionMessage = failedCount > 0
       ? `生成完成：成功 ${outputIds.length} 张，失败 ${failedCount} 张`
@@ -3889,6 +3984,7 @@ async function runTaskWithProfile(
 
     // 已受理的异步任务只查询原任务；收到图片后也不能因保存失败重新收费生成。
     const canFailover = !generationCompleted && !outputReceived && !latestFalRequestInfo && !latestCustomTaskInfo && isFailoverableError(err)
+    if (canFailover) recordChannelFailure(activeProfile, err)
     if (!context.isFinalCandidate && canFailover) return { kind: 'failover', error: err }
 
     let errorMessage = err instanceof Error ? err.message : String(err)
@@ -3914,14 +4010,104 @@ async function runTaskWithProfile(
   }
 }
 
-export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>) {
+export async function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>): Promise<boolean> {
   const { tasks, setTasks, defaultFavoriteCollectionId } = useStore.getState()
+  // 停止/错误必须立即阻止后续请求；只有“完成”要等落盘后展示。
+  const terminal = patch.status === 'done'
   const updated = tasks.map((t) =>
-    t.id === taskId ? { ...t, ...normalizeFavoritePatch(t, patch, defaultFavoriteCollectionId) } : t,
+    t.id === taskId ? { ...t, ...normalizeFavoritePatch(t, patch, defaultFavoriteCollectionId), ...(terminal ? { saveError: undefined } : {}) } : t,
   )
   const task = updated.find((t) => t.id === taskId)
-  setTasks(updated)
-  if (task) putTask(task)
+  if (!terminal) setTasks(updated)
+  if (!task) return false
+  if (patch.status && patch.status !== 'running' && !task.falRecoverable && !task.customRecoverable) refreshCreditsAfterGeneration()
+  try {
+    const pending = [...task.outputImages, ...(task.transparentOriginalImages ?? [])].some((id) => getPendingTaskImage(id))
+    if (pending) throw new Error('图片已生成，但浏览器未能保存原图。请重试保存或立即下载，暂勿关闭本页。')
+    await putTask(task)
+    if (terminal) useStore.setState((state) => ({ tasks: state.tasks.map((item) => item.id === taskId ? { ...item, ...patch, saveError: undefined } : item) }))
+    return true
+  } catch (err) {
+    console.warn('任务元数据保存失败', err)
+    const saveError = err instanceof Error ? err.message : String(err)
+    useStore.setState((state) => ({ tasks: state.tasks.map((item) => item.id === taskId ? { ...item, ...patch, saveError } : item) }))
+    useStore.getState().showToast('结果尚未保存，请重试保存或下载原图，暂勿关闭本页', 'error')
+    return false
+  }
+}
+
+const savingTasks = new Set<string>()
+
+/** 仅补写已生成结果，不再请求绘图接口。 */
+export async function retryTaskSave(taskId: string): Promise<boolean> {
+  if (savingTasks.has(taskId)) return false
+  const task = useStore.getState().tasks.find((item) => item.id === taskId)
+  if (!task) return false
+  savingTasks.add(taskId)
+  try {
+    for (const id of [...task.outputImages, ...(task.transparentOriginalImages ?? [])]) {
+      const image = getPendingTaskImage(id)
+      if (!image) continue
+      await putImage(image)
+      forgetPendingTaskImage(id)
+    }
+    const saved = await updateTaskInStore(taskId, { saveError: undefined })
+    if (saved) useStore.getState().showToast('作品已保存', 'success')
+    return saved
+  } catch (err) {
+    console.warn('重试保存图片失败', err)
+    useStore.getState().showToast('仍无法保存，请先下载原图，暂勿关闭本页', 'error')
+    return false
+  } finally {
+    savingTasks.delete(taskId)
+  }
+}
+
+/** 只下载上游已给出的结果链接，不产生新的生成请求。 */
+export async function retryTaskDownload(taskId: string): Promise<boolean> {
+  if (savingTasks.has(taskId)) return false
+  const task = useStore.getState().tasks.find((item) => item.id === taskId)
+  if (!task?.rawImageUrls?.length) return false
+  savingTasks.add(taskId)
+  try {
+    const images: string[] = []
+    const remainingUrls: string[] = []
+    const existingImages = new Set(await Promise.all(task.outputImages.map((id) => ensureImageCached(id))))
+    for (const url of task.rawImageUrls) {
+      try {
+        const image = await fetchImageUrlAsDataUrl(url, MIME_MAP[task.params.output_format] ?? 'image/png')
+        if (isNativeGifTask(task)) inspectNativeGif(image)
+        if (!existingImages.has(image)) {
+          images.push(image)
+          existingImages.add(image)
+        }
+      } catch (err) {
+        console.warn('结果图片下载失败', err)
+        remainingUrls.push(url)
+      }
+    }
+    if (!images.length && remainingUrls.length) {
+      useStore.getState().showToast('结果链接暂时仍不可用，请稍后重试下载', 'error')
+      return false
+    }
+    if (!images.length) return await updateTaskInStore(taskId, { ...createTaskDonePatch(task, Date.now()), rawImageUrls: undefined, outputErrors: undefined })
+    const stored = await storeTaskOutputImages(task, images)
+    return await updateTaskInStore(taskId, {
+      ...createTaskDonePatch(task, Date.now()),
+      outputImages: [...task.outputImages, ...stored.outputIds],
+      transparentOriginalImages: [...(task.transparentOriginalImages ?? []), ...(stored.transparentOriginalImageIds ?? [])],
+      rawImageUrls: remainingUrls.length ? remainingUrls : undefined,
+      outputErrors: remainingUrls.map((_, requestIndex) => ({ requestIndex, error: '部分结果仍未下载成功，可继续重试下载' })),
+      falRecoverable: false,
+      customRecoverable: false,
+    })
+  } catch (err) {
+    console.warn('恢复下载失败', err)
+    useStore.getState().showToast('恢复下载失败，请稍后再试', 'error')
+    return false
+  } finally {
+    savingTasks.delete(taskId)
+  }
 }
 
 export function createFavoriteCollection(name: string) {
@@ -4014,7 +4200,27 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
 }
 
 /** 重试失败的任务：创建新任务并执行 */
+const retryingTasks = new Set<string>()
+
 export async function retryTask(task: TaskRecord) {
+  if (retryingTasks.has(task.id)) return
+  retryingTasks.add(task.id)
+  try {
+    if (task.saveError) {
+      await retryTaskSave(task.id)
+      return
+    }
+    if (task.status === 'error' && task.rawImageUrls?.length) {
+      await retryTaskDownload(task.id)
+      return
+    }
+    await retryTaskInternal(task)
+  } finally {
+    retryingTasks.delete(task.id)
+  }
+}
+
+async function retryTaskInternal(task: TaskRecord) {
   if (isNativeGifTask(task)) {
     try {
       const settings = normalizeSettings(useStore.getState().settings)
@@ -4060,6 +4266,12 @@ export async function retryTask(task: TaskRecord) {
     await submitQuickMotionTask(normalized.quickMotion!, { id, dataUrl: '' })
     return
   }
+  for (const id of [...task.inputImageIds, ...(task.maskImageId ? [task.maskImageId] : [])]) {
+    if (!await ensureImageCached(id)) {
+      useStore.getState().showToast('参考图或遮罩已丢失，请返回编辑补齐后再生成', 'error')
+      return
+    }
+  }
   const { settings } = useStore.getState()
   const activeProfile = getActiveApiProfile(settings)
   const normalizedParams = normalizeParamsForSettings(task.params, settings, { hasInputImages: task.inputImageIds.length > 0 })
@@ -4097,11 +4309,15 @@ export async function retryTask(task: TaskRecord) {
     elapsed: null,
   }
 
-  const latestTasks = useStore.getState().tasks
-  useStore.getState().setTasks([newTask, ...latestTasks])
-  await putTask(newTask)
-
-  executeTask(taskId)
+  if (!await claimTask(taskId)) return
+  try {
+    await putTask(newTask)
+    useStore.setState((state) => ({ tasks: [newTask, ...state.tasks] }))
+  } catch (err) {
+    releaseTask(taskId)
+    throw err
+  }
+  void executeTask(taskId)
 }
 
 /** 复用配置 */
@@ -4109,11 +4325,11 @@ export async function reuseConfig(task: TaskRecord, opts?: { editOnly?: boolean 
   const { settings, setPrompt, setParams, setInputImages, setMaskDraft, clearMaskDraft, showToast, setConfirmDialog, setReusedTaskApiProfile } = useStore.getState()
   if (isNativeGifTask(task)) {
     showToast('原生 GIF 配置与参考图已保留，请在 Live 实况的原生 GIF 中编辑', 'info')
-    return
+    return false
   }
   if (isTryOnTask(task)) {
     showToast('换装配置和双图已保留，请在 AI 换装工具中编辑此作品', 'info')
-    return
+    return false
   }
   if (isQuickMotionTask(task)) {
     try {
@@ -4129,7 +4345,7 @@ export async function reuseConfig(task: TaskRecord, opts?: { editOnly?: boolean 
       console.warn('快速运镜原图恢复失败', err)
       showToast(err instanceof Error ? err.message : '原图恢复失败', 'error')
     }
-    return
+    return false
   }
   const normalizedSettings = normalizeSettings(settings)
   const currentProfile = getActiveApiProfile(settings)
@@ -4141,38 +4357,32 @@ export async function reuseConfig(task: TaskRecord, opts?: { editOnly?: boolean 
   const taskProfileName = matchedProfile?.name ?? getTaskApiProfileName(task)
   const paramsSettings = shouldTemporarilyReuseProfile && matchedProfile ? createSettingsForApiProfile(normalizedSettings, matchedProfile) : normalizedSettings
 
-  setParams(normalizeParamsForSettings(task.params, paramsSettings, { hasInputImages: task.inputImageIds.length > 0 }))
-  setReusedTaskApiProfile(
-    shouldTemporarilyReuseProfile && matchedProfile ? matchedProfile.id : null,
-    missingReusedProfile,
-    taskProfileName,
-  )
-  clearMaskDraft()
-
-  // 恢复输入图片
+  // 先核对完整性，再改草稿；缺图不能把图生图悄悄变成文生图。
   const imgs: InputImage[] = []
   for (const imgId of task.inputImageIds) {
     const dataUrl = await ensureImageCached(imgId)
-    if (dataUrl) {
-      imgs.push({ id: imgId, dataUrl })
-    }
+    if (dataUrl) imgs.push({ id: imgId, dataUrl })
   }
+  const maskTargetImageId = task.maskTargetImageId ?? (task.maskImageId ? task.inputImageIds[0] : null)
+  const maskDataUrl = task.maskImageId ? await ensureImageCached(task.maskImageId) : undefined
+  const complete = imgs.length === task.inputImageIds.length
+    && (!task.maskImageId || Boolean(maskDataUrl && imgs.some((img) => img.id === maskTargetImageId)))
+  if (!complete && !opts?.editOnly) {
+    showToast('原任务的参考图或遮罩已丢失，请返回编辑补齐后再生成', 'error')
+    return false
+  }
+  setParams(normalizeParamsForSettings(task.params, paramsSettings, { hasInputImages: imgs.length > 0 }))
+  setReusedTaskApiProfile(shouldTemporarilyReuseProfile && matchedProfile ? matchedProfile.id : null, missingReusedProfile, taskProfileName)
   setInputImages(imgs)
   setPrompt(task.prompt)
-  const maskTargetImageId = task.maskTargetImageId ?? (task.maskImageId ? task.inputImageIds[0] : null)
-  if (maskTargetImageId && task.maskImageId && imgs.some((img) => img.id === maskTargetImageId)) {
-    const maskDataUrl = await ensureImageCached(task.maskImageId)
-    if (maskDataUrl) {
-      setMaskDraft({
-        targetImageId: maskTargetImageId,
-        maskDataUrl,
-        updatedAt: Date.now(),
-      })
-    } else {
-      clearMaskDraft()
-    }
+  if (maskDataUrl && maskTargetImageId && imgs.some((img) => img.id === maskTargetImageId)) {
+    setMaskDraft({ targetImageId: maskTargetImageId, maskDataUrl, updatedAt: Date.now() })
   } else {
     clearMaskDraft()
+  }
+  if (!complete) {
+    showToast('部分参考图或遮罩已丢失，请补齐后再生成', 'error')
+    return false
   }
   if (missingReusedProfile) {
     setConfirmDialog({
@@ -4184,7 +4394,7 @@ export async function reuseConfig(task: TaskRecord, opts?: { editOnly?: boolean 
         void submitTask({ useCurrentApiProfileWhenReusedMissing: true, stylePreset: task.stylePreset, professionalPreset: task.professionalPreset, liveFrameCount: task.liveFrameCount })
       },
     })
-    return
+    return false
   }
 
   showToast(
@@ -4193,6 +4403,7 @@ export async function reuseConfig(task: TaskRecord, opts?: { editOnly?: boolean 
       : '已复用配置到输入框',
     'success',
   )
+  return true
 }
 
 /** 编辑输出：将输出图加入输入 */
@@ -4413,7 +4624,10 @@ async function removeTasks(taskIds: string[], updateState?: TaskDeletionStateUpd
     ...cleanup,
     updatedConversations: [...updatedConversations.values()],
   })
+  for (const task of deletedTasks) releaseTask(task.id)
+  notifyTaskChanges()
   await deleteUnreferencedImageIds(deletedImageIds)
+  for (const id of deletedImageIds) if (!isImageReferencedByState(useStore.getState(), id)) forgetPendingTaskImage(id)
   return deletedTasks.length
 }
 
@@ -4515,7 +4729,7 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
     return
   }
 
-  updateTaskInStore(task.id, {
+  const saved = await updateTaskInStore(task.id, {
     outputImages: outputIds,
     transparentOriginalImages: transparentOriginalImageIds,
     outputErrors: result.failedRequests?.length ? result.failedRequests : undefined,
@@ -4526,6 +4740,7 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
     ...createTaskDonePatch(task, Date.now()),
     customRecoverable: false,
   })
+  if (!saved) return
   useStore.getState().showToast(result.failedRequests?.length
     ? `自定义异步任务已恢复：成功 ${outputIds.length} 张，失败 ${result.failedRequests.length} 张`
     : `自定义异步任务已恢复，共 ${outputIds.length} 张图片`, result.failedRequests?.length ? 'error' : 'success')
@@ -4534,6 +4749,15 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
 }
 
 async function recoverCustomTask(taskId: string) {
+  if (ownsTask(taskId) || !await claimTask(taskId)) return
+  try {
+    await recoverCustomTaskOwned(taskId)
+  } finally {
+    releaseTask(taskId)
+  }
+}
+
+async function recoverCustomTaskOwned(taskId: string) {
   const { settings, tasks } = useStore.getState()
   const task = tasks.find((item) => item.id === taskId)
   if (!task || !task.customTaskId || task.status === 'done') return
@@ -4836,17 +5060,12 @@ export async function addImageFromFile(file: File): Promise<void> {
 export async function createInputImageFromFile(file: File): Promise<InputImage | null> {
   if (!file.type.startsWith('image/')) return null
   assertReferenceFileSize(file.size)
-  pendingInputImageUploads += 1
-  try {
-    const dataUrl = await fileToDataUrl(file)
-    const id = await storeImage(dataUrl, 'upload')
-    // 相同文件可能复用启动快照里的旧 hash；局部编辑器未入 store 也要保留。
-    for (const ids of initializationUploadedImageIds) ids.add(id)
-    cacheImage(id, dataUrl)
-    return { id, dataUrl }
-  } finally {
-    pendingInputImageUploads -= 1
-  }
+  const dataUrl = await fileToDataUrl(file)
+  const id = await storeImage(dataUrl, 'upload')
+  // 相同文件可能复用启动快照里的旧 hash；局部编辑器未入 store 也要保留。
+  for (const ids of initializationUploadedImageIds) ids.add(id)
+  cacheImage(id, dataUrl)
+  return { id, dataUrl }
 }
 
 /** 添加图片到输入（右键菜单）—— 支持 data/blob/http URL */

@@ -149,7 +149,6 @@ try {
     return config
   })
   addCredits(userId, 100)
-  vite = await createViteServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'spa', logLevel: 'error' })
   app = createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`)
     if (!url.pathname.startsWith('/api/')) return vite.middlewares(req, res)
@@ -161,6 +160,8 @@ try {
       sendError(res, err.status || 500, err.message, err.extra)
     }
   })
+  // 与当前审计的随机 HTTP 端口共用升级连接，避免多个 Vite 实例占用同一个 HMR 端口。
+  vite = await createViteServer({ root, server: { middlewareMode: true, hmr: { server: app } }, appType: 'spa', logLevel: 'error' })
   const baseUrl = await listen(app)
   browser = await launchChrome({ port: Number(process.env.AUDIT_CDP_PORT || 9438), baseUrl, onConsoleError: (line) => errors.push(line) })
   await browser.setViewport(1440, 1000)
@@ -284,7 +285,7 @@ try {
   await waitFor(`(async () => { const task = (await import('/src/store.ts')).useStore.getState().tasks[0]; return task.id !== ${JSON.stringify(result.task.id)} && task.status !== 'running' })()`)
   report('参考图使用一次 multipart 图片编辑请求生成 GIF', calls.length === 3 && calls[2].path.endsWith('/images/edits') && calls[2].image === await browser.evaluate('window.gifReferenceB64') && calls[2].fields.output_format === 'gif')
   report('第二份动图只追加一份成品积分', getBalance(userId) === 98 && getReserved(userId) === 0)
-  report('无前端控制台或本地上游异常', errors.length === 0, errors.join(' | '))
+  report('开发连接正常且无前端控制台或本地上游异常', vite.ws.clients.size > 0 && errors.length === 0, errors.join(' | ') || (vite.ws.clients.size ? '' : 'Vite WebSocket 未连接'))
   console.log(`原生 GIF 专项：${checked} 项检查，${failed} 项失败。截图：${output}`)
 } catch (err) {
   failed++

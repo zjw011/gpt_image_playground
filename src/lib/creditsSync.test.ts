@@ -85,4 +85,23 @@ describe('installCreditsSync 包装的 fetch', () => {
     await fetch('/api/version-check')
     expect(useCreditsStore.getState().view).toMatchObject({ balance: 44, totalOut: 6 })
   })
+
+  it('保留其他在途任务的预留并使用服务端累计消耗', async () => {
+    seedView(50)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { headers: {
+      'x-credits-balance': '44', 'x-credits-charged': '6', 'x-credits-reserved': '12',
+      'x-credits-available': '32', 'x-credits-total-out': '24',
+    } })))
+    installCreditsSync()
+    await fetch('/api/relay/channel/images/generations')
+    expect(useCreditsStore.getState().view).toMatchObject({ balance: 44, available: 32, reserved: 12, totalOut: 24 })
+  })
+
+  it('忽略第三方伪造的余额头', async () => {
+    seedView(50)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { headers: { 'x-credits-balance': '0' } })))
+    installCreditsSync()
+    await fetch('https://upstream.example/api/relay/channel/images/generations')
+    expect(useCreditsStore.getState().view?.balance).toBe(50)
+  })
 })

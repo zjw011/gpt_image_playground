@@ -5,6 +5,7 @@ import { ensureDefaultFavoriteCollection, normalizeFavoriteCollections, resolveD
 import { cleanStaleAgentInputDrafts, getPersistableAgentInputDrafts, isEmptyAgentInputDraft, normalizeAgentInputDraft, normalizeAgentInputDrafts, normalizeAgentInputDraftsByKey, saveGalleryInputDraft } from './inputDraftState'
 import { getPersistableAgentConversations, stripPersistedAgentConversations } from './agentResponseState'
 import { normalizeNativeGifParams } from './nativeGif'
+import type { PersistStorage } from 'zustand/middleware'
 
 export interface PersistedAppState {
   settings: AppSettings
@@ -89,6 +90,50 @@ function normalizeParams(value: unknown, fallback: TaskParams): TaskParams {
     frame_count: typeof value.frame_count === 'number' && Number.isFinite(value.frame_count) ? value.frame_count : fallback.frame_count,
     frame_duration_ms: typeof value.frame_duration_ms === 'number' && Number.isFinite(value.frame_duration_ms) ? value.frame_duration_ms : fallback.frame_duration_ms,
   })
+}
+
+export function createPersistedStateSelector() {
+  let previous: unknown[] | undefined
+  let result: PersistedAppState
+  return (state: PersistedStateSource, includeLegacyAgentConversations = false) => {
+    const inputs = [state.settings, state.previousPresetConfig, state.dismissedPresetProfileIds, state.dismissedPresetProviderIds,
+      state.params, state.prompt, state.inputImages, state.maskDraft, state.maskEditorImageId, state.dismissedCodexCliPrompts,
+      state.appMode, state.galleryInputDraft, state.agentConversations, state.activeAgentConversationId, state.agentInputDrafts,
+      state.agentSidebarCollapsed, state.agentAssetTab, state.agentAssetPanelCollapsed, state.favoriteCollections,
+      state.defaultFavoriteCollectionId, includeLegacyAgentConversations]
+    if (previous && inputs.every((value, idx) => value === previous![idx])) return result
+    previous = inputs
+    result = createPersistedState(state, includeLegacyAgentConversations)
+    return result
+  }
+}
+
+export function createSettingsStorage(): PersistStorage<unknown> | undefined {
+  try {
+    const storage = globalThis.localStorage
+    if (!storage) return undefined
+    let previous: { state: unknown; version?: number } | undefined
+    let previousName = ''
+    return {
+      getItem: (name) => {
+        const value = storage.getItem(name)
+        return value ? JSON.parse(value) : null
+      },
+      setItem: (name, value) => {
+        // 瞬时 UI 状态更新不需要重复序列化、同步写入同一份配置。
+        if (previous && name === previousName && previous.state === value.state && previous.version === value.version) return
+        storage.setItem(name, JSON.stringify(value))
+        previous = value
+        previousName = name
+      },
+      removeItem: (name) => {
+        storage.removeItem(name)
+        previous = undefined
+      },
+    }
+  } catch {
+    return undefined
+  }
 }
 
 export function createPersistedState(state: PersistedStateSource, includeLegacyAgentConversations = false): PersistedAppState {

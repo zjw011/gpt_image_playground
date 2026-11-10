@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { createServer, get } from 'node:http'
+import { brotliDecompressSync, gunzipSync } from 'node:zlib'
 
 import { serveStatic } from './staticFiles.mjs'
 
@@ -38,6 +40,33 @@ function createRes() {
 
 describe('serveStatic', () => {
   const root = createRoot()
+
+  it('压缩文本资源、尊重禁用编码，HEAD不发送正文', async () => {
+    const source = 'const message = "hello world"\n'.repeat(1000)
+    writeFileSync(join(root, 'large.js'), source)
+    const server = createServer((req, res) => serveStatic(res, root, '/large.js', { req }))
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      for (const [encoding, method] of [['br, gzip', 'GET'], ['gzip', 'GET'], ['br;q=0, gzip;q=0', 'GET'], ['br', 'HEAD']]) {
+        const result = await new Promise((resolve, reject) => {
+          get({ hostname: '127.0.0.1', port: server.address().port, method, headers: { 'Accept-Encoding': encoding } }, (res) => {
+            const chunks = []
+            res.on('data', (chunk) => chunks.push(chunk))
+            res.on('end', () => resolve({ headers: res.headers, body: Buffer.concat(chunks) }))
+          }).on('error', reject)
+        })
+        if (method === 'HEAD') { expect(result.body.length).toBe(0); continue }
+        const kind = result.headers['content-encoding']
+        const decoded = kind === 'br' ? brotliDecompressSync(result.body) : kind === 'gzip' ? gunzipSync(result.body) : result.body
+        expect(decoded.toString()).toBe(source)
+        if (kind) expect(result.body.length).toBeLessThan(source.length / 2)
+        else expect(encoding).toContain('q=0')
+        expect(result.headers.vary).toBe('Accept-Encoding')
+      }
+    } finally {
+      await new Promise((resolve) => server.close(resolve))
+    }
+  })
 
   it('serves an existing asset with its own mime type', () => {
     const res = createRes()

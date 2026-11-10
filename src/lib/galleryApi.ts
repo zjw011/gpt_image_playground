@@ -1,3 +1,4 @@
+import { fetchWithDeadline } from './requestDeadline'
 // 作品广场 API。浏览公开；发布/点赞/删除需要登录账号。
 
 export interface GalleryItem {
@@ -69,7 +70,7 @@ export function reportWorkComment(workId: string, commentId: string) {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetchWithDeadline(path, {
     headers: { 'Content-Type': 'application/json', ...(options.headers ?? {}) },
     ...options,
   })

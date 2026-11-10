@@ -262,7 +262,7 @@ describe('概览与持久化', () => {
     expect(listCards().total).toBe(2)
   })
 
-  it('清洗非法数据：重复码与空码被丢弃，非法状态退回未使用', () => {
+  it('卡密结构损坏时拒绝启动，不能把未知状态重置成可再次兑换', () => {
     const dir = freshDir()
     const { writeFileSync } = require('node:fs')
     writeFileSync(join(dir, 'cards.json'), JSON.stringify({
@@ -275,10 +275,6 @@ describe('概览与持久化', () => {
       ],
     }), 'utf-8')
 
-    initCards(dir)
-    const cards = listCards().cards
-    expect(cards).toHaveLength(2)
-    expect(cards.every((card) => card.status === 'unused')).toBe(true)
-    expect(cards.find((card) => card.code.endsWith('BBBB')).credits).toBe(0)
+    expect(() => initCards(dir)).toThrow('卡密库损坏')
   })
 })

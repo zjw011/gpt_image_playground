@@ -4,6 +4,7 @@ import {
   getImageThumbnail,
   getStoredFreshImageThumbnail,
 } from './db'
+import { getPendingTaskImage } from './pendingTaskImages'
 
 type ImageThumbnail = {
   dataUrl: string
@@ -83,6 +84,8 @@ export function clearImageCaches() {
 }
 
 export async function ensureImageCached(id: string): Promise<string | undefined> {
+  const pending = getPendingTaskImage(id)
+  if (pending) return pending.dataUrl
   const cached = getCachedImage(id)
   if (cached) return cached
   const rec = await getImage(id)
@@ -153,25 +156,18 @@ function scheduleThumbnailBackfillTick() {
 
 async function processNextThumbnailBackfill() {
   if (thumbnailBackfillRunningIds.size > 0) return
-
-  const ids = await getNextThumbnailBackfillBatch()
-  for (const id of ids) void startThumbnailBackfill(id)
-
-  if (thumbnailBackfillIds.size > 0) scheduleThumbnailBackfillTick()
-}
-
-async function getNextThumbnailBackfillBatch() {
-  const candidates = getOrderedThumbnailBackfillIds().slice(0, MAX_THUMBNAIL_BACKFILL_CONCURRENT)
-  if (candidates.length === 0) return []
-
-  const sizes = await Promise.all(candidates.map(async (id) => {
-    const image = await getImage(id)
-    return { width: image?.width, height: image?.height }
-  }))
-  const concurrency = getThumbnailConcurrencyForBatch(sizes)
-  const selected = candidates.slice(0, concurrency)
-  for (const id of selected) thumbnailBackfillIds.delete(id)
-  return selected
+  const ids = getOrderedThumbnailBackfillIds().slice(0, MAX_THUMBNAIL_BACKFILL_CONCURRENT)
+  for (const id of ids) {
+    thumbnailBackfillIds.delete(id)
+    thumbnailBackfillRunningIds.add(id)
+  }
+  // 先读小缩略图；只让确实过期的原图逐张解码，避免为估算并发反复读取大图。
+  const stored = await Promise.allSettled(ids.map((id) => getStoredFreshImageThumbnail(id)))
+  for (let idx = 0; idx < ids.length; idx++) {
+    const result = stored[idx]
+    await startThumbnailBackfill(ids[idx], result.status === 'fulfilled' ? result.value : undefined)
+  }
+  scheduleThumbnailBackfillTick()
 }
 
 function getOrderedThumbnailBackfillIds() {
@@ -184,25 +180,13 @@ function getOrderedThumbnailBackfillIds() {
   return [...visible, ...background]
 }
 
-function getThumbnailConcurrencyForBatch(sizes: Array<{ width?: number; height?: number }>) {
-  let maxMegapixels = 0
-  for (const { width, height } of sizes) {
-    if (!width || !height) return 1
-    maxMegapixels = Math.max(maxMegapixels, (width * height) / 1_000_000)
-  }
-  if (maxMegapixels >= 8) return 1
-  if (maxMegapixels >= 4) return 2
-  if (maxMegapixels >= 2) return 3
-  return 4
-}
-
-async function startThumbnailBackfill(id: string) {
+async function startThumbnailBackfill(id: string, stored?: Awaited<ReturnType<typeof getStoredFreshImageThumbnail>>) {
   thumbnailBackfillRunningIds.add(id)
 
   try {
     if (getCachedThumbnail(id)) return
 
-    const thumbnail = await getImageThumbnail(id)
+    const thumbnail = stored ?? await getImageThumbnail(id)
     if (thumbnail?.thumbnailDataUrl) {
       cacheThumbnail(id, {
         dataUrl: thumbnail.thumbnailDataUrl,

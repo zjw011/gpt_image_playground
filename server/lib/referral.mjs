@@ -51,9 +51,9 @@ export function resolveInviter(ref) {
 export function maybeRewardInviter(userId) {
   const config = getConfig()
   const site = config.site
-  if (!site.referralEnabled) return { rewarded: false, reason: 'disabled' }
-
   const invitee = config.users.find((user) => user.id === userId)
+  if (invitee?.inviteRewardPending) return finishReward(invitee)
+  if (!site.referralEnabled) return { rewarded: false, reason: 'disabled' }
   if (!invitee || !invitee.invitedBy || invitee.inviteRewarded) return { rewarded: false, reason: 'no-invite' }
 
   const inviter = config.users.find((user) => user.id === invitee.invitedBy)
@@ -65,22 +65,42 @@ export function maybeRewardInviter(userId) {
   // 邀请人的奖励次数上限（0 = 不限）
   const maxInvites = Math.max(0, Math.trunc(site.referralMaxInvites))
   if (maxInvites > 0) {
-    const rewardedCount = config.users.filter((user) => user.invitedBy === inviter.id && user.inviteRewarded).length
+    const rewardedCount = config.users.filter((user) => user.invitedBy === inviter.id && (user.inviteRewarded || user.inviteRewardPending)).length
     if (rewardedCount >= maxInvites) return { rewarded: false, reason: 'cap-reached' }
   }
 
-  // 先标记再发钱：万一发奖过程中进程挂掉，宁可不发也不能重复发。
+  // 固定本次应发金额和收款人，重启后即使配置变化也按原交易补偿。
   updateConfig((next) => {
     const target = next.users.find((user) => user.id === invitee.id)
-    if (target) target.inviteRewarded = true
+    if (target) target.inviteRewardPending = { inviterId: inviter.id, reward }
     return next
   })
-  addCredits(inviter.id, reward, {
+  return finishReward(getConfig().users.find((user) => user.id === invitee.id))
+}
+
+function finishReward(invitee) {
+  const pending = invitee.inviteRewardPending
+  addCredits(pending.inviterId, pending.reward, {
     type: 'referral',
     ref: invitee.id,
+    operationId: `referral:${invitee.id}`,
     note: `邀请「${invitee.displayName || invitee.username}」首图奖励`,
   })
-  return { rewarded: true, reward, inviterId: inviter.id }
+  updateConfig((next) => {
+    const target = next.users.find((user) => user.id === invitee.id)
+    if (target) {
+      target.inviteRewarded = true
+      target.inviteRewardPending = null
+    }
+    return next
+  })
+  return { rewarded: true, reward: pending.reward, inviterId: pending.inviterId }
+}
+
+export function recoverReferralRewards() {
+  for (const user of getConfig().users) {
+    if (user.inviteRewardPending) finishReward(user)
+  }
 }
 
 /** 邀请人的战果统计，给个人中心展示用。 */

@@ -86,6 +86,7 @@ function WorkCard({ task, streamPreview }: { task: TaskRecord, streamPreview?: s
           <IconStar className="h-3.5 w-3.5 text-[#f0b429]" filled />
         </span>
       )}
+      {task.saveError && <span className="absolute left-2 top-2 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">待保存 · 点击处理</span>}
       {!running && task.status === 'error' && <span className="absolute bottom-2 left-2 rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-500">生成失败 · 查看并重试</span>}
       {task.quickMotion && task.status === 'done' && <span className="absolute bottom-2 left-2 rounded-full bg-[#6b5ce7]/90 px-3 py-1 text-[11px] font-semibold text-white shadow-sm">运镜 · {task.quickMotion.duration} 秒</span>}
       {isNativeGifTask(task) && task.status === 'done' && <span className="absolute bottom-2 left-2 rounded-full bg-[#6b5ce7]/90 px-3 py-1 text-[11px] font-semibold text-white shadow-sm">GIF 动图 · 点击播放</span>}

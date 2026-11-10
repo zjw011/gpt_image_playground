@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS, type TaskRecord } from '../../types'
-import { reuseConfig, submitTask } from '../../store'
+import { reuseConfig, submitTask, retryTaskDownload, retryTaskSave } from '../../store'
 import { exportQuickMotion } from '../../lib/quickMotion'
 import { exportLiveFrames } from '../../lib/livePhoto'
 import ResultPage from './ResultPage'
@@ -32,6 +32,8 @@ vi.mock('../../store', () => ({
   submitTask: vi.fn(),
   reuseConfig: vi.fn(),
   removeTask: vi.fn(),
+  retryTaskSave: vi.fn(),
+  retryTaskDownload: vi.fn(),
 }))
 
 vi.mock('./AppShell', () => ({
@@ -92,7 +94,9 @@ describe('ResultPage', () => {
     state.toast.mockReset()
     vi.mocked(exportQuickMotion).mockReset()
     vi.mocked(exportLiveFrames).mockReset()
-    vi.mocked(reuseConfig).mockClear()
+    vi.mocked(reuseConfig).mockReset().mockResolvedValue(true)
+    vi.mocked(retryTaskSave).mockReset().mockResolvedValue(true)
+    vi.mocked(retryTaskDownload).mockReset().mockResolvedValue(true)
     vi.mocked(submitTask).mockClear()
     container = document.createElement('div')
     document.body.append(container)
@@ -145,6 +149,40 @@ describe('ResultPage', () => {
     expect(reuseConfig).toHaveBeenCalledWith(state.tasks[0], undefined)
     expect(submitTask).toHaveBeenCalledOnce()
     expect(container.querySelector('output')?.textContent).toBe('/result?task=partial-task')
+  })
+
+  it('保存失败展示保留原图提示并仅补写保存', async () => {
+    state.tasks = [task({ saveError: 'disk full' })]
+    state.fullSrc = 'data:image/png;base64,original'
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('暂勿关闭本页')
+    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '重试保存')?.click())
+    expect(retryTaskSave).toHaveBeenCalledWith('partial-task')
+    expect(submitTask).not.toHaveBeenCalled()
+  })
+
+  it('结果链接失败提供只下载按钮，双击只下载一次', async () => {
+    state.tasks = [task({ status: 'error', outputImages: [], rawImageUrls: ['https://example.test/result.png'], error: '图片下载失败' })]
+    let finish!: (value: boolean) => void
+    vi.mocked(retryTaskDownload).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    const button = Array.from(container.querySelectorAll('button')).find((item) => item.textContent === '仅重试下载')!
+    await act(async () => {
+      button.click()
+      button.click()
+    })
+    expect(retryTaskDownload).toHaveBeenCalledOnce()
+    expect(submitTask).not.toHaveBeenCalled()
+    await act(async () => finish(true))
+  })
+
+  it('缺失参考素材时不会继续自动提交', async () => {
+    state.tasks = [task({ status: 'error', outputImages: [], error: '生成请求中断' })]
+    vi.mocked(reuseConfig).mockResolvedValueOnce(false)
+    await act(async () => root.render(<MemoryRouter><ResultPage /></MemoryRouter>))
+    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '重新生成')?.click())
+    expect(reuseConfig).toHaveBeenCalledOnce()
+    expect(submitTask).not.toHaveBeenCalled()
   })
 
   it.each(['falRecoverable', 'customRecoverable'] as const)('%s 查询恢复期间不展示终态失败或重复生成入口', async (flag) => {

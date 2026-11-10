@@ -121,11 +121,11 @@ export function destroySessionsByRoleExcept(role, keepToken) {
 }
 
 /** 某个用户被停用、改密码或删除时，踢掉他所有设备上的会话。 */
-export function destroySessionsByUser(userId) {
+export function destroySessionsByUser(userId, keepToken) {
   if (!userId) return
   let changed = false
   for (const [token, session] of sessions) {
-    if (session.userId === userId) {
+    if (session.userId === userId && token !== keepToken) {
       sessions.delete(token)
       changed = true
     }

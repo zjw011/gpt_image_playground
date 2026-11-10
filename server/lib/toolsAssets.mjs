@@ -1,82 +1,113 @@
-// 专业工具参考图代理：浏览器同源拉图，避免跨域 CDN 无法 fetch 进 IndexedDB。
-import { sendError, sendText } from './http.mjs'
+// 专业工具参考图代理：只允许已知素材站的栅格图片，不能变成同源网页代理。
+import { HttpError, sendError } from './http.mjs'
 
-const DEFAULT_CDN = 'https://ai-pose-gallery.anhao.app'
-const ASSET_CDN = (process.env.TOOLS_GALLERY_ASSET_BASE || DEFAULT_CDN).replace(/\/$/, '')
-
+function assetCdn() {
+  return (process.env.TOOLS_GALLERY_ASSET_BASE || 'https://ai-pose-gallery.anhao.app').replace(/\/$/, '')
+}
 const ALLOWED_FETCH_HOSTS = new Set([
-  'ai-pose-gallery.anhao.app',
-  'ai-costume-gallery.pages.dev',
-  'ai-costume-anime-gallery.pages.dev',
-  'ai-portrait-gallery.pages.dev',
-  'charadb-2fi.pages.dev',
-  'github.com',
-  'raw.githubusercontent.com',
+  'ai-pose-gallery.anhao.app', 'ai-costume-gallery.pages.dev',
+  'ai-costume-anime-gallery.pages.dev', 'ai-portrait-gallery.pages.dev',
+  'charadb-2fi.pages.dev', 'github.com', 'raw.githubusercontent.com',
 ])
+const MAX_ASSET_BYTES = 32 * 1024 * 1024
+const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif'])
+let activeDownloads = 0
 
-function isAllowedHost(hostname) {
-  if (ALLOWED_FETCH_HOSTS.has(hostname)) return true
-  // 允许用户自建镜像子域
-  return hostname.endsWith('.anhao.app') || hostname.endsWith('.pages.dev')
+function validateTarget(url) {
+  const configured = new URL(assetCdn())
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new HttpError(400, '素材地址无效')
+  // 自建镜像必须由管理员明确配置，不信任共享托管平台上的任意租户。
+  if (url.origin !== configured.origin && (!ALLOWED_FETCH_HOSTS.has(url.hostname) || url.port)) throw new HttpError(403, '该素材域名未获授权')
 }
 
-async function proxyResponse(res, upstreamUrl) {
-  const upstream = await fetch(upstreamUrl, {
-    headers: { 'User-Agent': 'gpt-image-playground-tools-proxy/1.0' },
-    redirect: 'follow',
-  })
-  if (!upstream.ok) {
-    return sendText(res, upstream.status, `上游素材请求失败：HTTP ${upstream.status}`)
-  }
-  const contentType = upstream.headers.get('content-type') || 'application/octet-stream'
-  const buffer = Buffer.from(await upstream.arrayBuffer())
-  res.writeHead(200, {
-    'Content-Type': contentType,
-    'Content-Length': buffer.length,
-    'Cache-Control': 'public, max-age=86400',
-    'Access-Control-Allow-Origin': '*',
-  })
-  res.end(buffer)
-}
-
-/** /tools-assets/* → CDN 镜像 */
-export async function handleToolsAssets(req, res, path) {
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    return sendError(res, 405, '方法不允许')
-  }
-  const rel = path.replace(/^\/tools-assets\/?/, '')
-  if (!rel || rel.includes('..')) return sendError(res, 400, '非法路径')
+async function proxyResponse(req, res, target) {
+  validateTarget(target)
+  if (activeDownloads >= 8) throw new HttpError(429, '素材下载繁忙，请稍后重试')
+  activeDownloads += 1
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 30_000)
+  timer.unref?.()
+  const cancel = () => { if (!res.writableEnded) controller.abort() }
+  res.once('close', cancel)
   try {
-    return await proxyResponse(res, `${ASSET_CDN}/${rel}`)
-  } catch (err) {
-    console.error('tools-assets 代理失败：', err)
-    return sendError(res, 502, err instanceof Error ? err.message : '素材代理失败')
+    let upstream
+    let url = target
+    for (let redirects = 0; redirects <= 4; redirects += 1) {
+      validateTarget(url)
+      upstream = await fetch(url, {
+        method: req.method,
+        headers: { 'User-Agent': 'gpt-image-playground-tools-proxy/1.0' },
+        redirect: 'manual', signal: controller.signal,
+      })
+      if (![301, 302, 303, 307, 308].includes(upstream.status)) break
+      await upstream.body?.cancel()
+      const location = upstream.headers.get('location')
+      if (!location || redirects === 4) throw new HttpError(502, '素材重定向次数过多或地址缺失')
+      url = new URL(location, url)
+    }
+    if (!upstream.ok) {
+      await upstream.body?.cancel()
+      throw new HttpError(502, `上游素材请求失败：HTTP ${upstream.status}`)
+    }
+    const contentType = (upstream.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
+    if (!IMAGE_TYPES.has(contentType)) {
+      await upstream.body?.cancel()
+      throw new HttpError(415, '素材代理仅支持 PNG、JPEG、WebP、GIF 和 AVIF 图片')
+    }
+    if (Number(upstream.headers.get('content-length')) > MAX_ASSET_BYTES) {
+      await upstream.body?.cancel()
+      throw new HttpError(413, '素材图片超过 32MB 限制')
+    }
+    const chunks = []
+    let size = 0
+    if (req.method !== 'HEAD' && upstream.body) {
+      for await (const value of upstream.body) {
+        size += value.byteLength
+        if (size > MAX_ASSET_BYTES) throw new HttpError(413, '素材图片超过 32MB 限制')
+        chunks.push(Buffer.from(value))
+      }
+    }
+    if (res.destroyed) return
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      ...(req.method === 'HEAD' ? {} : { 'Content-Length': size }),
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "default-src 'none'; sandbox",
+      'Cache-Control': 'public, max-age=86400',
+    })
+    res.end(req.method === 'HEAD' ? undefined : Buffer.concat(chunks, size))
+  } finally {
+    controller.abort()
+    clearTimeout(timer)
+    res.off('close', cancel)
+    activeDownloads -= 1
   }
 }
 
-/** /api/tools-fetch?url= → 白名单外链图片 */
-export async function handleToolsFetch(req, res, search) {
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    return sendError(res, 405, '方法不允许')
+export async function handleToolsAssets(req, res, path) {
+  if (!['GET', 'HEAD'].includes(req.method)) return sendError(res, 405, '方法不允许')
+  const rel = path.replace(/^\/tools-assets\/?/, '')
+  if (!rel || /\.\.|%2e|%2f|%5c|\\/i.test(rel)) return sendError(res, 400, '非法路径')
+  try {
+    return await proxyResponse(req, res, new URL(`${assetCdn()}/${rel}`))
+  } catch (err) {
+    if (res.destroyed) return
+    return sendError(res, err instanceof HttpError ? err.status : 502, err instanceof HttpError ? err.message : '素材下载超时或失败')
   }
-  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search)
-  const raw = params.get('url') || ''
+}
+
+export async function handleToolsFetch(req, res, search) {
+  if (!['GET', 'HEAD'].includes(req.method)) return sendError(res, 405, '方法不允许')
   let target
   try {
-    target = new URL(raw)
+    target = new URL(new URLSearchParams(search).get('url') || '')
   } catch {
     return sendError(res, 400, 'url 无效')
   }
-  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
-    return sendError(res, 400, '仅允许 http/https')
-  }
-  if (!isAllowedHost(target.hostname)) {
-    return sendError(res, 403, `不允许代理该域名：${target.hostname}`)
-  }
   try {
-    return await proxyResponse(res, target.toString())
+    return await proxyResponse(req, res, target)
   } catch (err) {
-    console.error('tools-fetch 代理失败：', err)
-    return sendError(res, 502, err instanceof Error ? err.message : '素材代理失败')
+    if (res.destroyed) return
+    return sendError(res, err instanceof HttpError ? err.status : 502, err instanceof HttpError ? err.message : '素材下载超时或失败')
   }
 }

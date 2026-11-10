@@ -64,6 +64,8 @@ export default function StudioPage() {
     setTab(MODES.some((mode) => mode.key === requestedMode) ? requestedMode as TabKey : 'text')
   }, [requestedMode])
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const submittingRef = useRef(false)
+  const [submitting, setSubmitting] = useState(false)
 
   const credits = getCreditsConfig()
   const view = useCreditsStore((s) => s.view)
@@ -84,6 +86,7 @@ export default function StudioPage() {
   }
 
   const generate = async () => {
+    if (submittingRef.current) return
     if (!prompt.trim()) {
       showToast('先描述一下你想画的画面', 'error')
       return
@@ -95,8 +98,15 @@ export default function StudioPage() {
     if (tab === 'outpaint' && !prompt.includes(OUTPAINT_SUFFIX)) {
       setPrompt(prompt.trim() ? `${prompt.trim()}，${OUTPAINT_SUFFIX}` : OUTPAINT_SUFFIX)
     }
-    if (!await submitTask({ stylePreset: selectedStyle ?? undefined })) return
-    navigate('/result')
+    submittingRef.current = true
+    setSubmitting(true)
+    try {
+      if (!await submitTask({ stylePreset: selectedStyle ?? undefined })) return
+      navigate('/result')
+    } finally {
+      submittingRef.current = false
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -163,8 +173,8 @@ export default function StudioPage() {
               </button>
               {inputImages.length > 0 && <button type="button" onClick={clearInputImages} className="rounded-lg px-2 py-2 text-xs text-[#918cae] hover:text-red-500">清除参考图</button>}
               <span className="ml-auto text-[11px] text-[#aaa5bf]">已输入 {prompt.length.toLocaleString()} 字</span>
-              <button type="button" onClick={() => void generate()} className="hidden min-w-[150px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#7462f3] to-[#9b76f6] px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-[#7867f5]/25 transition hover:from-[#6653e8] hover:to-[#8f69ed] sm:flex">
-                <IconSparkle className="h-4 w-4" />生成{credits ? ` · ${cost} 积分` : ''}
+              <button type="button" onClick={() => void generate()} disabled={submitting} aria-busy={submitting} className="hidden min-w-[150px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#7462f3] to-[#9b76f6] px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-[#7867f5]/25 transition hover:from-[#6653e8] hover:to-[#8f69ed] sm:flex">
+                <IconSparkle className="h-4 w-4" />{submitting ? '提交中…' : '生成'}{credits ? ` · ${cost} 积分` : ''}
               </button>
               <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => { void pickFiles(event.target.files); event.target.value = '' }} />
             </div>
@@ -229,7 +239,7 @@ export default function StudioPage() {
             </div>
             {credits && <p className="ml-auto text-[11px] text-[#aaa5bf]">剩余 {view?.available ?? 0} 积分 · 失败自动退分</p>}
           </div>
-          <button type="button" onClick={() => void generate()} className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#7462f3] to-[#9b76f6] px-4 text-sm font-semibold text-white shadow-lg shadow-[#7867f5]/25 sm:hidden"><IconSparkle className="h-4 w-4" />立即生成{credits ? ` · ${cost} 积分` : ''}</button>
+          <button type="button" onClick={() => void generate()} disabled={submitting} aria-busy={submitting} className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#7462f3] to-[#9b76f6] px-4 text-sm font-semibold text-white shadow-lg shadow-[#7867f5]/25 sm:hidden"><IconSparkle className="h-4 w-4" />{submitting ? '提交中…' : '立即生成'}{credits ? ` · ${cost} 积分` : ''}</button>
         </div>
       </div>
 

@@ -1,6 +1,7 @@
 // 注册 URL 会带 package.json 版本；升级时浏览器会安装新 worker，并清掉旧缓存。
 const VERSION = new URL(self.location.href).searchParams.get('v') || 'dev'
-const CACHE_NAME = `gpt-image-playground-v${VERSION}`
+const CACHE_PREFIX = `gpt-image-playground:${self.registration.scope}:v`
+const CACHE_NAME = `${CACHE_PREFIX}${VERSION}`
 const APP_SHELL = [
   './',
   './index.html',
@@ -24,7 +25,7 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))),
+      Promise.all(keys.filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME).map((key) => caches.delete(key))),
     ),
   )
   self.clients.claim()
@@ -42,11 +43,14 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone()
-          caches.open(CACHE_NAME).then((cache) => cache.put('./index.html', copy))
+          // 维护页、错误响应和跳转后的登录页不能覆盖可离线使用的应用入口。
+          if (response.ok && !response.redirected && (response.headers.get('content-type') || '').includes('text/html')) {
+            const copy = response.clone()
+            event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put('./index.html', copy)).catch(() => {}))
+          }
           return response
         })
-        .catch(() => caches.match('./index.html')),
+        .catch(() => caches.open(CACHE_NAME).then(async (cache) => (await cache.match('./index.html')) || Response.error())),
     )
     return
   }
@@ -55,13 +59,13 @@ self.addEventListener('fetch', (event) => {
   if (!isAppShell && !url.pathname.startsWith(ASSETS_PATH)) return
 
   event.respondWith(
-    caches.match(request, { ignoreSearch: isAppShell }).then((cached) => {
+    caches.open(CACHE_NAME).then((cache) => cache.match(request, { ignoreSearch: isAppShell })).then((cached) => {
       if (cached) return cached
 
       return fetch(request).then((response) => {
         if (response.ok) {
           const copy = response.clone()
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy))
+          event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => {}))
         }
         return response
       })

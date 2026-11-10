@@ -140,7 +140,7 @@ describe('imageCache', () => {
     await vi.advanceTimersByTimeAsync(250)
     await vi.waitFor(() => expect(db.getImageThumbnail).toHaveBeenCalledTimes(2))
 
-    expect(db.getImage.mock.calls.map(([id]) => id)).toEqual(['visible', 'background'])
+    expect(db.getImage).not.toHaveBeenCalled()
     expect(db.getImageThumbnail.mock.calls.map(([id]) => id)).toEqual(['visible', 'background'])
     expect(onThumbnail).toHaveBeenCalledWith({
       dataUrl: 'visible-thumbnail',
@@ -167,5 +167,15 @@ describe('imageCache', () => {
     scheduleThumbnailBackfill(['image'])
     await vi.advanceTimersByTimeAsync(250)
     await vi.waitFor(() => expect(db.getImageThumbnail).toHaveBeenCalledTimes(2))
+  })
+
+  it('does not read originals when all 100 thumbnails are current', async () => {
+    vi.useFakeTimers()
+    db.getStoredFreshImageThumbnail.mockResolvedValue({ thumbnailDataUrl: 'fresh', thumbnailVersion: db.CURRENT_THUMBNAIL_VERSION })
+    scheduleThumbnailBackfill(Array.from({ length: 100 }, (_, idx) => `fresh-${idx}`))
+    await vi.runAllTimersAsync()
+    expect(db.getStoredFreshImageThumbnail).toHaveBeenCalledTimes(100)
+    expect(db.getImage).not.toHaveBeenCalled()
+    expect(db.getImageThumbnail).not.toHaveBeenCalled()
   })
 })

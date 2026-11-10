@@ -108,7 +108,11 @@ export function parseCookies(header) {
     if (idx < 0) continue
     const name = part.slice(0, idx).trim()
     if (!name) continue
-    cookies[name] = decodeURIComponent(part.slice(idx + 1).trim())
+    try {
+      cookies[name] = decodeURIComponent(part.slice(idx + 1).trim())
+    } catch {
+      // 忽略单个损坏的 cookie，不能让一个百分号编码终止整个 HTTP 服务。
+    }
   }
   return cookies
 }

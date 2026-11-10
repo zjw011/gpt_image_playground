@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { AgentConversation, AppSettings, FavoriteCollection } from '../types'
 import { DEFAULT_PARAMS } from '../types'
 import { DEFAULT_SETTINGS } from './apiProfiles'
 import { DEFAULT_FAVORITE_COLLECTION_ID } from './favoriteState'
-import { createPersistedState, mergePersistedAgentConversations, migratePersistedState, normalizePersistedState } from './persistedState'
+import { createSettingsStorage, createPersistedStateSelector, createPersistedState, mergePersistedAgentConversations, migratePersistedState, normalizePersistedState } from './persistedState'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,image-a' }
 const collectionA: FavoriteCollection = { id: 'collection-a', name: '收藏夹 A', createdAt: 1, updatedAt: 1 }
@@ -53,6 +53,29 @@ function fallback() {
     defaultFavoriteCollectionId: collectionA.id,
   }
 }
+
+it('瞬时状态不重建持久化数据、不重复写入，设置变化仍保存', () => {
+  const state = source()
+  const select = createPersistedStateSelector()
+  const first = select(state)
+  const storage = { setItem: vi.fn(), getItem: vi.fn(), removeItem: vi.fn() }
+  vi.stubGlobal('localStorage', storage)
+  try {
+    const writer = createSettingsStorage()!
+    writer.setItem('settings', { state: first, version: 3 })
+    const transient = { ...state, toast: 'hello' }
+    const second = select(transient)
+    expect(second).toBe(first)
+    writer.setItem('settings', { state: second, version: 3 })
+    expect(storage.setItem).toHaveBeenCalledOnce()
+    const updated = select({ ...state, prompt: '新描述' })
+    expect(updated).not.toBe(first)
+    writer.setItem('settings', { state: updated, version: 3 })
+    expect(storage.setItem).toHaveBeenCalledTimes(2)
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
 
 describe('persisted state codec', () => {
   it('原生 GIF 配置重载后保留格式、帧数和播放速度', () => {

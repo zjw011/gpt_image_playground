@@ -17,6 +17,7 @@ const HTML_PATTERN = /<\s*\/?\s*[a-z][^>]*>/i
 
 let commentsFile = ''
 let comments = []
+let committedComments = []
 let byId = new Map()
 let visibleCountByWork = new Map()
 const commentLog = new Map()
@@ -59,16 +60,30 @@ function index() {
 }
 
 function commit() {
-  writeDurableJson(commentsFile, { version: 1, comments })
+  try {
+    writeDurableJson(commentsFile, { version: 1, comments })
+    committedComments = structuredClone(comments)
+  } catch (err) {
+    comments = structuredClone(committedComments)
+    index()
+    throw err
+  }
 }
 
 export function initGalleryComments(dir) {
   commentsFile = join(dir, 'gallery-comments.json')
-  if (existsSync(commentsFile)) {
-    const loaded = readDurableJson(commentsFile, '作品广场评论').value
-    comments = Array.isArray(loaded.comments)
-      ? loaded.comments.map(normalizeComment).filter(Boolean).slice(-MAX_COMMENTS)
-      : []
+  if (existsSync(commentsFile) || existsSync(`${commentsFile}.bak`)) {
+    const loaded = readDurableJson(commentsFile, '作品广场评论', (value) => {
+      if (!isRecord(value) || !Array.isArray(value.comments)) return false
+      const ids = new Set()
+      return value.comments.every((comment) => {
+        if (!normalizeComment(comment) || ids.has(comment.id) || (comment.reports !== undefined && !Array.isArray(comment.reports))) return false
+        ids.add(comment.id)
+        return true
+      })
+    }).value
+    comments = loaded.comments.map(normalizeComment)
+    committedComments = structuredClone(comments)
   } else {
     comments = []
     commit()

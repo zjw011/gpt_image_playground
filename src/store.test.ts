@@ -9,6 +9,10 @@ import { deleteAgentRoundFromConversation, getActiveAgentRounds, getAgentConvers
 import { cleanStaleAgentInputDrafts } from './lib/inputDraftState'
 import { normalizePersistedState } from './lib/persistedState'
 import { setBackendManagedMode, setPresetConfig } from './lib/presetConfig'
+import { clearChannelFailure } from './lib/failover'
+import { getPendingTaskImage } from './lib/pendingTaskImages'
+import * as imageApiShared from './lib/imageApiShared'
+import { retryTaskSave, retryTaskDownload, updateTaskInStore } from './store'
 vi.mock('./lib/livePhoto', async () => {
   const actual = await vi.importActual<typeof import('./lib/livePhoto')>('./lib/livePhoto')
   return { ...actual, preloadLiveFrames: vi.fn(async () => [{ naturalWidth: 1024, naturalHeight: 1024 } as HTMLImageElement]) }
@@ -151,6 +155,10 @@ const callBatchImageSingleImplementation = vi.mocked(callBatchImageSingle).getMo
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
+
+afterEach(() => {
+  for (const profile of useStore.getState().settings.profiles) clearChannelFailure(profile)
+})
 
 describe('error toast messages', () => {
   it('drops long error detail after the failure title', () => {
@@ -826,7 +834,8 @@ describe('startup image and draft hydration races', () => {
     expect(await getImage(product!.id)).toMatchObject(product!)
     expect(deleteDbImage).not.toHaveBeenCalledWith(person!.id)
     expect(deleteDbImage).not.toHaveBeenCalledWith(product!.id)
-    expect(await getImage('old-orphan')).toBeUndefined()
+    // 另一标签页的未提交编辑器也可能持有旧图片，启动时保守保留。
+    expect(await getImage('old-orphan')).toBeDefined()
   })
 
   it('keeps a component-local upload that deduplicates to an old unreferenced hash', async () => {
@@ -6275,10 +6284,103 @@ describe('channel failover', () => {
     vi.mocked(callImageApi).mockResolvedValueOnce({ images: ['data:image/png;base64,1024x1024'], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
     vi.spyOn(db, 'storeImageWithSize').mockRejectedValueOnce(new Error('IndexedDB 空间不足'))
     await submitTask()
-    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.saveError).toBeTruthy())
     expect(callImageApi).toHaveBeenCalledTimes(1)
-    expect(useStore.getState().tasks[0].error).toBe('图片已生成，但保存到浏览器失败：IndexedDB 空间不足')
+    const result = useStore.getState().tasks[0]
+    expect(result.status).toBe('done')
+    expect(result.saveError).toContain('未能保存原图')
+    expect(getPendingTaskImage(result.outputImages[0])?.dataUrl).toBe('data:image/png;base64,1024x1024')
+    expect(await retryTaskSave(result.id)).toBe(true)
+    expect(useStore.getState().tasks[0].saveError).toBeUndefined()
+    expect(await getImage(result.outputImages[0])).toMatchObject({ dataUrl: 'data:image/png;base64,1024x1024' })
+    expect(getPendingTaskImage(result.outputImages[0])).toBeUndefined()
+    expect(callImageApi).toHaveBeenCalledTimes(1)
     expect(useStore.getState().tasks[0].failoverAttempts).toBeUndefined()
+  })
+
+  it('等待最终元数据事务完成后才显示任务完成，保存失败可原样重试', async () => {
+    const gate = deferred<IDBValidKey>()
+    const original = db.putTask
+    vi.spyOn(db, 'putTask').mockImplementation((item) => item.status === 'done' ? gate.promise : original(item))
+    vi.mocked(callImageApi).mockResolvedValueOnce({ images: ['data:image/png;base64,1024x1024'] })
+    await submitTask()
+    await vi.waitFor(() => expect(db.putTask).toHaveBeenCalledWith(expect.objectContaining({ status: 'done' })))
+    expect(useStore.getState().tasks[0].status).toBe('running')
+    gate.reject(new Error('transaction aborted'))
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].saveError).toBe('transaction aborted'))
+    expect(useStore.getState().tasks[0].outputImages).toHaveLength(1)
+    vi.mocked(db.putTask).mockImplementation(original)
+    expect(await retryTaskSave(useStore.getState().tasks[0].id)).toBe(true)
+    expect(callImageApi).toHaveBeenCalledOnce()
+  })
+
+  it('提交阶段连续点击只创建一项任务', async () => {
+    const gate = deferred<IDBValidKey>()
+    vi.spyOn(db, 'putTask').mockImplementationOnce(() => gate.promise)
+    const first = submitTask()
+    const second = submitTask()
+    expect(await second).toBe(false)
+    gate.resolve('stored')
+    expect(await first).toBe(true)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+    expect(useStore.getState().tasks).toHaveLength(1)
+    expect(callImageApi).toHaveBeenCalledOnce()
+  })
+
+  it('迟到的进度写入不能覆盖完成状态，删除也等待在途写入', async () => {
+    const source = task({ status: 'running', outputImages: [] })
+    useStore.setState({ tasks: [source] })
+    await putDbTask(source)
+    const gate = deferred<void>()
+    const original = db.putTask
+    vi.spyOn(db, 'putTask').mockImplementationOnce(async (item) => {
+      await gate.promise
+      return original(item)
+    })
+    const progress = updateTaskInStore(source.id, { liveFramesCompleted: 1 })
+    const completion = updateTaskInStore(source.id, { status: 'done' })
+    await vi.waitFor(() => expect(db.putTask).toHaveBeenCalledOnce())
+    const deletion = removeTask(useStore.getState().tasks[0])
+    gate.resolve()
+    await Promise.all([progress, completion, deletion])
+    expect(await getAllTasks()).toEqual([])
+    expect(useStore.getState().tasks).toEqual([])
+    expect(vi.mocked(db.putTask).mock.calls.map(([item]) => item.status)).toEqual(['running', 'done'])
+  })
+
+  it('缺失参考图或遮罩时拒绝复用自动生成，并保留当前草稿', async () => {
+    expect(await reuseConfig(task({ inputImageIds: ['missing-reference'] }))).toBe(false)
+    expect(useStore.getState().prompt).toBe('prompt')
+    await putImage(imageA)
+    expect(await reuseConfig(task({ inputImageIds: [imageA.id], maskImageId: 'missing-mask' }))).toBe(false)
+    expect(useStore.getState().inputImages).toEqual([])
+    expect(callImageApi).not.toHaveBeenCalled()
+  })
+
+  it('已得到链接时仅重试下载，不发送生成请求', async () => {
+    const source = task({ status: 'error', rawImageUrls: ['https://example.test/output.png'], outputImages: [], error: '图片下载失败' })
+    useStore.setState({ tasks: [source] })
+    const download = vi.spyOn(imageApiShared, 'fetchImageUrlAsDataUrl').mockResolvedValue('data:image/png;base64,1024x1024')
+    expect(await retryTaskDownload(source.id)).toBe(true)
+    expect(download).toHaveBeenCalledOnce()
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks[0]).toMatchObject({ status: 'done', rawImageUrls: undefined })
+    expect(useStore.getState().tasks[0].outputImages).toHaveLength(1)
+  })
+
+  it('连续八帧按整组预算计时，不在单帧超时预算时丢失成品', async () => {
+    vi.useFakeTimers()
+    try {
+      useStore.setState({ settings: normalizeSettings({ ...useStore.getState().settings, profiles: [{ ...firstProfile, timeout: 1 }], activeProfileId: firstProfile.id }) })
+      vi.mocked(callImageApi).mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve({ images: ['data:image/png;base64,1024x1024'] }), 200)))
+      await submitTask({ professionalPreset: 'live-blink', liveFrameCount: 8 })
+      await vi.advanceTimersByTimeAsync(1800)
+      expect(callImageApi).toHaveBeenCalledTimes(8)
+      expect(useStore.getState().tasks[0]).toMatchObject({ status: 'done', liveFramesCompleted: 8 })
+      expect(useStore.getState().tasks[0].outputImages).toHaveLength(8)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it.each([

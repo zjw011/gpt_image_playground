@@ -1,12 +1,13 @@
 // 生成结果页。对应设计稿 6：大图展示 + 底部缩略图条 + 右侧操作栏。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { useStore, submitTask, reuseConfig, removeTask } from '../../store'
+import { useStore, submitTask, reuseConfig, removeTask, retryTaskSave, retryTaskDownload } from '../../store'
 import AppShell from './AppShell'
 import GeneratingQuote from '../../components/GeneratingQuote'
 import { useFullImage, useThumbnail } from './useTaskImage'
 import { useCreditsStore } from '../../lib/creditsStore'
 import { getImage } from '../../lib/db'
+import { getPendingTaskImage } from '../../lib/pendingTaskImages'
 import { exportLiveFrames } from '../../lib/livePhoto'
 import LivePhotoPlayer from '../../components/LivePhotoPlayer'
 import QuickMotionPlayer from '../../components/QuickMotionPlayer'
@@ -65,6 +66,8 @@ export default function ResultPage() {
   // 本次会话里已上传广场的作品：上传成功后按钮变成"已在广场"，避免重复上传
   const [publishedIds, setPublishedIds] = useState<Set<string>>(new Set())
   const [publishing, setPublishing] = useState(false)
+  const submittingRef = useRef(false)
+  const [submitting, setSubmitting] = useState(false)
   const [publishOpen, setPublishOpen] = useState(false)
   const publishRef = useRef<HTMLDivElement>(null)
   const [publishTitle, setPublishTitle] = useState('')
@@ -108,7 +111,7 @@ export default function ResultPage() {
     let alive = true
     setLiveFrames([])
     if (!liveTask || (task?.status !== 'done' && task?.status !== 'error') || task.outputImages.length < 2) return
-    void Promise.all(task.outputImages.map((id) => getImage(id))).then((images) => {
+    void Promise.all(task.outputImages.map((id) => getPendingTaskImage(id) ?? getImage(id))).then((images) => {
       const frames = images.flatMap((image) => image?.dataUrl ? [image.dataUrl] : [])
       if (alive) setLiveFrames(frames)
     }).catch((err) => console.warn('读取 Live 连续帧失败', err))
@@ -151,7 +154,8 @@ export default function ResultPage() {
   const downloadFailed = isImageDownloadError(failureError)
   const editBeforeRetry = imageTooLarge || contentBlocked
   const errorHint = getTaskFailureHint(failureError)
-  const retryLabel = contentBlocked ? '修改内容' : imageTooLarge ? '调整参考图' : nativeGif ? '编辑动图' : quickMotion ? '编辑运镜' : task.tryOn ? '编辑换装' : '再次生成'
+  const canRetryDownload = !running && Boolean(task.rawImageUrls?.length) && (task.status === 'error' || Boolean(task.outputErrors?.length))
+  const retryLabel = task.saveError ? '重试保存' : canRetryDownload ? '仅重试下载' : contentBlocked ? '修改内容' : imageTooLarge ? '调整参考图' : nativeGif ? '编辑动图' : quickMotion ? '编辑运镜' : task.tryOn ? '编辑换装' : '再次生成'
   const showDiagnostics = !isBackendMode() || getBackendUser()?.role === 'admin'
 
   const download = async () => {
@@ -244,7 +248,29 @@ export default function ResultPage() {
   }
 
   const regenerate = async () => {
-    if (recovering) return
+    if (running || submittingRef.current) return
+    submittingRef.current = true
+    setSubmitting(true)
+    try {
+      await regenerateInternal()
+    } catch (err) {
+      console.warn('恢复任务失败', err)
+      showToast(err instanceof Error ? err.message : '恢复任务失败，请重试', 'error')
+    } finally {
+      submittingRef.current = false
+      setSubmitting(false)
+    }
+  }
+
+  const regenerateInternal = async () => {
+    if (task.saveError) {
+      await retryTaskSave(task.id)
+      return
+    }
+    if (canRetryDownload) {
+      await retryTaskDownload(task.id)
+      return
+    }
     if (nativeGif) {
       navigate(`/tools?tool=live&liveMode=gif&task=${encodeURIComponent(task.id)}`)
       return
@@ -257,12 +283,13 @@ export default function ResultPage() {
       navigate(`/tools?tool=try-on&task=${task.id}`)
       return
     }
-    await reuseConfig(task, editBeforeRetry ? { editOnly: true } : undefined)
+    const complete = await reuseConfig(task, editBeforeRetry ? { editOnly: true } : undefined)
     if (editBeforeRetry) {
       const tool = liveTask ? 'live&liveMode=ai' : task.professionalPreset?.startsWith('product-suite-') ? 'product-suite' : task.professionalPreset?.startsWith('ecommerce-') ? 'ecommerce' : null
       navigate(tool ? `/tools?tool=${tool}&task=${encodeURIComponent(task.id)}` : `/studio?mode=${task.maskImageId ? 'inpaint' : task.inputImageIds.length ? 'image' : 'text'}`)
       return
     }
+    if (!complete) return
     // 提交失败（渠道没了之类）就留在当前这件作品上，别把 task 参数清掉
     if (!await submitTask({ stylePreset: task.stylePreset, professionalPreset: task.professionalPreset, liveFrameCount: task.liveFrameCount })) return
     // 清掉 task 参数：新任务进来后自动显示最新那张
@@ -345,7 +372,7 @@ export default function ResultPage() {
           disabled: publishing || published,
         }]
       : []),
-    ...(!recovering ? [{ icon: IconRefresh, label: retryLabel, onClick: () => void regenerate() }] : []),
+    ...(!recovering ? [{ icon: IconRefresh, label: submitting ? '处理中…' : retryLabel, onClick: () => void regenerate(), disabled: running || submitting }] : []),
     ...(!quickMotion ? [{ icon: IconCopy, label: '复制提示词', onClick: () => void copyPrompt() }] : []),
     { icon: IconTrash, label: '删除', onClick: confirmDelete, danger: true },
   ]
@@ -397,6 +424,7 @@ export default function ResultPage() {
               </div>
             )}
 
+            {task.saveError && <div role="alert" className="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs leading-5 text-amber-800">图片已生成，但尚未保存到浏览器。请点击「重试保存」或先下载原图，暂勿关闭本页。</div>}
             {(failedWithOutput || (task.status === 'done' && Boolean(task.outputErrors?.length))) && (
               <div role="status" className="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs leading-5 text-amber-800">
                 本次部分完成，已保留 {task.outputImages.length} 张图片{liveTask && task.liveFrameCount ? `（目标 ${task.liveFrameCount} 帧）` : ''}。你可以查看和下载已有结果，或点击「{retryLabel}」重新创作。
@@ -437,9 +465,10 @@ export default function ResultPage() {
                   <button
                     type="button"
                     onClick={() => void regenerate()}
+                    disabled={submitting}
                     className="mt-5 min-h-11 rounded-full bg-gradient-to-r from-[#7c6cf6] to-[#a78bfa] px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-[#7c6cf6]/25"
                   >
-                    {contentBlocked ? '返回修改内容' : imageTooLarge ? '返回调整参考图' : '重新生成'}
+                    {submitting ? '处理中…' : task.saveError || canRetryDownload ? retryLabel : contentBlocked ? '返回修改内容' : imageTooLarge ? '返回调整参考图' : '重新生成'}
                   </button>
                 </div>
               ) : quickMotion && fullSrc ? (

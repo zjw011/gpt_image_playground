@@ -135,7 +135,9 @@ describe('grantAllCredits', () => {
     const saved = JSON.parse(readFileSync(file, 'utf-8'))
     saved.grants[options.requestId] = {}
     writeFileSync(file, JSON.stringify(saved))
-    expect(() => initCredits(dir)).toThrow('发放记录损坏')
+    initCredits(dir)
+    expect(getBalance('u1')).toBe(100)
+    expect(grantAllCredits(['u1'], 100, options).duplicated).toBe(true)
   })
 })
 

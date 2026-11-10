@@ -258,6 +258,8 @@ export interface TaskRecord {
   streamPartialImageIds?: string[]
   /** API 返回的原始图片 HTTP URL（非 base64 时记录） */
   rawImageUrls?: string[]
+  /** 已生成的结果尚未完整保存到浏览器；可仅重试保存。 */
+  saveError?: string
   /** 发生解析错误时的原始响应 JSON */
   rawResponsePayload?: string
   status: TaskStatus

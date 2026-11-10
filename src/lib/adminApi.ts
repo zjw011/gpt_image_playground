@@ -1,3 +1,4 @@
+import { fetchWithDeadline } from './requestDeadline'
 // 管理后台 API 客户端。封装 /api/admin/* 接口，统一错误处理。
 // 后台已经并入主前端 SPA：这些接口凭 role=admin 的登录会话即可调用。
 
@@ -91,7 +92,7 @@ export interface AdminGalleryComments {
 }
 
 async function request<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetchWithDeadline(path, {
     headers: { 'Content-Type': 'application/json', ...(options.headers ?? {}) },
     ...options,
   })

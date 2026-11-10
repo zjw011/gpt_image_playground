@@ -1,14 +1,16 @@
 // 配置持久化：单个 JSON 文件 + 原子写入 + 内存缓存。
 // 选 JSON 而非 SQLite 是为了零原生依赖，渠道数量级在几十条，读写全量完全够用。
 
-import { randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto'
+import { randomBytes, randomInt, scrypt, scryptSync, timingSafeEqual } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { promisify } from 'node:util'
 
 import { readDurableJson, writeDurableJson } from './durableJson.mjs'
 
 const CONFIG_VERSION = 2
 const SCRYPT_KEYLEN = 64
+const scryptAsync = promisify(scrypt)
 
 export const BUILT_IN_PROVIDERS = new Set(['openai', 'sb2api-async', 'fal'])
 
@@ -163,13 +165,45 @@ function createEmptyConfig() {
 }
 
 function readConfigFile() {
-  if (!existsSync(dataFile)) {
+  if (!existsSync(dataFile) && !existsSync(`${dataFile}.bak`)) {
     const config = createEmptyConfig()
     writeConfigFile(config)
     return config
   }
 
-  return normalizeConfig(readDurableJson(dataFile, '站点配置').value)
+  return normalizeConfig(readDurableJson(dataFile, '站点配置', (value) => {
+    if (!isRecord(value) || !['site', 'users', 'channels', 'adminPasswordHash', 'guestPasswordHash'].some((key) => key in value)) return false
+    if (value.site !== undefined && !isRecord(value.site)) return false
+    for (const key of ['smtp', 'wechat', 'credits']) {
+      if (value.site?.[key] !== undefined && !isRecord(value.site[key])) return false
+    }
+    for (const key of ['users', 'channels', 'customProviders']) {
+      if (value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some((item) => !isRecord(item)))) return false
+    }
+    const userIds = new Set()
+    const usernames = new Set()
+    for (const [idx, user] of (value.users ?? []).entries()) {
+      if (typeof user.username !== 'string' || !isValidUsername(user.username.trim())) return false
+      const id = user.id || `user-${idx + 1}`
+      const username = user.username.trim().toLowerCase()
+      if (typeof id !== 'string' || userIds.has(id) || usernames.has(username)) return false
+      userIds.add(id)
+      usernames.add(username)
+      if (user.passwordHash !== undefined && typeof user.passwordHash !== 'string') return false
+      const pending = user.inviteRewardPending
+      if (pending !== undefined && pending !== null && (!isRecord(pending) || typeof pending.inviterId !== 'string' || !pending.inviterId || !Number.isSafeInteger(pending.reward) || pending.reward <= 0)) return false
+    }
+    const channelIds = new Set()
+    for (const [idx, channel] of (value.channels ?? []).entries()) {
+      const id = channel.id || `channel-${idx + 1}`
+      if (typeof id !== 'string' || channelIds.has(id)) return false
+      channelIds.add(id)
+      for (const key of ['apiKey', 'baseUrl', 'model']) {
+        if (channel[key] !== undefined && typeof channel[key] !== 'string') return false
+      }
+    }
+    return true
+  }).value)
 }
 
 function writeConfigFile(config) {
@@ -249,6 +283,10 @@ export function normalizeUser(input, fallbackId) {
     // 邀请关系：谁把这个账号拉来的、奖励是否已发（只在被邀请人真正出图后才发）
     invitedBy: normalizeString(record.invitedBy, '').trim(),
     inviteRewarded: normalizeBool(record.inviteRewarded, false),
+    inviteRewardPending: isRecord(record.inviteRewardPending) ? {
+      inviterId: normalizeString(record.inviteRewardPending.inviterId, ''),
+      reward: normalizeInt(record.inviteRewardPending.reward, 0, 0, 1_000_000),
+    } : null,
     // 注册来源 IP（IPv6 归并到 /64）。用于同 IP 注册上限与后台排查小号。
     registerIp: normalizeString(record.registerIp, '').trim(),
     emailVerifiedAt: normalizeInt(record.emailVerifiedAt, 0, 0, Number.MAX_SAFE_INTEGER),
@@ -546,12 +584,32 @@ export function hashPassword(password) {
 export function verifyPassword(password, stored) {
   if (!stored) return false
   const parts = stored.split('$')
-  if (parts.length !== 3 || parts[0] !== 'scrypt') return false
+  if (parts.length !== 3 || parts[0] !== 'scrypt' || !/^[a-f0-9]{32}$/i.test(parts[1]) || !/^[a-f0-9]{128}$/i.test(parts[2])) return false
 
   try {
     const salt = Buffer.from(parts[1], 'hex')
     const expected = Buffer.from(parts[2], 'hex')
     const derived = scryptSync(password, salt, expected.length)
+    return timingSafeEqual(derived, expected)
+  } catch {
+    return false
+  }
+}
+
+/** 请求路径使用线程池计算密码，避免同步 scrypt 阻塞生图转发与轮询。 */
+export async function hashPasswordAsync(password) {
+  const salt = randomBytes(16)
+  const derived = await scryptAsync(password, salt, SCRYPT_KEYLEN)
+  return `scrypt$${salt.toString('hex')}$${derived.toString('hex')}`
+}
+
+export async function verifyPasswordAsync(password, stored) {
+  if (typeof stored !== 'string') return false
+  const parts = stored.split('$')
+  if (parts.length !== 3 || parts[0] !== 'scrypt' || !/^[a-f0-9]{32}$/i.test(parts[1]) || !/^[a-f0-9]{128}$/i.test(parts[2])) return false
+  try {
+    const expected = Buffer.from(parts[2], 'hex')
+    const derived = await scryptAsync(password, Buffer.from(parts[1], 'hex'), SCRYPT_KEYLEN)
     return timingSafeEqual(derived, expected)
   } catch {
     return false

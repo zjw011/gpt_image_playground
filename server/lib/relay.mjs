@@ -1,25 +1,11 @@
-// 中继编排：选渠道、扣积分、静默故障转移。
-//
-// 这条链路是整个后端最"重"的一段，因为它同时要满足四个互相拉扯的要求：
-//
-//   1. 用户无感。一条渠道失败就自动换下一条重试，前端的报错弹窗和"正在切换到 X"提示
-//      都不该出现——用户只应该看到图，或者一个最终失败。
-//   2. 成功才扣积分。失败的尝试一分不扣，用户不该为渠道的故障买单。
-//   3. 不透支。余额只剩 1 分时并发发 10 个请求，不能全部放行。
-//   4. 保持流式。参考图上传可能是几百 MB，出图响应可能是 SSE，都不能整包读进内存。
-//
-// 前三条靠「内存预留 + 成功后结算」解决，第 4 条靠「按需缓冲」解决：
-// 请求体在 32MB 以内就整个读进内存（这样才能重放给下一条渠道），
-// 超过就退回单渠道流式转发——大请求没有故障转移，但也不至于把服务打爆。
+// 中继编排：校验接口/模型/数量、有界上传、渠道切换及按最终成品结算。
 
+import { randomUUID } from 'node:crypto'
 import {
-  BILLING_PEEK_BYTES,
   actualCost,
-  estimateCost,
-  isBillableRequest,
-  parseImageCount,
+  unitCost,
 } from './billing.mjs'
-import { getBalance, recordLuckyFree, releaseReservation, reserveCredits, settleCredits } from './credits.mjs'
+import { getAccount, getAvailableBalance, getBalance, getReserved, releaseReservation, reserveCredits } from './credits.mjs'
 import { maybeRewardInviter } from './referral.mjs'
 import { getClientIp, HttpError } from './http.mjs'
 import { generationGate } from './generationGate.mjs'
@@ -27,12 +13,16 @@ import { findChannel, getConfig } from './store.mjs'
 import { attemptUpstream, buildUpstreamUrl, forwardableHeaders } from './upstream.mjs'
 import { isChannelFault, recordChannelCall } from './usage.mjs'
 import { classifyGenerationError, formatGenerationError, getGenerationResponseError } from '../../src/lib/generationError.mjs'
+import { imageCountFromFields, parseRelayFields, resolveRelayContract, validateRelayModel } from './relayContract.mjs'
+import { createResultObserver, readGenerationResult } from './generationResult.mjs'
+import { assertGenerationCapacity, assertGenerationOrder, createGenerationOrder, findGenerationPoll, settleGenerationOrder } from './generationOrders.mjs'
 
 const FAL_TARGET_URL_HEADER = 'x-fal-target-url'
 const FAL_ALLOWED_HOSTS = /(^|\.)(fal\.run|fal\.ai)$/
 
-/** 超过这个体积就不缓冲了：能重放的请求体一律在内存里，换来静默故障转移。 */
-const MAX_BUFFERED_BODY_BYTES = 32 * 1024 * 1024
+/** 单次上传最多 64MB，同时在途上传总计最多 256MB。 */
+const MAX_BUFFERED_BODY_BYTES = 64 * 1024 * 1024
+let bufferedRequestBytes = 0
 
 /** 失败响应只留这么多字节用于排查，多了会把错误信息淹没。 */
 const ERROR_SNIPPET_BYTES = 2_048
@@ -159,7 +149,7 @@ function inspectImagePayload(payload, provider) {
  * 都没有图片/异步任务字段就判为失败；内容审核或取消由调用处单独处理。
  * SSE 也检查首批完整事件；超过检查窗口或开始传图后继续流式转发。
  */
-function inspectSuccessfulPayload(upstreamRes, provider) {
+function inspectSuccessfulPayload(upstreamRes, provider, contract) {
   const contentType = String(upstreamRes.headers['content-type'] ?? '').toLowerCase()
   const streaming = contentType.includes('text/event-stream')
   return new Promise((resolve) => {
@@ -187,9 +177,11 @@ function inspectSuccessfulPayload(upstreamRes, provider) {
         const data = streaming ? frame.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n') : frame
         if (!data || data === '[DONE]') continue
         try {
-          const result = inspectImagePayload(JSON.parse(data), provider)
+          const parsed = JSON.parse(data)
+          const mapped = readGenerationResult(parsed, contract, provider)
+          const result = { ...inspectImagePayload(parsed, provider), image: mapped.images.length > 0 || streaming && inspectImagePayload(parsed, provider).image, task: Boolean(mapped.taskId), response: contract.responses && (Array.isArray(parsed.output) || /^response\.(?:completed|output_text\.|output_item\.|function_call_arguments\.)/.test(String(parsed.type || ''))) }
           // SSE 按事件顺序处理：开始传图之后，后续失败继续交给客户端处理部分结果。
-          if (result.error || result.image || result.task) return result
+          if (result.error || result.image || result.task || result.response) return result
         } catch {
           // 未完成的 JSON 留给后续字节；未知格式保持原来的转发行为。
         }
@@ -199,16 +191,20 @@ function inspectSuccessfulPayload(upstreamRes, provider) {
     const onData = (chunk) => {
       chunks.push(chunk)
       size += chunk.length
-      const body = text()
-      const result = inspectBody(body)
-      if (result.error && !result.task) return finish(false, result.error.slice(0, ERROR_SNIPPET_BYTES))
-      if (streaming && result.image) return finish(true)
-      if (size >= SUCCESS_PEEK_BYTES) finish(true)
+      if (streaming) {
+        const result = inspectBody(text())
+        if (result.error && !result.task) return finish(false, result.error.slice(0, ERROR_SNIPPET_BYTES))
+        if (result.image || result.response || size >= SUCCESS_PEEK_BYTES) return finish(true)
+      }
+      if (size > 128 * 1024 * 1024) {
+        finish(false, '上游响应超过 128MB 限制')
+        upstreamRes.destroy()
+      }
     }
     const onEnd = () => {
       const body = text()
       const result = inspectBody(body, true)
-      finish(Boolean(result.image || result.task), result.error || body.trim().slice(0, ERROR_SNIPPET_BYTES), true, Boolean(result.error && !result.image))
+      finish(Boolean(result.image || result.task || result.response), result.error || body.trim().slice(0, ERROR_SNIPPET_BYTES), true, Boolean(result.error && !result.image))
     }
     const onError = () => finish(false, '上游成功响应读取失败')
     const onClose = () => finish(false, '上游响应在完成前中断')
@@ -250,50 +246,52 @@ function attemptBudget(site, candidateCount) {
   return candidateCount
 }
 
-/**
- * 把请求体读进内存。
- *
- * 超过上限时**不继续读**，而是把已经读到的那部分交出去做流式转发——
- * 这样大请求走不了故障转移，但也不会因为"读不下就报错"而彻底失败。
- */
+/** 上传有独立截止时间和全局预算；完整校验后才能把管理员密钥发给上游。 */
 function drainBody(req, limit) {
+  if (Number(req.headers['content-length']) > limit) throw new HttpError(413, '生成请求超过 64MB 上传限制')
   return new Promise((resolve, reject) => {
     const chunks = []
     let size = 0
     let settled = false
-
+    const timer = setTimeout(() => fail(new HttpError(408, '上传超过 120 秒，请缩小参考图后重试')), 120_000)
+    timer.unref?.()
     const cleanup = () => {
+      clearTimeout(timer)
       req.off('data', onData)
       req.off('end', onEnd)
-      req.off('error', onError)
+      req.off('error', fail)
+      req.off('aborted', aborted)
     }
-    const finish = (complete) => {
+    const fail = (err) => {
       if (settled) return
       settled = true
       cleanup()
-      resolve({ chunks, size, complete })
-    }
-
-    const onData = (chunk) => {
-      chunks.push(chunk)
-      size += chunk.length
-      if (size > limit) {
-        // 暂停而不是销毁：剩下的字节原封不动留在 req 里，交给流式转发继续读。
-        req.pause()
-        finish(false)
-      }
-    }
-    const onEnd = () => finish(true)
-    const onError = (err) => {
-      if (settled) return
-      settled = true
-      cleanup()
+      bufferedRequestBytes -= size
+      req.pause()
       reject(err)
     }
-
+    const aborted = () => fail(new HttpError(400, '上传已中断'))
+    const onData = (chunk) => {
+      size += chunk.length
+      bufferedRequestBytes += chunk.length
+      if (size > limit || bufferedRequestBytes > 256 * 1024 * 1024) return fail(new HttpError(413, '上传体积或服务器缓冲已达上限，请稍后重试'))
+      chunks.push(chunk)
+    }
+    const onEnd = () => {
+      if (settled) return
+      settled = true
+      cleanup()
+      let released = false
+      resolve({ body: Buffer.concat(chunks), release: () => {
+        if (released) return
+        released = true
+        bufferedRequestBytes -= size
+      } })
+    }
     req.on('data', onData)
-    req.on('end', onEnd)
-    req.on('error', onError)
+    req.once('end', onEnd)
+    req.once('error', fail)
+    req.once('aborted', aborted)
   })
 }
 
@@ -321,23 +319,6 @@ function readErrorSnippet(upstreamRes) {
     upstreamRes.on('end', finish)
     upstreamRes.on('close', finish)
     upstreamRes.on('error', finish)
-  })
-}
-
-/** 浏览器断开后把已经发出的上游响应读完，不能反向取消仍在生成的付费任务。 */
-function discardResponse(upstreamRes) {
-  if (upstreamRes.readableEnded || upstreamRes.destroyed) return Promise.resolve()
-  return new Promise((resolve) => {
-    let done = false
-    const finish = () => {
-      if (done) return
-      done = true
-      resolve()
-    }
-    upstreamRes.once('end', finish)
-    upstreamRes.once('close', finish)
-    upstreamRes.once('error', finish)
-    upstreamRes.resume()
   })
 }
 
@@ -395,78 +376,84 @@ function resolveTarget(req, channel, endpointPath, search) {
  * extraHeaders 用来附加我们自己的回执头（本次扣了多少、扣完还剩多少）。
  * 同源请求下 JS 读得到这些头，前端据此即时刷新余额，省掉一次额外的查询。
  */
-function adoptResponse(res, upstreamRes, extraHeaders, headChunks = [], complete = false) {
-  return new Promise((resolve, reject) => {
-    if (!res.headersSent) {
-      res.writeHead(upstreamRes.statusCode ?? 502, { ...forwardableHeaders(upstreamRes), ...extraHeaders })
-    }
-    for (const chunk of headChunks) res.write(chunk)
-    if (complete || upstreamRes.readableEnded) {
+async function adoptResponse(res, upstreamRes, extraHeaders, headChunks = [], complete = false, observer, finish) {
+  for (const chunk of headChunks) observer?.write(chunk)
+  if (complete || upstreamRes.readableEnded) {
+    Object.assign(extraHeaders, finish?.(observer?.finish()) || {})
+    if (!res.destroyed) {
+      if (!res.headersSent) res.writeHead(upstreamRes.statusCode ?? 502, { ...forwardableHeaders(upstreamRes), ...extraHeaders })
+      for (const chunk of headChunks) res.write(chunk)
       res.end()
-      resolve({ status: upstreamRes.statusCode ?? 0 })
-      return
     }
-    upstreamRes.pipe(res)
-    upstreamRes.on('end', () => resolve({ status: upstreamRes.statusCode ?? 0 }))
-    upstreamRes.on('error', reject)
-  })
+    return { status: upstreamRes.statusCode ?? 0 }
+  }
+  if (!res.destroyed && !res.headersSent) res.writeHead(upstreamRes.statusCode ?? 502, { ...forwardableHeaders(upstreamRes), ...extraHeaders })
+  for (const chunk of headChunks) if (!res.destroyed) res.write(chunk)
+  let readError
+  try {
+    for await (const chunk of upstreamRes) {
+      observer?.write(chunk)
+      if (!res.destroyed && !res.writableEnded) {
+        if (!res.write(chunk)) await new Promise((resolve) => {
+          const done = () => { res.off('drain', done); res.off('close', done); resolve() }
+          res.once('drain', done)
+          res.once('close', done)
+        })
+      }
+    }
+  } catch (err) { readError = err }
+  finish?.(observer?.finish())
+  if (readError) throw readError
+  if (!res.destroyed && !res.writableEnded) res.end()
+  return { status: upstreamRes.statusCode ?? 0 }
 }
 
-export async function handleRelay(req, res, ctx) {
+async function handleRelayRequest(req, res, ctx, drained) {
   const config = getConfig()
   const { channelId, endpointPath } = parseRelayPath(ctx.path)
 
-  if (req.method === 'POST') {
-    const identity = ctx.user?.id || getClientIp(req)
-    const slot = generationGate.acquire(identity)
-    if (!slot.ok) {
-      res.setHeader('X-GIP-Failover', 'stop')
-      const message = slot.reason === 'rate'
-        ? '生成请求过于频繁，请稍后再试'
-        : slot.reason === 'global'
-          ? '当前生成任务较多，请稍后再试'
-          : '你已有生成任务正在处理，请等待完成后再试'
-      throw new HttpError(429, message, {
-        code: slot.reason === 'rate' ? 'generation-rate-limited' : 'generation-busy',
-        retryAfterSeconds: slot.retryAfterSeconds,
-      })
-    }
-    res.once('finish', slot.release)
-    res.once('close', slot.release)
-  }
-
-  const requested = findChannel(channelId)
+  const existingOrder = findGenerationPoll(req, ctx.user?.id ?? '', channelId, endpointPath)
+  const configured = findChannel(channelId)
+  const requested = existingOrder ? {
+    ...configured, id: channelId, name: configured?.name || '原任务渠道', provider: existingOrder.provider,
+    apiKey: existingOrder.auth.replace(/^(?:Bearer|Key) /, ''), baseUrl: new URL(existingOrder.url).origin,
+    enabled: true, model: configured?.model || '', timeout: configured?.timeout || 600,
+  } : configured
   if (!requested) throw new HttpError(404, '渠道不存在或已下线')
   if (!requested.enabled) throw new HttpError(503, `渠道「${requested.name}」已停用`)
   if (!requested.apiKey) throw new HttpError(503, `渠道「${requested.name}」未配置 API Key`)
 
-  // 请求体读进来才能重放给下一条渠道；读不下就退回流式单渠道。
-  const drained = await drainBody(req, MAX_BUFFERED_BODY_BYTES)
-  const bufferedBody = drained.complete ? Buffer.concat(drained.chunks) : null
-  const head = (bufferedBody ?? Buffer.concat(drained.chunks)).subarray(0, BILLING_PEEK_BYTES)
-  const rewindable = drained.complete
-  let nativeGif = false
-  if (req.method === 'POST' && /^images\/(generations|edits)\/?$/.test(endpointPath)) {
-    const contentType = String(req.headers['content-type'] ?? '').toLowerCase()
-    const body = bufferedBody ?? head
-    if (contentType.includes('multipart/form-data')) {
-      // 只识别独立表单字段，不能把提示词里提到的 GIF 当作输出格式。
-      nativeGif = /(?:^|\r?\n)--[^\r\n]+\r?\nContent-Disposition: form-data;[ \t]*name="output_format"[ \t]*\r?\n(?:[^\r\n]+\r?\n)*\r?\ngif[ \t]*\r?\n--/i.test(body.toString('utf-8'))
-    } else if (bufferedBody) {
-      try {
-        nativeGif = JSON.parse(bufferedBody.toString('utf-8')).output_format === 'gif'
-      } catch {
-        // 无法解析的请求仍交给原有接口校验，不猜测提示词内容。
-      }
-    }
+  const contract = existingOrder ? { submit: false, taskId: existingOrder.taskId, definition: { poll: existingOrder.poll } } : resolveRelayContract(req, requested, endpointPath, config)
+  if (contract.submit) assertGenerationCapacity(ctx.user?.id || getClientIp(req))
+  let bufferedBody = drained.body
+  if (contract.submit && req.method === 'POST' && !bufferedBody.length) throw new HttpError(400, '生成请求不能为空')
+  const parsed = parseRelayFields(bufferedBody, req.headers['content-type'])
+  const fields = req.method === 'GET' ? Object.fromEntries(new URLSearchParams(ctx.search)) : parsed.fields
+  const requestedCount = validateRelayModel(fields, requested, req.method === 'GET' ? { body: contract.mapping?.query } : contract.mapping)
+  const query = Object.fromEntries(new URLSearchParams(ctx.search))
+  validateRelayModel(query, requested, contract.mapping?.query ? { body: contract.mapping.query } : undefined)
+  if (['n', 'num_images', 'batch_size'].some((key) => query[key] != null) && imageCountFromFields(query) !== requestedCount) throw new HttpError(400, '查询参数中的生成张数与请求体不一致')
+  if (contract.submit && ['openai', 'sb2api-async'].includes(requested.provider) && parsed.json && parsed.json.model == null) {
+    parsed.json.model = requested.model
+    bufferedBody = Buffer.from(JSON.stringify(parsed.json))
   }
+  if (contract.submit && ['openai', 'sb2api-async'].includes(requested.provider) && !parsed.json && fields.model == null && bufferedBody.length) {
+    const boundary = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(req.headers['content-type'])
+    const value = boundary?.[1] || boundary?.[2]
+    const marker = Buffer.from(`--${value}--`)
+    const end = bufferedBody.lastIndexOf(marker)
+    bufferedBody = Buffer.concat([bufferedBody.subarray(0, end), Buffer.from(`--${value}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${requested.model}\r\n`), bufferedBody.subarray(end)])
+  }
+  const rewindable = true
+  const nativeGif = contract.submit && fields.output_format === 'gif'
   if (nativeGif && !requested.supportsNativeGif) {
     throw new HttpError(400, '当前渠道未开启原生 GIF 动图，请选择支持原生 GIF 的渠道', { code: 'native-gif-unsupported' })
   }
   const candidates = buildCandidates(config, requested, nativeGif)
 
   const userId = ctx.user?.id ?? ''
-  const billable = isBillableRequest(req.method, requested, endpointPath)
+  const billable = contract.submit
+  const pollingOrder = existingOrder || (contract.submit ? null : assertGenerationOrder(userId, requested.id, contract.taskId))
   let statefulResponse = false
   if (endpointPath === 'responses' && bufferedBody) {
     try {
@@ -482,12 +469,12 @@ export async function handleRelay(req, res, ctx) {
   const clientFailover = req.headers['x-gip-failover'] === 'client'
   const canReplay = !clientFailover && !statefulResponse && rewindable && billable && requested.provider === 'openai'
   const budget = canReplay ? attemptBudget(config.site, candidates.length) : 1
-  const creditCount = billable ? parseImageCount(head, req.headers['content-type']) : 0
+  const creditCount = billable ? requestedCount : 0
   const costOf = (id) => actualCost(config.site, id, creditCount)
   const creditConfig = config.site.credits
   const chargeable = Boolean(creditConfig.enabled) && Boolean(userId) && billable && creditCount > 0
   const wantsHeartbeat = req.headers['x-gip-keepalive'] === '1'
-  const streamingRequest = /["']stream["']\s*:\s*true/i.test(head.toString('utf-8'))
+  const streamingRequest = fields.stream === true
 
   // 幸运免单：出门前掷骰子，命中就这次不占积分、不扣积分（营销活动，概率后台可调）。
   // 在占位之前决定，命中走的是"无占位 → 成功后不结算"的通路，不会产生退款流水。
@@ -523,7 +510,7 @@ export async function handleRelay(req, res, ctx) {
     if (reserved > 0) releaseReservation(userId, reserved)
   }
   // 客户端提前断开也要把占位还回去，否则额度会被一直占着。
-  res.on('close', release)
+  // 上游已经受理后继续读完并结算；浏览器断开不能释放别人的在途额度。
 
   const failures = []
   const counted = req.method === 'POST'
@@ -558,7 +545,13 @@ export async function handleRelay(req, res, ctx) {
 
       const target = (() => {
         try {
-          return resolveTarget(req, channel, endpointPath, ctx.search)
+          const target = resolveTarget(req, channel, endpointPath, ctx.search)
+          if (pollingOrder?.url) {
+            const suffix = requested.provider === 'fal' ? new URL(String(req.headers[FAL_TARGET_URL_HEADER])).pathname.endsWith('/status') ? '/status' : new URL(String(req.headers[FAL_TARGET_URL_HEADER])).pathname.endsWith('/cancel') ? '/cancel' : '' : ''
+            target.upstreamUrl = new URL(pollingOrder.url + suffix)
+            target.authHeader = pollingOrder.auth || target.authHeader
+          }
+          return target
         } catch (err) {
           // 地址都拼不出来，等同于这条渠道不可用，换下一条。
           return { error: err instanceof Error ? err.message : '渠道地址无效' }
@@ -582,7 +575,7 @@ export async function handleRelay(req, res, ctx) {
           dropHeaders: target.dropHeaders,
           timeoutMs: getUpstreamTimeoutMs(channel, billable),
           body: requestBody,
-          headChunks: rewindable ? [] : drained.chunks,
+          headChunks: [],
           extraHeaders: requestBody ? { 'content-length': String(requestBody.length) } : undefined,
         })
       } catch (err) {
@@ -616,7 +609,7 @@ export async function handleRelay(req, res, ctx) {
           if (!res.headersSent) res.setHeader('X-GIP-Failover', 'stop')
           throw new HttpError(attempt.status, message)
         }
-        if (clientFailover) throw new HttpError(attempt.status, message)
+        if (clientFailover) throw Object.assign(new HttpError(attempt.status, message), { upstream: true })
         failures.push(`${channel.name}：${message}`)
         continue
       }
@@ -636,11 +629,12 @@ export async function handleRelay(req, res, ctx) {
         heartbeat.finishError(message)
         return { status: attempt.status }
       }
-      const inspected = success && billable && ['openai', 'sb2api-async', 'fal'].includes(channel.provider)
-        ? await inspectSuccessfulPayload(attempt.upstreamRes, channel.provider)
+      const inspected = success && billable
+        ? await inspectSuccessfulPayload(attempt.upstreamRes, channel.provider, contract)
         : { valid: true, chunks: [], complete: false }
       if (!inspected.valid) {
         attempt.upstream.destroy()
+        if (inspected.message.includes('128MB')) throw new HttpError(413, inspected.message)
         const kind = classifyGenerationError(inspected.message)
         if (kind === 'content_policy' || kind === 'cancelled') {
           const status = kind === 'content_policy' ? 400 : 409
@@ -654,50 +648,43 @@ export async function handleRelay(req, res, ctx) {
         if (clientFailover) throw new HttpError(502, message)
         continue
       }
-      if (clientGone || res.destroyed) {
-        if (!inspected.complete) await discardResponse(attempt.upstreamRes)
-        track(false, attempt.status, '浏览器或前置反向代理提前断开，上游任务未取消')
-        release()
-        return { status: attempt.status }
-      }
-      const generated = success && !inspected.failed
-      const charged = !luckyFree && chargeable && generated ? costOf(channel.id) : 0
-      const extraHeaders = {}
-      if (charged > 0) {
-        settleCredits(userId, charged, {
-          images: creditCount,
-          ref: channel.id,
-          // 用户流水只说明做了什么，渠道信息留在 ref 里供后台排查，不向用户文案暴露。
-          note: `出图 ${creditCount || 1} 张`,
-          reserved,
-        })
-        settled = true
-        extraHeaders['x-credits-charged'] = String(charged)
-        extraHeaders['x-credits-balance'] = String(getBalance(userId))
-      } else {
-        release()
-        // 幸运免单命中：告诉前端这次没扣分，界面好放庆祝提示
-        if (luckyFree && generated) {
-          recordLuckyFree(userId, {
-            images: creditCount || 1,
-            ref: channel.id,
-            note: `幸运免单 · 出图 ${creditCount || 1} 张`,
-          })
-          extraHeaders['x-credits-lucky'] = '1'
-          extraHeaders['x-credits-balance'] = String(getBalance(userId))
+      let generated = false
+      const observer = success ? createResultObserver(pollingOrder ? { poll: pollingOrder.poll, result: pollingOrder.poll?.result } : contract, channel.provider, String(attempt.upstreamRes.headers['content-type'] || '').includes('text/event-stream')) : null
+      const extraHeaders = { 'x-credits-pending': success ? '1' : '0' }
+      const finish = (result) => {
+        if (pollingOrder && result?.payload) settleGenerationOrder(pollingOrder, result.payload)
+        const count = Math.min(creditCount, result?.count || 0)
+        generated = success && count > 0
+        if (billable && success && result?.taskId && !count) {
+          const order = createGenerationOrder({ userId, channel, taskId: result.taskId, contract, upstreamUrl: target.upstreamUrl, reserved, count: creditCount, unitCost: chargeable ? unitCost(config.site, channel.id) : 0, lucky: luckyFree })
+          settled = true
+          settleGenerationOrder(order, result.payload)
+          return { 'x-credits-pending': order.state === 'pending' ? '1' : '0', ...(order.state === 'unresolved' ? { 'x-gip-failover': 'stop' } : {}), 'x-credits-reserved': String(getReserved(userId)), 'x-credits-available': String(getAvailableBalance(userId)), 'x-credits-balance': String(getBalance(userId)), 'x-credits-total-out': String(getAccount(userId).totalOut) }
         }
-      }
-
-      // 邀请奖励：这是"被邀请人第一次成功出图"，到这一步才给邀请人发积分。
-      // 幂等，重复调用不会重复发；配置关掉、超上限都会自己跳过。
-      if (generated && userId) {
-        const referral = maybeRewardInviter(userId)
-        if (referral.rewarded) console.log(`[referral] ${userId} 首图成功，奖励邀请人 ${referral.inviterId} ${referral.reward} 积分`)
+        const charged = !luckyFree && chargeable && generated ? actualCost(config.site, channel.id, count) : 0
+        if (generated && chargeable) {
+          const order = createGenerationOrder({ userId, channel, taskId: `sync-${randomUUID()}`, contract: {}, upstreamUrl: target.upstreamUrl, reserved, count: creditCount, finalCount: count, unitCost: unitCost(config.site, channel.id), lucky: luckyFree })
+          settled = true
+          settleGenerationOrder(order, null, count)
+        } else {
+          release()
+          if (generated && userId) {
+            try { maybeRewardInviter(userId) } catch (err) { console.warn('图片已生成，推荐奖励等待补偿', err) }
+          }
+        }
+        return { 'x-credits-pending': '0', 'x-credits-charged': String(charged), 'x-credits-balance': String(getBalance(userId)), 'x-credits-reserved': String(getReserved(userId)), 'x-credits-available': String(getAvailableBalance(userId)), 'x-credits-total-out': String(getAccount(userId).totalOut), ...(luckyFree && generated ? { 'x-credits-lucky': '1' } : {}) }
       }
 
       try {
         heartbeat.stop()
-        const result = await adoptResponse(res, attempt.upstreamRes, extraHeaders, inspected.chunks, inspected.complete)
+        const result = await adoptResponse(res, attempt.upstreamRes, extraHeaders, inspected.chunks, inspected.complete, observer, (result) => {
+          try { return finish(result) } catch (err) {
+            // 本站账本/奖励出错不能伪装成渠道失败，让客户端重投收费任务。
+            console.error('生成结果已取得，但本地结算等待恢复', err)
+            if (!settled) release()
+            return { 'x-gip-failover': 'stop', 'x-credits-pending': '1' }
+          }
+        })
         track(generated, inspected.failed ? 502 : result.status, inspected.failed ? inspected.message : generated ? '' : `上游返回 HTTP ${result.status}`)
         return result
       } catch (err) {
@@ -719,5 +706,33 @@ export async function handleRelay(req, res, ctx) {
   } finally {
     heartbeat.stop()
     res.off('close', onClientClose)
+  }
+}
+
+export async function handleRelay(req, res, ctx) {
+  let slot
+  let drained
+  try {
+    const route = parseRelayPath(ctx.path)
+    const channel = findChannel(route.channelId)
+    const existingOrder = findGenerationPoll(req, ctx.user?.id ?? '', route.channelId, route.endpointPath)
+    const contract = existingOrder ? { submit: false } : channel ? resolveRelayContract(req, channel, route.endpointPath, getConfig()) : null
+    if (contract?.submit) {
+      slot = generationGate.acquire(ctx.user?.id || getClientIp(req))
+      if (!slot.ok) {
+        res.setHeader('X-GIP-Failover', 'stop')
+        const message = slot.reason === 'rate' ? '生成请求过于频繁，请稍后再试'
+          : slot.reason === 'global' ? '当前生成任务较多，请稍后再试' : '你已有生成任务正在处理，请等待完成后再试'
+        throw new HttpError(429, message, { code: slot.reason === 'rate' ? 'generation-rate-limited' : 'generation-busy', retryAfterSeconds: slot.retryAfterSeconds })
+      }
+    }
+    drained = await drainBody(req, MAX_BUFFERED_BODY_BYTES)
+    return await handleRelayRequest(req, res, ctx, drained)
+  } catch (err) {
+    if (!res.headersSent && err instanceof HttpError && !err.upstream && [400, 403, 408, 413].includes(err.status)) res.setHeader('X-GIP-Failover', 'stop')
+    throw err
+  } finally {
+    drained?.release()
+    slot?.release?.()
   }
 }

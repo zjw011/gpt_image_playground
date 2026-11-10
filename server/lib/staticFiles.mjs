@@ -3,6 +3,7 @@
 
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { extname, join, normalize, resolve, sep } from 'node:path'
+import { createBrotliCompress, createGzip, constants } from 'node:zlib'
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -43,15 +44,38 @@ function resolveInside(root, urlPath) {
 
 export function sendFile(res, filePath, options = {}) {
   const stats = statSync(filePath)
+  const type = MIME_TYPES[extname(filePath).toLowerCase()] ?? 'application/octet-stream'
+  const compressible = stats.size >= 1024 && /^(?:text\/|application\/(?:json|manifest\+json)|image\/svg)/.test(type)
+  const accepted = String(options.req?.headers['accept-encoding'] ?? '').split(',').map((part) => {
+    const [encoding, ...params] = part.trim().split(';')
+    const quality = params.find((value) => value.trim().startsWith('q='))
+    return { encoding: encoding.toLowerCase(), quality: quality ? Number(quality.trim().slice(2)) : 1 }
+  }).filter((entry) => entry.quality > 0 && (entry.encoding === 'br' || entry.encoding === 'gzip'))
+    .sort((a, b) => b.quality - a.quality || Number(b.encoding === 'br') - Number(a.encoding === 'br'))
+  const encoding = compressible ? accepted[0]?.encoding : undefined
   res.writeHead(200, {
-    'Content-Type': MIME_TYPES[extname(filePath).toLowerCase()] ?? 'application/octet-stream',
-    'Content-Length': stats.size,
+    'Content-Type': type,
+    ...(encoding ? { 'Content-Encoding': encoding } : { 'Content-Length': stats.size }),
+    ...(compressible ? { Vary: 'Accept-Encoding' } : {}),
     'Cache-Control': options.cacheControl ?? 'no-cache',
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     ...(options.headers ?? {}),
   })
-  createReadStream(filePath).pipe(res)
+  if (options.req?.method === 'HEAD') {
+    res.end()
+    return
+  }
+  const source = createReadStream(filePath)
+  const compressed = encoding === 'br'
+    ? createBrotliCompress({ params: { [constants.BROTLI_PARAM_QUALITY]: 4 } })
+    : encoding === 'gzip' ? createGzip() : null
+  const fail = (error) => { source.destroy(); compressed?.destroy(); res.destroy?.(error) }
+  source.on('error', fail)
+  compressed?.on('error', fail)
+  res.once('close', () => { source.destroy(); compressed?.destroy() })
+  if (compressed) source.pipe(compressed).pipe(res)
+  else source.pipe(res)
 }
 
 /**
@@ -66,6 +90,7 @@ export function serveStatic(res, root, urlPath, options = {}) {
   if (existsSync(filePath) && statSync(filePath).isFile()) {
     const isHashedAsset = urlPath.startsWith('/assets/')
     sendFile(res, filePath, {
+      req: options.req,
       cacheControl: isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache',
     })
     return true
@@ -79,6 +104,6 @@ export function serveStatic(res, root, urlPath, options = {}) {
 
   const indexPath = join(root, 'index.html')
   if (!existsSync(indexPath)) return false
-  sendFile(res, indexPath, { cacheControl: 'no-store' })
+  sendFile(res, indexPath, { cacheControl: 'no-store', req: options.req })
   return true
 }

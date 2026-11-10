@@ -4,6 +4,14 @@ import type { CallApiOptions } from './imageApiShared'
 import { generateLiveFrameSequence } from './liveGeneration'
 
 describe('generateLiveFrameSequence', () => {
+  it('任务结束后不再请求下一帧，并保留已完成帧', async () => {
+    let active = true
+    const caller = vi.fn(async () => ({ images: ['data:image/png;base64,first'] }))
+    const result = await generateLiveFrameSequence({ settings: {} as never, prompt: '眨眼', params: DEFAULT_PARAMS, inputImageDataUrls: [] }, 8, () => { active = false }, caller, () => active)
+    expect(caller).toHaveBeenCalledOnce()
+    expect(result.images).toEqual(['data:image/png;base64,first'])
+    expect(result.failedRequests?.[0].error).toContain('停止后续帧')
+  })
   it('固定以 n=1 串行请求，并同时携带原图锚点与上一帧', async () => {
     const caller = vi.fn(async (options: CallApiOptions) => ({
       images: [`data:image/png;base64,frame-${caller.mock.calls.length}`],

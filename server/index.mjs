@@ -12,11 +12,12 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { handleAdminRoute } from './lib/adminRoutes.mjs'
-import { initCards } from './lib/cards.mjs'
+import { initCards, recoverCardCredits } from './lib/cards.mjs'
 import { initGallery } from './lib/gallery.mjs'
 import { initGalleryComments } from './lib/galleryComments.mjs'
-import { countAccountsForIp, normalizeIp, resolveInviter } from './lib/referral.mjs'
+import { countAccountsForIp, normalizeIp, recoverReferralRewards, resolveInviter } from './lib/referral.mjs'
 import { initCredits, grantSignupBonus } from './lib/credits.mjs'
+import { initGenerationOrders } from './lib/generationOrders.mjs'
 import {
   cancelEmailCode,
   issueEmailCode,
@@ -44,6 +45,7 @@ import {
   generateUserId,
   getConfig,
   hashPassword,
+  hashPasswordAsync,
   initStore,
   inviteStatus,
   isSmtpConfigured,
@@ -52,7 +54,7 @@ import {
   normalizeInviteCode,
   normalizeUser,
   updateConfig,
-  verifyPassword,
+  verifyPasswordAsync,
 } from './lib/store.mjs'
 import { flushUsage, initUsage } from './lib/usage.mjs'
 import { handleToolsAssets, handleToolsFetch } from './lib/toolsAssets.mjs'
@@ -71,7 +73,10 @@ const config = initStore(DATA_DIR)
 initSessions(DATA_DIR)
 initUsage(DATA_DIR)
 initCredits(DATA_DIR)
+initGenerationOrders(DATA_DIR)
 initCards(DATA_DIR)
+recoverCardCredits()
+recoverReferralRewards()
 initGalleryComments(DATA_DIR)
 initGallery(DATA_DIR)
 
@@ -396,12 +401,14 @@ async function handleResetPassword(req, res, input) {
     throw new HttpError(400, verified.reason ? verifyCodeErrorMessage(verified.reason) : '验证码不正确或已失效，请重新获取')
   }
 
+  const passwordHash = await hashPasswordAsync(password)
+  if (findUserById(user.id)?.passwordHash !== user.passwordHash) throw new HttpError(409, '账号信息已变更，请重新申请验证码')
   updateConfig((config) => {
     const idx = config.users.findIndex((item) => item.id === user.id)
     if (idx >= 0) {
       config.users[idx] = {
         ...config.users[idx],
-        passwordHash: hashPassword(password),
+        passwordHash,
         updatedAt: Date.now(),
       }
     }
@@ -437,7 +444,8 @@ async function handleFrontLogin(req, res, credentials) {
   if (username) {
     const user = findUserByUsername(username)
     // 用户不存在与口令错误返回同一句话，避免后台用户名被逐个探测出来。
-    if (!user || !user.passwordHash || !verifyPassword(credentials.password, user.passwordHash)) {
+    if (!user || !user.passwordHash || !await verifyPasswordAsync(credentials.password, user.passwordHash)
+      || findUserById(user.id)?.passwordHash !== user.passwordHash || !findUserById(user.id)?.enabled) {
       recordFailure(key)
       throw new HttpError(401, '用户名或口令不正确')
     }
@@ -450,11 +458,12 @@ async function handleFrontLogin(req, res, credentials) {
     })
 
     const session = createSession('guest', user.id)
+    const latestUser = findUserById(user.id)
     setCookie(req, res, GUEST_COOKIE, session.token, session.maxAgeSeconds)
     recordSuccess(key)
     return sendJson(res, 200, {
       ok: true,
-      user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role === 'admin' ? 'admin' : 'user' },
+      user: { id: latestUser.id, username: latestUser.username, displayName: latestUser.displayName, role: latestUser.role === 'admin' ? 'admin' : 'user' },
       workspaceId: user.id,
     })
   }
@@ -462,9 +471,11 @@ async function handleFrontLogin(req, res, credentials) {
   if (mode === 'open') return sendJson(res, 200, { ok: true, gateDisabled: true })
   // 微信登录模式没有口令入口：身份只能由扫码产生。但带用户名的账号登录已经在上面的分支处理掉了。
   if (mode === 'wechat') throw new HttpError(403, '本站使用微信扫码登录，请扫码进入')
+  if (mode !== 'passcode') throw new HttpError(403, '请使用账号和口令登录')
 
   if (!current.guestPasswordHash) throw new HttpError(503, '管理员尚未设置访问口令')
-  if (!verifyPassword(credentials.password, current.guestPasswordHash)) {
+  if (!await verifyPasswordAsync(credentials.password, current.guestPasswordHash)
+    || getConfig().guestPasswordHash !== current.guestPasswordHash || getConfig().site.accessMode !== 'passcode') {
     recordFailure(key)
     throw new HttpError(401, '访问口令不正确')
   }
@@ -543,12 +554,18 @@ async function handleRegister(req, res, input) {
   const id = `u-${now.toString(36)}-${randomBytes(3).toString('hex')}`
   // 邀请人：链接里的 ref 必须指向真实存在且启用中的账号，解析不出来就当没填
   const inviter = resolveInviter(input.ref)
+  const passwordHash = await hashPasswordAsync(password)
+  if (findUserByUsername(username) || findUserByEmail(email)) throw new HttpError(409, '用户名或邮箱已注册，请直接登录')
+  const latestSite = getConfig().site
+  if (latestSite.accessMode !== 'accounts' || !inviteStatus(latestSite).ok) throw new HttpError(403, '注册设置或邀请名额已变更，请刷新后重试')
+  if (latestSite.requireInviteCode && normalizeInviteCode(input.inviteCode) !== normalizeInviteCode(latestSite.inviteCode)) throw new HttpError(403, '邀请码已变更，请使用新的邀请码')
+  if (latestSite.ipLimitEnabled && countAccountsForIp(ip) >= latestSite.ipMaxAccounts) throw new HttpError(403, '同一网络的注册名额已用完，请联系管理员')
   updateConfig((config) => {
     config.users.push(normalizeUser({
       id,
       username,
       email,
-      passwordHash: hashPassword(password),
+      passwordHash,
       enabled: true,
       note: inviter ? `邮箱注册 · 邀请人 ${inviter.username}` : '邮箱注册',
       createdVia: 'email',
@@ -559,7 +576,7 @@ async function handleRegister(req, res, input) {
       registerIp: normalizeIp(ip),
       invitedBy: inviter && inviter.id !== id ? inviter.id : '',
     }, id))
-    if (site.requireInviteCode) config.site.inviteUsedCount += 1
+    if (latestSite.requireInviteCode) config.site.inviteUsedCount += 1
     return config
   })
 
@@ -580,18 +597,23 @@ async function handleRegister(req, res, input) {
 const server = createServer(async (req, res) => {
   const requestId = randomBytes(8).toString('hex')
   res.setHeader('X-Request-Id', requestId)
-  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
-  const path = url.pathname
-  const cookies = parseCookies(req.headers.cookie)
-  const guestSession = getSession(cookies[GUEST_COOKIE])
-  // 会话里只存 userId，用户可能已被删除或停用，所以每次请求都重新解析。
-  const sessionUser = guestSession?.userId ? findUserById(guestSession.userId) : null
-  const activeUser = sessionUser?.enabled ? sessionUser : null
-  // 管理权限只认账号角色：role === 'admin' 的登录用户即可触达 /api/admin/*。
-  // 不再存在独立的管理员口令会话——后台跟前台共用同一次登录。
-  const role = activeUser?.role === 'admin' ? 'admin' : guestSession?.role ?? null
-
+  let url
   try {
+    url = new URL(req.url ?? '/', 'http://localhost')
+  } catch {
+    return sendError(res, 400, '请求地址无效')
+  }
+  const path = url.pathname
+  try {
+    const cookies = parseCookies(req.headers.cookie)
+    const guestSession = getSession(cookies[GUEST_COOKIE])
+    // 会话里只存 userId，用户可能已被删除或停用，所以每次请求都重新解析。
+    const sessionUser = guestSession?.userId ? findUserById(guestSession.userId) : null
+    const activeUser = sessionUser?.enabled ? sessionUser : null
+    // 管理权限只认账号角色：role === 'admin' 的登录用户即可触达 /api/admin/*。
+    // 不再存在独立的管理员口令会话——后台跟前台共用同一次登录。
+    const role = activeUser?.role === 'admin' ? 'admin' : guestSession?.role ?? null
+
     if (path === '/api/health' && req.method === 'GET') {
       const distReady = existsSync(DIST_DIR)
       return sendJson(res, distReady ? 200 : 503, {
@@ -614,7 +636,7 @@ const server = createServer(async (req, res) => {
           // 全量销毁会把他自己一起踢下线。其余设备/会话照旧失效。
           destroySessionsByRoleExcept('guest', cookies[GUEST_COOKIE])
         },
-        onUserInvalidated: (userId) => destroySessionsByUser(userId),
+        onUserInvalidated: (userId, options) => destroySessionsByUser(userId, options?.keepCurrent ? cookies[GUEST_COOKIE] : undefined),
       })
     }
 
@@ -658,7 +680,7 @@ const server = createServer(async (req, res) => {
       )
     }
 
-    if (serveStatic(res, DIST_DIR, path, { spaFallback: true })) return
+    if (serveStatic(res, DIST_DIR, path, { spaFallback: true, req })) return
     return sendText(res, 404, '未找到')
   } catch (err) {
     if (res.headersSent) {
@@ -671,8 +693,8 @@ const server = createServer(async (req, res) => {
   }
 })
 
-// 出图请求可能是 512MB 级 multipart，且长时间无字节返回，关闭默认超时交由渠道 timeout 控制。
-server.requestTimeout = 0
+// 接收请求体最多两分钟；上游出图等待由渠道控制，不受上传期限影响。
+server.requestTimeout = 120_000
 server.headersTimeout = 65_000
 server.timeout = 0
 server.keepAliveTimeout = 5_000

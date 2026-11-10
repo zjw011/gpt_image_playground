@@ -40,10 +40,9 @@ export const LEDGER_TYPES = new Set(['signup', 'redeem', 'spend', 'refund', 'adm
 
 let creditsFile = ''
 let cache = null
-let ledgerSeq = 0
 
 function emptyCredits() {
-  return { version: 1, users: {}, ledger: [], days: {}, grants: {}, updatedAt: 0 }
+  return { version: 1, users: {}, ledger: [], days: {}, grants: {}, operations: {}, updatedAt: 0 }
 }
 
 // 保留全站近期流水及每个用户最近 50 条，批量活动不能把前面用户的记录挤掉。
@@ -90,9 +89,9 @@ function dayKey(at) {
 function normalizeAccount(raw) {
   const record = isRecord(raw) ? raw : {}
   return {
-    balance: toCredits(record.balance),
-    totalIn: toCredits(record.totalIn),
-    totalOut: toCredits(record.totalOut),
+    balance: toInt(record.balance),
+    totalIn: toInt(record.totalIn),
+    totalOut: toInt(record.totalOut),
     updatedAt: toInt(record.updatedAt),
   }
 }
@@ -104,11 +103,11 @@ function emptyDay() {
 function normalizeDay(raw) {
   const record = isRecord(raw) ? raw : {}
   return {
-    spend: toCredits(record.spend),
-    recharge: toCredits(record.recharge),
-    refund: toCredits(record.refund),
-    images: toCredits(record.images),
-    redeemCount: toCredits(record.redeemCount),
+    spend: toInt(record.spend),
+    recharge: toInt(record.recharge),
+    refund: toInt(record.refund),
+    images: toInt(record.images),
+    redeemCount: toInt(record.redeemCount),
   }
 }
 
@@ -131,7 +130,7 @@ function normalizeCredits(input) {
         userId: typeof raw.userId === 'string' ? raw.userId : '',
         type: LEDGER_TYPES.has(raw.type) ? raw.type : 'admin',
         amount: toSignedCredits(raw.amount),
-        balanceAfter: toCredits(raw.balanceAfter),
+        balanceAfter: toInt(raw.balanceAfter),
         ref: typeof raw.ref === 'string' ? raw.ref.slice(0, 80) : '',
         note: typeof raw.note === 'string' ? raw.note.slice(0, 120) : '',
       }))
@@ -154,42 +153,96 @@ function normalizeCredits(input) {
   }
 
   next.updatedAt = toInt(record.updatedAt)
+  next.operations = record.operations ?? {}
   return next
+}
+
+function validateCredits(value) {
+  if (!isRecord(value) || !isRecord(value.users)) return false
+  for (const account of Object.values(value.users)) {
+    if (!isRecord(account) || account.balance === null || !['number', 'string'].includes(typeof account.balance) || !Number.isFinite(Number(account.balance)) || Math.abs(Number(account.balance)) > Number.MAX_SAFE_INTEGER) return false
+    for (const key of ['totalIn', 'totalOut', 'updatedAt']) {
+      if (account[key] !== undefined && (account[key] === null || !['number', 'string'].includes(typeof account[key]) || !Number.isFinite(Number(account[key])) || Math.abs(Number(account[key])) > Number.MAX_SAFE_INTEGER)) return false
+    }
+  }
+  if (value.ledger !== undefined && (!Array.isArray(value.ledger) || value.ledger.some((entry) => !isRecord(entry)))) return false
+  if (value.days !== undefined && (!isRecord(value.days) || Object.values(value.days).some((day) => !isRecord(day)))) return false
+  if (value.operations !== undefined) {
+    if (!isRecord(value.operations)) return false
+    for (const [id, op] of Object.entries(value.operations)) {
+      if (!/^[a-zA-Z0-9:_.-]{1,200}$/.test(id) || ['__proto__', 'constructor', 'prototype'].includes(id) || !isRecord(op) || !/^[a-f0-9]{64}$/.test(op.fingerprint)
+        || !isRecord(op.result) || op.result.ok !== true || !Number.isSafeInteger(op.result.balance) || op.result.balance < 0
+        || typeof op.userId !== 'string' || !op.userId || !LEDGER_TYPES.has(op.type) || !Number.isSafeInteger(op.at)
+        || !Number.isSafeInteger(op.amount) || op.amount < 0) return false
+    }
+  }
+  // 收据校验必须在备份选择之前运行，不能只在读完主文件之后发现损坏。
+  normalizeCredits(value)
+  return true
 }
 
 export function initCredits(dataDir) {
   creditsFile = join(dataDir, 'credits.json')
   mkdirSync(dirname(creditsFile), { recursive: true })
-  cache = existsSync(creditsFile)
-    ? normalizeCredits(readDurableJson(creditsFile, '积分账本').value)
+  cache = existsSync(creditsFile) || existsSync(`${creditsFile}.bak`)
+    ? normalizeCredits(readDurableJson(creditsFile, '积分账本', validateCredits).value)
     : emptyCredits()
   return cache
 }
 
-function writeCreditsFile() {
-  if (!creditsFile || !cache) return
-  writeDurableJson(creditsFile, cache, true)
-}
-
 /** 只要账本被改过就写盘。所有写操作的最后一步都是它。 */
-function commit(at) {
-  cache.updatedAt = at
-  writeCreditsFile()
+function commit(next, at) {
+  next.updatedAt = at
+  try {
+    writeDurableJson(creditsFile, next, true)
+  } catch (err) {
+    // 兼容写入器在主文件提交后报错；只有完整内容一致才接受已提交状态。
+    let saved
+    try { saved = JSON.parse(readFileSync(creditsFile, 'utf-8')) } catch { throw err }
+    if (JSON.stringify(saved) !== JSON.stringify(next)) throw err
+    console.warn('积分已提交，但账本备份写入失败', err)
+  }
+  cache = next
 }
 
-function touchDay(at) {
+function touchDay(next, at) {
   const key = dayKey(at)
-  const day = cache.days[key] ?? emptyDay()
-  cache.days[key] = day
+  const day = next.days[key] ?? emptyDay()
+  next.days[key] = day
   // 按字符串排序对 YYYY-MM-DD 就是按时间排序。
-  const keys = Object.keys(cache.days).sort()
-  for (const stale of keys.slice(0, Math.max(0, keys.length - MAX_DAYS))) delete cache.days[stale]
+  const keys = Object.keys(next.days).sort()
+  for (const stale of keys.slice(0, Math.max(0, keys.length - MAX_DAYS))) delete next.days[stale]
   return day
 }
 
-function pushLedger(entry) {
-  cache.ledger.push(entry)
-  if (cache.ledger.length > MAX_LEDGER) cache.ledger = retainLedger(cache.ledger)
+function pushLedger(next, entry) {
+  next.ledger.push(entry)
+  if (next.ledger.length > MAX_LEDGER) next.ledger = retainLedger(next.ledger)
+}
+
+export function getCreditOperation(operationId) {
+  const operation = cache && Object.hasOwn(cache.operations, operationId) ? cache.operations[operationId] : null
+  return operation ? structuredClone(operation) : null
+}
+
+export function hasCreditOperation(operationId) {
+  return Boolean(getCreditOperation(operationId))
+}
+
+function creditOperation(userId, amount, type, options) {
+  const id = options.operationId
+  if (id === undefined) return null
+  if (typeof id !== 'string' || !/^[a-zA-Z0-9:_.-]{1,200}$/.test(id) || ['__proto__', 'constructor', 'prototype'].includes(id)) throw new Error('无效的积分操作编号')
+  const fingerprint = createHash('sha256').update(JSON.stringify([userId, amount, type, options.ref ?? '', options.images ?? null])).digest('hex')
+  const existing = Object.hasOwn(cache.operations, id) ? cache.operations[id] : null
+  if (existing && existing.fingerprint !== fingerprint) throw new Error('积分操作编号已用于其他交易')
+  return { id, fingerprint, userId, amount, type, existing }
+}
+
+function finishOperation(next, at, op, result) {
+  if (op) next.operations[op.id] = { fingerprint: op.fingerprint, userId: op.userId, amount: op.amount, type: op.type, at, result }
+  commit(next, at)
+  return result
 }
 
 /** 整笔活动只提交一次账本，收据与余额一同落盘，重启/网络重试不会重复赠送。 */
@@ -230,15 +283,7 @@ export function grantAllCredits(userIds, amount, options) {
   for (const stale of Object.keys(next.days).sort().slice(0, -MAX_DAYS)) delete next.days[stale]
   next.grants[options.requestId] = { fingerprint, count: ids.length, total, at }
   next.updatedAt = at
-  try {
-    writeDurableJson(creditsFile, next, true)
-  } catch (err) {
-    // 主文件已替换但备份失败时仍视为已提交；不能回滚内存后让同一请求再次加分。
-    const saved = JSON.parse(readFileSync(creditsFile, 'utf-8'))
-    if (saved.grants?.[options.requestId]?.fingerprint !== fingerprint) throw err
-    console.warn('活动积分已提交，但账本备份写入失败', err)
-  }
-  cache = next
+  commit(next, at)
   return { ok: true, count: ids.length, total, at, duplicated: false }
 }
 
@@ -247,10 +292,12 @@ export function grantAllCredits(userIds, amount, options) {
 export function ensureAccount(userId) {
   if (!userId) return null
   const existing = cache.users[userId]
-  if (existing) return existing
+  if (existing) return { ...existing }
   const fresh = { balance: 0, totalIn: 0, totalOut: 0, updatedAt: Date.now() }
-  cache.users[userId] = fresh
-  return fresh
+  const next = structuredClone(cache)
+  next.users[userId] = fresh
+  commit(next, fresh.updatedAt)
+  return { ...fresh }
 }
 
 export function getAccount(userId) {
@@ -269,66 +316,44 @@ export function getBalance(userId) {
 export function addCredits(userId, amount, options = {}) {
   const delta = toCredits(amount)
   if (!userId || delta <= 0) return { ok: false, balance: getBalance(userId) }
-
+  const type = LEDGER_TYPES.has(options.type) ? options.type : 'redeem'
+  const op = creditOperation(userId, delta, type, options)
+  if (op?.existing) return { ...op.existing.result, duplicated: true }
   const at = options.at ?? Date.now()
-  const account = ensureAccount(userId)
+  const next = structuredClone(cache)
+  const account = getAccount(userId)
+  if (!Number.isSafeInteger(account.balance + delta) || !Number.isSafeInteger(account.totalIn + delta)) throw new Error('积分超过安全范围')
   account.balance += delta
   account.totalIn += delta
   account.updatedAt = at
-
-  const type = LEDGER_TYPES.has(options.type) ? options.type : 'redeem'
-  const day = touchDay(at)
-  // 退回不计入"充值"，否则充值曲线会被失败重试撑成假的增长。
+  next.users[userId] = account
+  const day = touchDay(next, at)
   if (type === 'refund') day.refund += delta
   else day.recharge += delta
   if (type === 'redeem') day.redeemCount += 1
-
-  pushLedger({
-    at,
-    userId,
-    type,
-    amount: delta,
-    balanceAfter: account.balance,
-    ref: String(options.ref ?? ''),
-    note: String(options.note ?? ''),
-  })
-
-  commit(at)
-  return { ok: true, balance: account.balance }
+  pushLedger(next, { at, userId, type, amount: delta, balanceAfter: account.balance, ref: String(options.ref ?? ''), note: String(options.note ?? '') })
+  return finishOperation(next, at, op, { ok: true, balance: account.balance })
 }
 
-/**
- * 扣积分。余额不足返回 ok:false 且不改动任何状态——调用方据此拒绝这次出图。
- * 整个函数是同步的，Node 单线程下天然原子，不会出现两次并发请求各扣一半的情况。
- */
+/** 余额与去重收据在同一次原子写入中提交，磁盘失败不改变内存余额。 */
 export function spendCredits(userId, amount, options = {}) {
   const delta = toCredits(amount)
   if (!userId || delta <= 0) return { ok: true, balance: getBalance(userId), charged: 0 }
-
-  const account = ensureAccount(userId)
+  const op = creditOperation(userId, delta, 'spend', options)
+  if (op?.existing) return { ...op.existing.result, duplicated: true }
+  const account = getAccount(userId)
   if (account.balance < delta) return { ok: false, balance: account.balance, charged: 0 }
-
   const at = options.at ?? Date.now()
+  const next = structuredClone(cache)
   account.balance -= delta
   account.totalOut += delta
   account.updatedAt = at
-
-  const day = touchDay(at)
+  next.users[userId] = account
+  const day = touchDay(next, at)
   day.spend += delta
   day.images += toInt(options.images, delta)
-
-  pushLedger({
-    at,
-    userId,
-    type: 'spend',
-    amount: -delta,
-    balanceAfter: account.balance,
-    ref: String(options.ref ?? ''),
-    note: String(options.note ?? ''),
-  })
-
-  commit(at)
-  return { ok: true, balance: account.balance, charged: delta }
+  pushLedger(next, { at, userId, type: 'spend', amount: -delta, balanceAfter: account.balance, ref: String(options.ref ?? ''), note: String(options.note ?? '') })
+  return finishOperation(next, at, op, { ok: true, balance: account.balance, charged: delta })
 }
 
 /** 出图失败时把预扣的原路退回。走 addCredits 的 refund 分支。 */
@@ -339,59 +364,38 @@ export function refundCredits(userId, amount, options = {}) {
 /** 幸运免单不改变余额，但要留下可核对的 0 积分流水，并计入出图张数。 */
 export function recordLuckyFree(userId, options = {}) {
   if (!userId) return { ok: false, balance: 0 }
-
+  const op = creditOperation(userId, 0, 'lucky', options)
+  if (op?.existing) return { ...op.existing.result, duplicated: true }
   const at = options.at ?? Date.now()
-  const account = ensureAccount(userId)
+  const next = structuredClone(cache)
+  const account = getAccount(userId)
   account.updatedAt = at
-  const day = touchDay(at)
+  next.users[userId] = account
+  const day = touchDay(next, at)
   day.images += toInt(options.images, 1)
-
-  pushLedger({
-    at,
-    userId,
-    type: 'lucky',
-    amount: 0,
-    balanceAfter: account.balance,
-    ref: String(options.ref ?? ''),
-    note: String(options.note ?? '幸运免单'),
-  })
-  commit(at)
-  return { ok: true, balance: account.balance }
+  pushLedger(next, { at, userId, type: 'lucky', amount: 0, balanceAfter: account.balance, ref: String(options.ref ?? ''), note: String(options.note ?? '幸运免单') })
+  return finishOperation(next, at, op, { ok: true, balance: account.balance })
 }
 
-/**
- * 管理员直接把余额改成目标值（而不是加减一个数）。
- * 后台表单上填的是"他应该有多少分"，比让他自己算差额不容易出错。
- */
+/** 管理员直接把余额改成目标值。 */
 export function setBalance(userId, target, options = {}) {
-  const account = ensureAccount(userId)
-  if (!account) return { ok: false, balance: 0 }
-
-  const next = toCredits(target)
-  const diff = next - account.balance
+  if (!userId) return { ok: false, balance: 0 }
+  const account = getAccount(userId)
+  const balance = toCredits(target)
+  const diff = balance - account.balance
   if (diff === 0) return { ok: true, balance: account.balance, changed: 0 }
-
   const at = options.at ?? Date.now()
-  account.balance = next
+  const next = structuredClone(cache)
+  account.balance = balance
   if (diff > 0) account.totalIn += diff
   else account.totalOut += -diff
   account.updatedAt = at
-
-  const day = touchDay(at)
+  next.users[userId] = account
+  const day = touchDay(next, at)
   if (diff > 0) day.recharge += diff
-
-  pushLedger({
-    at,
-    userId,
-    type: 'admin',
-    amount: diff,
-    balanceAfter: next,
-    ref: '',
-    note: String(options.note ?? ''),
-  })
-
-  commit(at)
-  return { ok: true, balance: next, changed: diff }
+  pushLedger(next, { at, userId, type: 'admin', amount: diff, balanceAfter: balance, ref: '', note: String(options.note ?? '') })
+  commit(next, at)
+  return { ok: true, balance, changed: diff }
 }
 
 /** 注册赠送。已经有账户的老用户不会因为重新登录被重复赠送。 */
@@ -442,10 +446,9 @@ export function reserveCredits(userId, amount, options = {}) {
   if (delta <= 0) return { ok: true, reserved: 0, available: getAvailableBalance(userId) }
 
   const available = getAvailableBalance(userId)
-  if (available < delta) return { ok: false, available, requested: delta }
+  if (!options.restore && available < delta) return { ok: false, available, requested: delta }
 
   reservations.set(userId, (reservations.get(userId) ?? 0) + delta)
-  void options
   return { ok: true, reserved: delta, available: available - delta }
 }
 
@@ -465,15 +468,16 @@ export function releaseReservation(userId, amount) {
  */
 export function settleCredits(userId, actualAmount, options = {}) {
   const result = spendCredits(userId, actualAmount, options)
-  releaseReservation(userId, options.reserved ?? 0)
+  if (result.ok && !result.duplicated) releaseReservation(userId, options.reserved ?? 0)
   return result
 }
 
 /** 用户被删除时把他的账户一起清掉，避免后台列表里留下永远对不上的"幽灵余额"。 */
 export function removeAccount(userId) {
   if (!userId || !cache.users[userId]) return false
-  delete cache.users[userId]
-  commit(Date.now())
+  const next = structuredClone(cache)
+  delete next.users[userId]
+  commit(next, Date.now())
   return true
 }
 
@@ -589,8 +593,9 @@ export function creditsOverview(now = Date.now()) {
 
 /** 清空统计但**不动余额**——余额是用户资产，任何"清空"按钮都不该碰它。 */
 export function resetCreditStats() {
-  cache.ledger = []
-  cache.days = {}
-  commit(Date.now())
+  const next = structuredClone(cache)
+  next.ledger = []
+  next.days = {}
+  commit(next, Date.now())
   return cache
 }

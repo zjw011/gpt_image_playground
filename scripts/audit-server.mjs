@@ -187,6 +187,30 @@ try {
     const dashboard = await browser.text()
     report('登录后 /admin 渲染仪表盘', dashboard.includes('仪表盘') && dashboard.includes('渠道链路'), dashboard.slice(0, 60).replace(/\n/g, ' '))
 
+    await browser.open('/studio', 2600)
+    report('渠道同步测试精确路由', await browser.url() === '/studio')
+    const refreshedChannelId = await browser.evaluate(`(async () => {
+      window.configRefreshAuditMarker = 'same-page'
+      const response = await fetch('/api/admin/channels', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '渠道自动同步测试', provider: 'openai', baseUrl: 'https://local-audit.invalid/v1', apiKey: 'local-test-only', model: 'gpt-image-2', enabled: true }) })
+      const payload = await response.json()
+      if (!response.ok) throw new Error('无法创建隔离测试渠道')
+      return payload.channel.id
+    })()`)
+    await sleep(15_100)
+    await browser.evaluate(`window.dispatchEvent(new Event('focus'))`)
+    const refreshDeadline = Date.now() + 10_000
+    let channelRefreshed = false
+    while (Date.now() < refreshDeadline) {
+      channelRefreshed = await browser.evaluate(`window.configRefreshAuditMarker === 'same-page' && Object.keys(localStorage).some((key) => {
+        try { return JSON.parse(localStorage.getItem(key))?.state?.settings?.profiles?.some((profile) => profile.id === ${JSON.stringify(`backend-${refreshedChannelId}`)} && profile.name === '渠道自动同步测试') } catch { return false }
+      })`)
+      if (channelRefreshed) break
+      await sleep(150)
+    }
+    report('管理员新增渠道后切回页面自动同步，无需刷新整页', channelRefreshed)
+    await browser.evaluate(`fetch('/api/admin/channels/' + ${JSON.stringify(refreshedChannelId)}, { method: 'DELETE' })`)
+    await browser.open('/admin', 2400)
+
     const commentFlow = await browser.evaluate(`(async () => {
       const createdResponse = await fetch('/api/gallery/w-seed-train/comments', {
         method: 'POST',

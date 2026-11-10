@@ -10,13 +10,22 @@
 // 之所以可行，是因为 fetch() 在响应头到达时就 resolve（SSE 也一样），
 // 所以这一步既不会阻塞出图，也不会破坏流式渲染。
 
-import { applyCreditsBalance } from './backend'
-import { useStore } from '../store'
+import { applyCreditsBalance, fetchCredits } from './backend'
 import { useCreditsStore } from './creditsStore'
 
 let installed = false
 /** 我们自己包出来的那层 fetch。用来判断"当前的 window.fetch 还是不是我们的"。 */
 let wrapped: typeof window.fetch | null = null
+let refreshTimer: ReturnType<typeof setTimeout> | undefined
+let pendingSettlement = false
+
+export function refreshCreditsAfterGeneration() {
+  if (!pendingSettlement || refreshTimer) return
+  refreshTimer = setTimeout(() => {
+    refreshTimer = undefined
+    void fetchCredits().catch((error) => console.warn('刷新生图结算余额失败', error))
+  }, 500)
+}
 
 /**
  * 已经处理过的响应。
@@ -33,6 +42,9 @@ export interface CreditsHeaderInfo {
   balance: number
   /** 幸运免单命中：这次出图没有扣积分。 */
   lucky: boolean
+  reserved?: number
+  available?: number
+  totalOut?: number
 }
 
 /** 从响应头读一个整数。头不存在或值不合法时返回 null，表示"这次没有信息"。 */
@@ -58,6 +70,11 @@ export function parseCreditsHeaders(headers: Headers): CreditsHeaderInfo | null 
     balance,
     charged: readNumberHeader(headers, 'x-credits-charged') ?? 0,
     lucky: headers.get('x-credits-lucky') === '1',
+    ...Object.fromEntries([
+      ['reserved', readNumberHeader(headers, 'x-credits-reserved')],
+      ['available', readNumberHeader(headers, 'x-credits-available')],
+      ['totalOut', readNumberHeader(headers, 'x-credits-total-out')],
+    ].filter(([, value]) => value != null)),
   }
 }
 
@@ -65,6 +82,7 @@ export function parseCreditsHeaders(headers: Headers): CreditsHeaderInfo | null 
 function readCreditsHeaders(response: Response) {
   if (seenResponses.has(response)) return
   seenResponses.add(response)
+  if (response.headers.get('x-credits-pending') === '1') pendingSettlement = true
 
   const info = parseCreditsHeaders(response.headers)
   if (!info) return
@@ -72,17 +90,18 @@ function readCreditsHeaders(response: Response) {
   const current = useCreditsStore.getState().view
   applyCreditsBalance({
     balance: info.balance,
-    // 出图结算完就没有在途占位了，顺手清掉，否则界面会一直显示一个虚低的可用额。
-    reserved: 0,
-    available: info.balance,
+    reserved: info.reserved ?? current?.reserved ?? 0,
+    available: info.available ?? Math.max(0, info.balance - (current?.reserved ?? 0)),
     // 累计消耗能顺手加上就加上；加不上也无所谓——下次兑换或刷新时会拿到准确值。
-    ...(current && info.charged > 0 ? { totalOut: current.totalOut + info.charged } : {}),
+    ...(info.totalOut != null ? { totalOut: info.totalOut } : current && info.charged > 0 ? { totalOut: current.totalOut + info.charged } : {}),
   })
 
   // 幸运免单命中：记下时间（结果页挂庆祝横幅用）+ 弹一次祝贺
   if (info.lucky) {
     useCreditsStore.getState().markLucky()
-    useStore.getState().showToast('🎉 恭喜你太幸运了！本次生图不扣积分', 'success')
+    void import('../store').then(({ useStore }) => {
+      useStore.getState().showToast('🎉 恭喜你太幸运了！本次生图不扣积分', 'success')
+    }).catch((error) => console.warn('显示免单提示失败', error))
   }
 }
 
@@ -105,7 +124,8 @@ export function installCreditsSync() {
     if (!(result instanceof Promise)) return result
     return result.then((response) => {
       try {
-        readCreditsHeaders(response)
+        const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, window.location.href)
+        if (url.origin === window.location.origin && url.pathname.startsWith('/api/relay/')) readCreditsHeaders(response)
       } catch {
         // 读头失败绝不能影响出图，静默跳过。
       }

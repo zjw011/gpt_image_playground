@@ -20,6 +20,7 @@ import { GUEST_COOKIE, createSession } from './sessions.mjs'
 import { findUserById, getConfig, initStore, normalizeChannel, normalizeUser, updateConfig } from './store.mjs'
 import { initUsage, usageSummary } from './usage.mjs'
 import { getUpstreamTimeoutMs } from './relay.mjs'
+import { generationOrdersForTests, initGenerationOrders, pollGenerationOrders } from './generationOrders.mjs'
 
 /** 起一个假上游。handler 决定它对每个请求怎么回应。 */
 function startUpstream(handler) {
@@ -82,6 +83,7 @@ async function setup(channels, options = {}) {
   initCredits(dir)
   initCards(dir)
   resetReservations()
+  initGenerationOrders(dir, { startWorker: false })
 
   updateConfig((config) => {
     config.site.accessMode = 'wechat'
@@ -136,6 +138,108 @@ beforeEach(() => {
 afterEach(async () => {
   for (const item of upstreams) await close(item.server)
   if (app) await close(app.server)
+})
+
+describe('服务端生成权限与最终结果', () => {
+  it.each([403, 408])('上游 HTTP %s 仍允许客户端切换渠道，不误标为本站权限拒绝', async (status) => {
+    const upstream = await startUpstream((req, res) => res.writeHead(status).end('upstream credential unavailable'))
+    upstreams = [upstream]
+    await setup([{ baseUrl: upstream.url, apiKey: 'k' }])
+    const response = await relay('ch-1/images/generations', { headers: { 'X-GIP-Failover': 'client' } })
+    expect(response.status).toBe(status)
+    expect(response.headers.get('x-gip-failover')).not.toBe('stop')
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
+  it.each([
+    ['images/generations', { model: 'other-model' }],
+    ['chat/completions', { model: 'gpt-image-2' }],
+    ['files', {}],
+    ['images/generations', { n: 17 }],
+    ['images/generations', { n: 1, num_images: 4 }],
+  ])('拒绝未授权接口/模型/张数 %s %j，不注入密钥发往上游', async (path, body) => {
+    let calls = 0
+    const upstream = await startUpstream((req, res) => { calls += 1; res.end(IMAGE_RESPONSE) })
+    upstreams = [upstream]
+    await setup([{ baseUrl: upstream.url, apiKey: 'secret' }])
+    const response = await relay(`ch-1/${path}`, { body: JSON.stringify(body) })
+    expect([400, 403]).toContain(response.status)
+    expect(calls).toBe(0)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
+  it('长提示词后的 n 正确传送与预留，嵌套数量不影响计费', async () => {
+    let requested
+    const upstream = await startUpstream((req, res, body) => {
+      requested = JSON.parse(body.toString())
+      res.end(JSON.stringify({ data: Array.from({ length: 4 }, (_, idx) => ({ b64_json: `image-${idx}` })) }))
+    })
+    upstreams = [upstream]
+    await setup([{ baseUrl: upstream.url, apiKey: 'k' }])
+    const response = await relay('ch-1/images/generations', { body: JSON.stringify({ prompt: 'x'.repeat(70_000), n: 4, metadata: { num_images: 16 } }) })
+    expect(response.status).toBe(200)
+    expect(requested).toMatchObject({ n: 4, model: 'gpt-image-2' })
+    expect(getBalance(USER_ID)).toBe(96)
+  })
+
+  it('SSE 只有预览然后失败不扣费，也不重复生成', async () => {
+    const upstream = await startUpstream((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      res.write(`data: ${JSON.stringify({ type: 'response.image_generation_call.partial_image', partial_image_b64: 'preview' })}\n\n`)
+      res.end(`data: ${JSON.stringify({ type: 'error', error: { message: 'upstream failed' } })}\n\n`)
+    })
+    upstreams = [upstream]
+    await setup([{ baseUrl: upstream.url, apiKey: 'k', apiMode: 'responses' }])
+    const response = await relay('ch-1/responses', { body: JSON.stringify({ stream: true }) })
+    expect(response.status).toBe(200)
+    await response.text()
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
+  it('Agent 文本和函数工具响应保持可用，没有图片不扣出图积分', async () => {
+    const payload = { id: 'resp-agent', output: [{ type: 'function_call', name: 'generate_image', arguments: '{}' }] }
+    const upstream = await startUpstream((req, res) => res.end(JSON.stringify(payload)))
+    upstreams = [upstream]
+    await setup([{ baseUrl: upstream.url, apiKey: 'k', apiMode: 'responses' }])
+    const response = await relay('ch-1/responses')
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(payload)
+    expect(getBalance(USER_ID)).toBe(100)
+  })
+
+  it('自定义接口严格使用管理员映射，按自定义结果的成功图片收费', async () => {
+    const upstream = await startUpstream((req, res) => res.end(JSON.stringify({ pictures: ['https://example.test/a.png'] })))
+    upstreams = [upstream]
+    await setup([{ provider: 'custom-draw', baseUrl: upstream.url, apiKey: 'k' }])
+    updateConfig((config) => {
+      config.customProviders = [{ id: 'custom-draw', submit: { path: 'draw', method: 'POST', body: { engine: '$profile.model', count: '$params.n' }, result: { imageUrlPaths: ['pictures.*'] } } }]
+      return config
+    })
+    const response = await relay('ch-1/draw', { body: JSON.stringify({ engine: 'gpt-image-2', count: 3 }) })
+    expect(response.status).toBe(200)
+    expect(getBalance(USER_ID)).toBe(99)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
+
+  it('异步提交后关页，后台查询原地址并结算；修改渠道不会改变已有订单', async () => {
+    const calls = []
+    const upstream = await startUpstream((req, res) => {
+      calls.push(req.url)
+      res.end(JSON.stringify(req.method === 'POST' ? { task_id: 'background' } : { status: 'completed', result: { data: [{ b64_json: 'AAAA' }] } }))
+    })
+    upstreams = [upstream]
+    await setup([{ provider: 'sb2api-async', baseUrl: upstream.url, apiKey: 'k' }])
+    const response = await relay('ch-1/images/generations/async')
+    await response.json()
+    expect(getReserved(USER_ID)).toBe(1)
+    updateConfig((config) => { config.channels[0].baseUrl = 'http://127.0.0.1:1'; return config })
+    await pollGenerationOrders()
+    expect(calls).toEqual(['/v1/images/generations/async', '/v1/images/tasks/background'])
+    expect(getBalance(USER_ID)).toBe(99)
+    expect(getReserved(USER_ID)).toBe(0)
+  })
 })
 
 describe('渠道故障转移', () => {
@@ -510,7 +614,7 @@ describe('渠道故障转移', () => {
   })
 
   it.each([
-    [{ request_id: 'fal-accepted' }, 200, 1],
+    [{ request_id: 'fal-accepted' }, 200, 0],
     [{ images: [{ url: 'https://example.com/generated.png' }] }, 200, 1],
     [{ image: { url: 'data:image/png;base64,AAAA' } }, 200, 1],
     [{ request_id: 'fal-accepted', error: { message: 'upstream unavailable' } }, 200, 0],
@@ -519,16 +623,16 @@ describe('渠道故障转移', () => {
   ])('Fal 标准提交响应 %j 按实际受理/错误结算', async (payload, expectedStatus, charged) => {
     const upstream = await startUpstream((req, res) => res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(payload)))
     upstreams = [upstream]
-    await setup([{ name: 'Fal', provider: 'fal', baseUrl: upstream.url, apiKey: 'k1' }])
+    await setup([{ name: 'Fal', provider: 'fal', model: 'openai/gpt-image-2', baseUrl: upstream.url, apiKey: 'k1' }])
 
-    const response = await relay('ch-1/fal-submit', { headers: {
+    const response = await relay('ch-1/fal-submit', { body: JSON.stringify({ prompt: 'cat' }), headers: {
       'X-GIP-Failover': 'client',
       'X-Fal-Target-Url': 'https://queue.fal.run/openai/gpt-image-2',
     } })
     expect(response.status).toBe(expectedStatus)
     if (expectedStatus === 200) expect(await response.json()).toEqual(payload)
     expect(getBalance(USER_ID)).toBe(100 - charged)
-    expect(getReserved(USER_ID)).toBe(0)
+    expect(getReserved(USER_ID)).toBe(payload.request_id && !payload.error ? 1 : 0)
     expect(userCreditsView(USER_ID).ledger.filter((item) => item.type === 'spend')).toHaveLength(charged)
   })
 
@@ -692,7 +796,7 @@ describe('渠道故障转移', () => {
     ['GET', 'tasks/original-task', 'openai'],
     ['POST', 'images/generations', 'sb2api-async'],
     ['POST', 'chat/completions', 'openai'],
-  ])('%s %s 不在服务端跨渠道重放（%s）', async (method, endpoint, provider) => {
+  ])('%s %s 未授权接口在发送到上游前拒绝（%s）', async (method, endpoint, provider) => {
     let secondCalled = false
     const bad = await startUpstream((req, res) => res.writeHead(503).end('down'))
     const second = await startUpstream((req, res) => {
@@ -706,7 +810,7 @@ describe('渠道故障转移', () => {
     ])
 
     const response = await relay(`ch-1/${endpoint}`, { method, ...(method === 'GET' ? { body: undefined } : {}) })
-    expect(response.status).toBe(502)
+    expect(response.status).toBe(403)
     expect(secondCalled).toBe(false)
     expect(getBalance(USER_ID)).toBe(100)
     expect(getReserved(USER_ID)).toBe(0)
@@ -752,7 +856,7 @@ describe('渠道故障转移', () => {
     expect(getBalance(USER_ID)).toBe(99)
   })
 
-  it('超过缓冲上限的上传只发送一次，不能把残缺请求重放给备用渠道', async () => {
+  it('超过上传上限在发送上游前拒绝', async () => {
     let receivedBytes = 0
     let secondCalled = false
     const bad = await startUpstream((req, res, body) => {
@@ -769,10 +873,10 @@ describe('渠道故障转移', () => {
       { name: '备用渠道', baseUrl: `${second.url}/v1`, apiKey: 'k2' },
     ])
 
-    const body = Buffer.alloc(33 * 1024 * 1024, 'x')
+    const body = Buffer.alloc(65 * 1024 * 1024, 'x')
     const response = await relay('ch-1/images/edits', { body, headers: { 'Content-Type': 'application/octet-stream' } })
-    expect(response.status).toBe(502)
-    expect(receivedBytes).toBe(body.length)
+    expect(response.status).toBe(413)
+    expect(receivedBytes).toBe(0)
     expect(secondCalled).toBe(false)
     expect(getBalance(USER_ID)).toBe(100)
     expect(getReserved(USER_ID)).toBe(0)
@@ -844,7 +948,7 @@ describe('按张扣费', () => {
     expect(getBalance(USER_ID)).toBe(94)
   })
 
-  it('JSON 请求体里 n=4 就扣 4 份', async () => {
+  it('请求 4 张但实际只成功 1 张，仅扣 1 份', async () => {
     const good = await startUpstream((req, res) => res.writeHead(200).end(IMAGE_RESPONSE))
     upstreams = [good]
     await setup([{ name: '渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }], { costPerImage: 3 })
@@ -854,7 +958,7 @@ describe('按张扣费', () => {
       headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ n: 4, prompt: 'cat' }),
     })
-    expect(getBalance(USER_ID)).toBe(88)
+    expect(getBalance(USER_ID)).toBe(97)
   })
 
   it('扣费结果通过响应头回执，前端不用再查一次余额', async () => {
@@ -867,10 +971,10 @@ describe('按张扣费', () => {
       headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ n: 2, prompt: 'cat' }),
     })
-    expect(response.headers.get('x-credits-charged')).toBe('6')
-    expect(response.headers.get('x-credits-balance')).toBe('94')
-    expect(getBalance(USER_ID)).toBe(94)
-    expect(userCreditsView(USER_ID).ledger[0].note).toBe('出图 2 张')
+    expect(response.headers.get('x-credits-charged')).toBe('3')
+    expect(response.headers.get('x-credits-balance')).toBe('97')
+    expect(getBalance(USER_ID)).toBe(97)
+    expect(userCreditsView(USER_ID).ledger[0].note).toBe('出图 1 张')
   })
 
   it('幸运免单命中：不扣积分并带 x-credits-lucky 头', async () => {
@@ -886,7 +990,7 @@ describe('按张扣费', () => {
     })
     expect(response.status).toBe(200)
     expect(response.headers.get('x-credits-lucky')).toBe('1')
-    expect(response.headers.get('x-credits-charged')).toBeNull()
+    expect(response.headers.get('x-credits-charged')).toBe('0')
     expect(getBalance(USER_ID)).toBe(100)
     expect(userCreditsView(USER_ID).ledger[0]).toMatchObject({
       type: 'lucky',
@@ -894,7 +998,7 @@ describe('按张扣费', () => {
       balanceAfter: 100,
       ref: 'ch-1',
     })
-    expect(userCreditsView(USER_ID).ledger[0].note).toContain('出图 2 张')
+    expect(userCreditsView(USER_ID).ledger[0].note).toContain('出图 1 张')
     expect(userCreditsView(USER_ID).ledger[0].note).not.toContain('渠道')
   })
 
@@ -1018,8 +1122,10 @@ describe('按张扣费', () => {
     await new Promise((resolve) => setTimeout(resolve, 150))
 
     const summary = usageSummary(new Map([['ch-1', '慢渠道']]))
-    expect(summary.totals).toEqual({ total: 1, ok: 0, fail: 1 })
-    expect(summary.events[0].aborted).toBe(true)
+    expect(summary.totals).toEqual({ total: 1, ok: 1, fail: 0 })
+    expect(summary.events[0].aborted).toBe(false)
+    expect(getBalance(USER_ID)).toBe(99)
+    expect(getReserved(USER_ID)).toBe(0)
     expect(summary.channels[0].state).toBe('healthy')
     expect(upstreamCompleted).toBe(true)
   })
@@ -1107,16 +1213,31 @@ describe('按张扣费', () => {
     expect(getBalance(USER_ID)).toBe(3)
   })
 
-  it('轮询用的 GET 永远不计费——异步渠道一次出图能轮几十次', async () => {
-    const good = await startUpstream((req, res) => res.writeHead(200).end('{"status":"running"}'))
+  it('异步提交只预留，轮询完成按实际结果结算且重复查询不重扣', async () => {
+    let done = false
+    const good = await startUpstream((req, res) => res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(req.method === 'POST' ? { task_id: 'abc' } : done ? { status: 'completed', result: { data: [{ b64_json: 'AAAA' }] } } : { status: 'running' })))
     upstreams = [good]
-    await setup([{ name: '异步渠道', baseUrl: `${good.url}/v1`, apiKey: 'k1' }])
-
-    for (let i = 0; i < 5; i += 1) {
-      const response = await fetch(`http://127.0.0.1:${app.port}/api/relay/ch-1/tasks/abc`, { headers: { Cookie: cookie } })
+    await setup([{ name: '异步渠道', provider: 'sb2api-async', baseUrl: good.url + '/v1', apiKey: 'k1' }])
+    const submitted = await relay('ch-1/images/generations/async', { body: JSON.stringify({ n: 3 }) })
+    expect(submitted.status).toBe(200)
+    expect(getBalance(USER_ID)).toBe(100)
+    expect(getReserved(USER_ID)).toBe(3)
+    for (let i = 0; i < 3; i += 1) {
+      const response = await relay('ch-1/images/tasks/abc', { method: 'GET', body: undefined })
+      await response.json()
       expect(response.status).toBe(200)
     }
     expect(getBalance(USER_ID)).toBe(100)
+    done = true
+    updateConfig((config) => { config.channels[0].enabled = false; config.channels[0].provider = 'openai'; config.channels[0].model = 'changed-model'; config.channels[0].apiKey = ''; return config })
+    for (let i = 0; i < 3; i += 1) {
+      const response = await relay('ch-1/images/tasks/abc', { method: 'GET', body: undefined })
+      await response.json()
+      expect(response.status).toBe(200)
+    }
+    expect(getBalance(USER_ID)).toBe(99)
+    expect(getReserved(USER_ID)).toBe(0)
+    expect(generationOrdersForTests()[0].state).toBe('settled')
   })
 
   it('关掉积分制后完全不计费，回到免费模式', async () => {

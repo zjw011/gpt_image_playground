@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { createFailoverAttempt, formatFailoverError, getFailoverCandidates, getFailoverTimeoutBudget, isFailoverableError, withFailoverStreamingDisabled } from './failover'
+import { describe, expect, it, vi } from 'vitest'
+import { clearChannelFailure, recordChannelFailure, createFailoverAttempt, formatFailoverError, getFailoverCandidates, getFailoverTimeoutBudget, isFailoverableError, withFailoverStreamingDisabled } from './failover'
 import { DEFAULT_SETTINGS } from './apiProfiles'
 import type { ApiProfile, AppSettings } from '../types'
 import { DEFAULT_PARAMS } from '../types'
@@ -65,6 +65,24 @@ describe('getFailoverCandidates', () => {
   const first = createProfile('a')
   const second = createProfile('b')
   const third = createProfile('c')
+
+  it('暂时故障优先备用，成功和冷却到期可恢复，审核不惩罚渠道', () => {
+    vi.useFakeTimers()
+    try {
+      const settings = createSettings([first, second], { channelFailoverMaxAttempts: 1 })
+      recordChannelFailure(first, new Error('HTTP 503'))
+      expect(getFailoverCandidates(settings, first)[0].id).toBe('b')
+      vi.advanceTimersByTime(15_001)
+      expect(getFailoverCandidates(settings, first)[0].id).toBe('a')
+      recordChannelFailure(first, new Error('HTTP 429'))
+      clearChannelFailure(first)
+      recordChannelFailure(first, new Error('content_policy_violation HTTP 503'))
+      expect(getFailoverCandidates(settings, first)[0].id).toBe('a')
+    } finally {
+      clearChannelFailure(first)
+      vi.useRealTimers()
+    }
+  })
 
   it('起始渠道排第一，其余按配置顺序补齐', () => {
     const candidates = getFailoverCandidates(createSettings([first, second, third]), second)

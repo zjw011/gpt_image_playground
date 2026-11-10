@@ -16,8 +16,9 @@ export interface LiveFrameProgress {
 export async function generateLiveFrameSequence(
   options: CallApiOptions,
   frameCount: number,
-  onFrame?: (progress: LiveFrameProgress) => void,
+  onFrame?: (progress: LiveFrameProgress) => void | Promise<void>,
   caller: ImageApiCaller = callImageApi,
+  shouldContinue: () => boolean = () => true,
 ): Promise<CallApiResult> {
   const total = Math.max(1, Math.min(12, Math.trunc(frameCount)))
   const images: string[] = []
@@ -31,6 +32,7 @@ export async function generateLiveFrameSequence(
 
   for (let idx = 0; idx < total; idx += 1) {
     try {
+      if (!shouldContinue()) throw new Error('任务已结束，停止后续帧请求')
       const result = await caller({
         ...options,
         prompt: `${options.prompt}。这是连续序列第 ${idx + 1}/${total} 帧。第一张参考图是全程固定的主体、构图与曝光锚点，最后一张参考图是上一帧；只允许在上一帧基础上推进极小一步。逐帧锁定曝光、白平衡、色温、亮度、对比度、饱和度、景深、噪点与清晰度，禁止忽明忽暗、闪烁、突然跳变和整体重绘。`,
@@ -49,7 +51,7 @@ export async function generateLiveFrameSequence(
       revisedPrompts.push(result.revisedPrompts?.[0])
       if (result.rawImageUrls?.[0]) rawImageUrls.push(result.rawImageUrls[0])
       previousInputs = anchorInputs.length ? [...anchorInputs, image] : [image]
-      onFrame?.({ completed: images.length, total, image })
+      await onFrame?.({ completed: images.length, total, image })
     } catch (err) {
       if (images.length === 0) throw err
       failedRequests.push({

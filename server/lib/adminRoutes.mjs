@@ -34,7 +34,7 @@ import {
   generatePasscode,
   generateUserId,
   getConfig,
-  hashPassword,
+  hashPasswordAsync,
   isAgentTextChannel,
   isSmtpConfigured,
   isValidUsername,
@@ -47,7 +47,7 @@ import {
   toAdminUser,
   toAdminWechat,
   updateConfig,
-  verifyPassword,
+  verifyPasswordAsync,
 } from './store.mjs'
 import { buildUpstreamUrl } from './upstream.mjs'
 import { channelHealth, clearChannelFault, resetUsage, usageOverview, usageSummary } from './usage.mjs'
@@ -425,12 +425,13 @@ export async function handleAdminRoute(req, res, ctx) {
       displayName: String(body.displayName ?? '').trim(),
       note: String(body.note ?? '').trim(),
       enabled: body.enabled !== false,
-      passwordHash: hashPassword(password),
+      passwordHash: await hashPasswordAsync(password),
       createdAt: now,
       updatedAt: now,
     }, id)
 
     updateConfig((config) => {
+      if (config.users.some((item) => item.username.toLowerCase() === username.toLowerCase())) throw new HttpError(409, `用户名「${username}」已存在`)
       config.users.push(user)
       return config
     })
@@ -459,21 +460,24 @@ export async function handleAdminRoute(req, res, ctx) {
       }
 
       const enabled = body.enabled === undefined ? existing.enabled : body.enabled !== false
+      const passwordHash = password ? await hashPasswordAsync(password) : null
       updateConfig((config) => {
         const idx = config.users.findIndex((item) => item.id === id)
+        if (idx < 0) throw new HttpError(404, '用户不存在')
+        if (config.users.some((item) => item.id !== id && item.username.toLowerCase() === username.toLowerCase())) throw new HttpError(409, `用户名「${username}」已存在`)
         config.users[idx] = normalizeUser({
           ...config.users[idx],
           username,
           displayName: typeof body.displayName === 'string' ? body.displayName.trim() : existing.displayName,
           note: typeof body.note === 'string' ? body.note.trim() : existing.note,
           enabled,
-          passwordHash: password ? hashPassword(password) : existing.passwordHash,
+          passwordHash: passwordHash ?? config.users[idx].passwordHash,
           createdAt: existing.createdAt,
           updatedAt: Date.now(),
         }, id)
         return config
       })
-      if (password || !enabled) ctx.onUserInvalidated(id)
+      if (password || !enabled) ctx.onUserInvalidated(id, { keepCurrent: Boolean(password && enabled && ctx.user?.id === id) })
       return sendJson(res, 200, { user: toAdminUser(findUserById(id)) })
     }
 
@@ -572,12 +576,14 @@ export async function handleAdminRoute(req, res, ctx) {
     if (target === 'admin') {
       const me = ctx.user
       if (!me || me.role !== 'admin') throw new HttpError(403, '需要管理员登录')
-      if (!verifyPassword(String(body.currentPassword ?? ''), me.passwordHash)) {
+      if (!await verifyPasswordAsync(String(body.currentPassword ?? ''), me.passwordHash)) {
         throw new HttpError(403, '当前密码不正确')
       }
+      const passwordHash = await hashPasswordAsync(next)
       updateConfig((config) => {
         const idx = config.users.findIndex((item) => item.id === me.id)
-        if (idx >= 0) config.users[idx] = { ...config.users[idx], passwordHash: hashPassword(next), updatedAt: Date.now() }
+        if (idx < 0 || config.users[idx].passwordHash !== me.passwordHash || config.users[idx].role !== 'admin') throw new HttpError(409, '账号已发生变化，请重新登录后修改')
+        config.users[idx] = { ...config.users[idx], passwordHash, updatedAt: Date.now() }
         return config
       })
       // 改完密码踢掉其它设备，但保留当前会话（调用方负责），否则管理员会被自己的操作登出。
@@ -585,7 +591,7 @@ export async function handleAdminRoute(req, res, ctx) {
       return sendJson(res, 200, { ok: true })
     }
 
-    const hash = hashPassword(next)
+    const hash = await hashPasswordAsync(next)
     updateConfig((config) => {
       config.guestPasswordHash = hash
       return config

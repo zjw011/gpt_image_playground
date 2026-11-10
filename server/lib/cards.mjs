@@ -12,6 +12,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import { readDurableJson, writeDurableJson } from './durableJson.mjs'
+import { addCredits, hasCreditOperation } from './credits.mjs'
 
 /**
  * 卡密总量上限。
@@ -35,6 +36,7 @@ export const CARD_STATUSES = new Set(['unused', 'used', 'void'])
 
 let cardsFile = ''
 let cache = null
+let committed = null
 /** code -> card 的索引。卡密几乎全部操作都是"按码查"，用它把 O(n) 降到 O(1)。 */
 let byCode = new Map()
 
@@ -87,6 +89,7 @@ function normalizeCard(input) {
     createdAt: toInt(record.createdAt, Date.now()),
     usedAt: toInt(record.usedAt),
     usedBy: typeof record.usedBy === 'string' ? record.usedBy : '',
+    creditPending: record.creditPending === true,
   }
 }
 
@@ -129,15 +132,28 @@ function normalizeCards(input) {
 }
 
 function rebuildIndex() {
-  byCode = new Map(cache.cards.map((card) => [card.code, card]))
+  byCode = new Map(cache.cards.map((card) => [normalizeCardCode(card.code), card]))
 }
 
 export function initCards(dataDir) {
   cardsFile = join(dataDir, 'cards.json')
   mkdirSync(dirname(cardsFile), { recursive: true })
-  cache = existsSync(cardsFile)
-    ? normalizeCards(readDurableJson(cardsFile, '卡密库').value)
+  cache = existsSync(cardsFile) || existsSync(`${cardsFile}.bak`)
+    ? normalizeCards(readDurableJson(cardsFile, '卡密库', (value) => {
+        if (!isRecord(value) || !Array.isArray(value.cards)) return false
+        if (value.batches !== undefined && (!Array.isArray(value.batches) || value.batches.some((batch) => !isRecord(batch)))) return false
+        const seen = new Set()
+        return value.cards.every((card) => {
+          if (!isRecord(card) || typeof card.code !== 'string' || !normalizeCardCode(card.code) || seen.has(normalizeCardCode(card.code)) || !Number.isSafeInteger(card.credits) || card.credits <= 0 || card.credits > 100_000_000 || !CARD_STATUSES.has(card.status)) return false
+          if (card.creditPending !== undefined && typeof card.creditPending !== 'boolean') return false
+          if (card.status === 'used' && (typeof card.usedBy !== 'string' || !card.usedBy)) return false
+          if (card.creditPending && (card.status !== 'used' || !card.usedBy)) return false
+          seen.add(normalizeCardCode(card.code))
+          return true
+        })
+      }).value)
     : emptyCards()
+  committed = structuredClone(cache)
   rebuildIndex()
   return cache
 }
@@ -149,7 +165,14 @@ function writeCardsFile() {
 
 function commit() {
   cache.updatedAt = Date.now()
-  writeCardsFile()
+  try {
+    writeCardsFile()
+    committed = structuredClone(cache)
+  } catch (err) {
+    cache = structuredClone(committed)
+    rebuildIndex()
+    throw err
+  }
 }
 
 // ===== 生成 =====
@@ -178,7 +201,7 @@ export function generateCards(input = {}) {
     // 冲突概率极低（32^12 之一），但真撞上了也不能发出两张一样的码。
     let code = formatCode(randomCodeBody())
     let attempts = 0
-    while (byCode.has(code) && attempts < 10) {
+    while (byCode.has(normalizeCardCode(code)) && attempts < 10) {
       code = formatCode(randomCodeBody())
       attempts += 1
     }
@@ -193,7 +216,7 @@ export function generateCards(input = {}) {
       usedBy: '',
     }
     cache.cards.push(card)
-    byCode.set(card.code, card)
+    byCode.set(normalizeCardCode(card.code), card)
     created.push(card.code)
   }
 
@@ -212,11 +235,11 @@ export function generateCards(input = {}) {
  * 返回具体原因而不是布尔值：前台要把"已被使用"和"已作废"分开告诉用户，
  * 否则他只会反复重试同一张卡。
  */
-export function redeemCard(rawCode, userId) {
+export function redeemCard(rawCode, userId, options = {}) {
   const code = normalizeCardCode(rawCode)
   if (!code) return { ok: false, reason: 'empty', message: '请输入卡密' }
 
-  const card = byCode.get(code) ?? cache.cards.find((item) => normalizeCardCode(item.code) === code)
+  const card = byCode.get(code)
   if (!card) return { ok: false, reason: 'not-found', message: '卡密不存在，请核对后重试' }
   if (card.status === 'void') return { ok: false, reason: 'void', message: '该卡密已被作废' }
   if (card.status === 'used') {
@@ -227,8 +250,35 @@ export function redeemCard(rawCode, userId) {
   card.status = 'used'
   card.usedAt = Date.now()
   card.usedBy = userId
+  card.creditPending = options.creditPending === true
   commit()
   return { ok: true, credits: card.credits, code: card.code, batch: card.batch }
+}
+
+/** 核销记录先保留待入账意图，积分收据与余额原子提交，最后完成核销。 */
+export function redeemCardCredits(rawCode, userId) {
+  const code = normalizeCardCode(rawCode)
+  let card = byCode.get(code)
+  const operationId = `card:${code}`
+  if (!card || card.status !== 'used' || card.usedBy !== userId || (!card.creditPending && !hasCreditOperation(operationId))) {
+    const result = redeemCard(rawCode, userId, { creditPending: true })
+    if (!result.ok) return result
+    card = byCode.get(code)
+  }
+  const result = addCredits(userId, card.credits, { type: 'redeem', ref: card.code, note: '卡密兑换', operationId })
+  if (!result.ok) throw new Error('卡密积分尚未到账，请稍后重试')
+  if (card.creditPending) {
+    card.creditPending = false
+    commit()
+  }
+  return { ok: true, credits: card.credits, code: card.code, batch: card.batch, duplicated: result.duplicated === true }
+}
+
+/** 仅补偿新流程留下的待入账卡，历史已使用卡不会被重新充值。 */
+export function recoverCardCredits() {
+  for (const card of [...cache.cards]) {
+    if (card.creditPending) redeemCardCredits(card.code, card.usedBy)
+  }
 }
 
 function formatTime(at) {

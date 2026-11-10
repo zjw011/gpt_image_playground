@@ -109,7 +109,6 @@ try {
     return config
   })
   addCredits(userId, 100)
-  vite = await createViteServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'spa', logLevel: 'error' })
   app = createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`)
     if (!url.pathname.startsWith('/api/')) return vite.middlewares(req, res)
@@ -125,6 +124,8 @@ try {
       sendError(res, err.status || 500, err.message, err.extra)
     }
   })
+  // 中间件模式的客户端仍建立 WebSocket；绑定本轮 HTTP 服务，避免并行审计争抢默认 24678。
+  vite = await createViteServer({ root, server: { middlewareMode: true, hmr: { server: app } }, appType: 'spa', logLevel: 'error' })
   const baseUrl = await listen(app)
   browser = await launchChrome({ port: 9436, baseUrl, onConsoleError: (line) => errors.push(line) })
   await browser.setViewport(1440, 1000)
@@ -223,7 +224,7 @@ try {
     }
     await browser.setViewport(1440, 1000)
   }
-  report('无前端控制台或假上游异常', errors.length === 0, errors.join('\n'))
+  report('开发连接正常且无前端控制台或假上游异常', vite.ws.clients.size > 0 && errors.length === 0, errors.join('\n') || (vite.ws.clients.size ? '' : 'Vite WebSocket 未连接'))
   console.log(`渠道切换专项：${checked} 项检查，${failed} 项失败。真实浏览器/中继/本地 HTTP 上游与隔离积分账本，无收费接口或线上数据。`)
 } catch (err) {
   failed++

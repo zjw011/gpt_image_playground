@@ -7,6 +7,27 @@ import { classifyGenerationError } from './generationError.mjs'
 import { isImageDownloadError } from './taskFailure'
 import { supportsNativeGif } from './nativeGif'
 
+const channelFailures = new Map<string, { until: number; failures: number }>()
+
+function channelKey(profile: ApiProfile) {
+  return JSON.stringify([profile.id, profile.baseUrl, profile.model, profile.apiMode])
+}
+
+export function recordChannelFailure(profile: ApiProfile, error: unknown) {
+  if (!isFailoverableError(error)) return
+  const message = error instanceof Error ? error.message : String(error)
+  if (!/\b(?:429|5\d\d|timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED)\b|超时|Failed to fetch|fetch failed|network error/i.test(message)) return
+  const now = Date.now()
+  for (const [key, value] of channelFailures) if (value.until <= now) channelFailures.delete(key)
+  const key = channelKey(profile)
+  const failures = Math.min(4, (channelFailures.get(key)?.failures ?? 0) + 1)
+  channelFailures.set(key, { failures, until: now + Math.min(120_000, 15_000 * 2 ** (failures - 1)) })
+}
+
+export function clearChannelFailure(profile: ApiProfile) {
+  channelFailures.delete(channelKey(profile))
+}
+
 /** 本地前置校验失败，换渠道也一样会失败，不参与故障转移。 */
 const LOCAL_FAILURE_PATTERNS = [
   /过大：/,
@@ -48,7 +69,10 @@ export function getFailoverCandidates(settings: AppSettings, startProfile: ApiPr
   const limit = settings.channelFailoverMaxAttempts > 0
     ? Math.max(1, settings.channelFailoverMaxAttempts)
     : candidates.length
-  return candidates.slice(0, limit)
+  // 临时故障的渠道排到后面；全部处于冷却时仍允许探测，不把短暂故障永久锁死。
+  const now = Date.now()
+  return candidates.sort((a, b) => Number((channelFailures.get(channelKey(a))?.until ?? 0) > now)
+    - Number((channelFailures.get(channelKey(b))?.until ?? 0) > now)).slice(0, limit)
 }
 
 /** 故障转移期间关闭流式：中间步骤图一旦推给前端就无法干净地换渠道重试。 */

@@ -75,8 +75,8 @@ describe('配置损坏保护', () => {
 })
 
 describe('users 清洗', () => {
-  it('丢弃用户名非法与重复的条目，并按 id/用户名去重（大小写不敏感）', () => {
-    const config = initWith({
+  it('持久化账号非法或冲突时拒绝丢弃条目后启动', () => {
+    expect(() => initWith({
       version: 2,
       users: [
         { id: 'u-1', username: 'alice', passwordHash: 'h1' },
@@ -86,8 +86,7 @@ describe('users 清洗', () => {
         { id: 'u-4', username: 'carol', passwordHash: 'h5' },
       ],
       channels: [],
-    })
-    expect(config.users.map((user) => user.username)).toEqual(['alice', 'carol'])
+    })).toThrow('站点配置损坏')
   })
 
   it('补齐缺省字段', () => {

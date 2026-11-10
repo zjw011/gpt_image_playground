@@ -2,8 +2,8 @@
 // 访客永远拿不到 baseUrl 与 apiKey：前端只知道渠道 id，请求打到 /api/relay/<id>/...，
 // 由 relay.mjs 补上真实地址和 Authorization，并在渠道之间静默做故障转移。
 
-import { addCredits, userCreditsView } from './credits.mjs'
-import { redeemCard } from './cards.mjs'
+import { userCreditsView } from './credits.mjs'
+import { redeemCardCredits } from './cards.mjs'
 import { getClientIp, HttpError, readJsonBody, sendJson } from './http.mjs'
 import { isLocked, getLockRemainingSeconds, recordFailure, recordSuccess } from './rateLimit.mjs'
 import { handleRelay } from './relay.mjs'
@@ -215,14 +215,13 @@ export async function handleGuestRoute(req, res, ctx) {
     if (isLocked(key)) throw new HttpError(429, `尝试次数过多，请 ${getLockRemainingSeconds(key)} 秒后重试`)
 
     const body = await readJsonBody(req)
-    const result = redeemCard(body.code, ctx.user.id)
+    const result = redeemCardCredits(body.code, ctx.user.id)
     if (!result.ok) {
       recordFailure(key)
       throw new HttpError(400, result.message)
     }
     recordSuccess(key)
 
-    addCredits(ctx.user.id, result.credits, { type: 'redeem', ref: result.code, note: '卡密兑换' })
     return sendJson(res, 200, {
       ok: true,
       credited: result.credits,

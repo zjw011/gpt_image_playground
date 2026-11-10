@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { describe, expect, it, vi } from 'vitest'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -30,5 +30,18 @@ describe('关键 JSON 耐久读写', () => {
     writeFileSync(`${file}.bak`, '{also broken', 'utf-8')
 
     expect(() => readDurableJson(file, '积分账本')).toThrow(/均损坏/)
+  })
+
+  it('备份替换失败不把已提交的主文件误报成失败', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'gip-json-')), 'data.json')
+    mkdirSync(`${file}.bak`)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(() => writeDurableJson(file, { balance: 20 })).not.toThrow()
+      expect(JSON.parse(readFileSync(file, 'utf-8')).balance).toBe(20)
+      expect(warn).toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
